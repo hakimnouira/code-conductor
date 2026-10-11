@@ -5,13 +5,16 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import secrets
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from sse_starlette.sse import EventSourceResponse
 
 from app.adapters.registry import get_agent_registry
 from app.core.config import get_settings
-from app.core.security import require_bearer_token
+from app.core.security import require_bearer_token, security_scheme
 from app.models.schemas import (
     AgentInfo,
     EventType,
@@ -129,7 +132,19 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         await record.event_queue.put(None)
 
 @app.get("/tasks/{task_id}/events")
-async def stream_task_events(task_id: str, _: str = Depends(require_bearer_token)):
+async def stream_task_events(
+    task_id: str,
+    token: str | None = None,
+    auth_header: HTTPAuthorizationCredentials | None = Depends(security_scheme),
+):
+    settings = get_settings()
+    provided_token = auth_header.credentials if auth_header else token
+    if not provided_token or not secrets.compare_digest(provided_token, settings.auth_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing bearer token",
+        )
+
     record = _tasks.get(task_id)
     if not record:
         raise HTTPException(
@@ -165,3 +180,171 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
 
     record.status = TaskStatus.CANCELLED
     return {"task_id": task_id, "cancelled": cancelled, "status": record.status}
+
+@app.get("/web", response_class=HTMLResponse)
+async def web_chat_interface():
+    token = get_settings().auth_token
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Unified AI Coding Hub - Live Web Chat</title>
+  <style>
+    body {{
+      margin: 0; padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; height: 95vh;
+    }}
+    .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 12px; }}
+    select, button, textarea {{
+      background: #252526; color: #ccc; border: 1px solid #3c3c3c; border-radius: 4px; padding: 8px 12px; font-family: inherit; font-size: 13px;
+    }}
+    .chat-box {{ flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }}
+    .msg {{ padding: 10px 14px; border-radius: 6px; max-width: 80%; line-height: 1.5; word-break: break-word; }}
+    .msg.user {{ align-self: flex-end; background: #0e639c; color: #fff; }}
+    .msg.assistant {{ align-self: flex-start; background: #2d2d2d; border: 1px solid #3e3e42; }}
+    .msg.system {{ align-self: center; font-size: 12px; color: #888; font-style: italic; }}
+    .input-row {{ display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #333; padding-top: 12px; }}
+    textarea {{ width: 100%; height: 70px; resize: vertical; box-sizing: border-box; }}
+    .btn-row {{ display: flex; justify-content: space-between; }}
+    button {{ cursor: pointer; background: #0e639c; color: white; border: none; font-weight: 500; }}
+    button:hover {{ background: #1177bb; }}
+    button#cancelBtn {{ background: #e51400; display: none; }}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Unified AI Coding Hub</h2>
+    <div>
+      <label>Agent: </label>
+      <select id="agentSelect"><option value="auto">Auto Router</option></select>
+    </div>
+  </div>
+
+  <div class="chat-box" id="chatBox">
+    <div class="msg system">Live Web Chat connected to 127.0.0.1:8765. Ready for tasks.</div>
+  </div>
+
+  <div class="input-row">
+    <textarea id="promptInput" placeholder="Type instructions for Codex, Copilot, Antigravity, or Mock... (Ctrl+Enter to send)"></textarea>
+    <div class="btn-row">
+      <button id="cancelBtn">Cancel Task</button>
+      <div style="flex:1;"></div>
+      <button id="sendBtn">Send Task</button>
+    </div>
+  </div>
+
+  <script>
+    const token = "{token}";
+    const chatBox = document.getElementById('chatBox');
+    const promptInput = document.getElementById('promptInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const agentSelect = document.getElementById('agentSelect');
+
+    let activeTaskId = null;
+    let eventSource = null;
+    let curAssistantMsg = null;
+
+    function addMsg(role, text) {{
+      const el = document.createElement('div');
+      el.className = 'msg ' + role;
+      el.textContent = text;
+      chatBox.appendChild(el);
+      chatBox.scrollTop = chatBox.scrollHeight;
+      return el;
+    }}
+
+    async function loadAgents() {{
+      try {{
+        const res = await fetch('/agents', {{ headers: {{ 'Authorization': 'Bearer ' + token }} }});
+        const agents = await res.json();
+        agentSelect.innerHTML = '<option value="auto">Auto Router</option>';
+        agents.forEach(a => {{
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = a.name + ' [' + a.state + ']';
+          agentSelect.appendChild(opt);
+        }});
+      }} catch (e) {{
+        addMsg('system', 'Failed to load agents: ' + e);
+      }}
+    }}
+    loadAgents();
+
+    sendBtn.onclick = async () => {{
+      const text = promptInput.value.trim();
+      if (!text) return;
+      promptInput.value = '';
+      sendBtn.disabled = true;
+      cancelBtn.style.display = 'inline-block';
+      addMsg('user', text);
+      curAssistantMsg = addMsg('assistant', '');
+
+      try {{
+        const res = await fetch('/tasks', {{
+          method: 'POST',
+          headers: {{ 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ prompt: text, agent_id: agentSelect.value }})
+        }});
+        const data = await res.json();
+        activeTaskId = data.task_id;
+
+        eventSource = new EventSource('/tasks/' + activeTaskId + '/events?token=' + token);
+        eventSource.onmessage = (e) => {{
+          try {{
+            const ev = JSON.parse(e.data);
+            if (ev.event_type === 'token') {{
+              curAssistantMsg.textContent += ev.text;
+            }} else if (ev.event_type === 'started') {{
+              curAssistantMsg.textContent = ev.text + '\\n';
+            }} else if (ev.event_type === 'error') {{
+              curAssistantMsg.textContent += '\\n[Error] ' + ev.text;
+            }}
+            chatBox.scrollTop = chatBox.scrollHeight;
+          }} catch (_) {{}}
+        }};
+
+        eventSource.addEventListener('done', () => {{
+          finishTask();
+        }});
+
+        eventSource.onerror = () => {{
+          finishTask();
+        }};
+      }} catch (err) {{
+        curAssistantMsg.textContent = 'Error: ' + err;
+        finishTask();
+      }}
+    }};
+
+    cancelBtn.onclick = async () => {{
+      if (activeTaskId) {{
+        await fetch('/tasks/' + activeTaskId + '/cancel', {{
+          method: 'POST',
+          headers: {{ 'Authorization': 'Bearer ' + token }}
+        }});
+      }}
+      finishTask();
+    }};
+
+    function finishTask() {{
+      if (eventSource) {{
+        eventSource.close();
+        eventSource = null;
+      }}
+      sendBtn.disabled = false;
+      cancelBtn.style.display = 'none';
+      activeTaskId = null;
+      curAssistantMsg = null;
+    }}
+
+    promptInput.onkeydown = (e) => {{
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+        e.preventDefault();
+        sendBtn.click();
+      }}
+    }};
+  </script>
+</body>
+</html>"""
