@@ -1,12 +1,14 @@
 from app.adapters.base import BaseAgentAdapter
+from app.adapters.codex import CodexAdapter
 from app.adapters.echo import EchoMockAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
 
 class AgentRegistry:
     def __init__(self):
         self._adapters: dict[str, BaseAgentAdapter] = {}
-        # Register default mock adapter
+        # Register adapters
         self.register(EchoMockAdapter())
+        self.register(CodexAdapter())
 
     def register(self, adapter: BaseAgentAdapter) -> None:
         self._adapters[adapter.agent_id] = adapter
