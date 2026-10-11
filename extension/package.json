@@ -1,0 +1,62 @@
+{
+  "name": "unified-ai-hub",
+  "displayName": "Unified AI Coding Hub",
+  "description": "Unified AI Coding Hub for VS Code integrating Codex, Copilot, Antigravity, and Local Models",
+  "version": "0.1.0",
+  "publisher": "local-developer",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:aiHub.chatView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ai-coding-hub",
+          "title": "AI Coding Hub",
+          "icon": "media/robot.svg"
+        }
+      ]
+    },
+    "views": {
+      "ai-coding-hub": [
+        {
+          "type": "webview",
+          "id": "aiHub.chatView",
+          "name": "AI Coding Hub Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiHub.openChat",
+        "title": "AI Hub: Open Chat Panel"
+      },
+      {
+        "command": "aiHub.checkHealth",
+        "title": "AI Hub: Check Backend Health"
+      },
+      {
+        "command": "aiHub.restartBackend",
+        "title": "AI Hub: Restart Backend Server"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.2"
+  }
+}
