@@ -1,5 +1,6 @@
 from app.adapters.base import BaseAgentAdapter
 from app.adapters.codex import CodexAdapter
+from app.adapters.copilot import CopilotAdapter
 from app.adapters.echo import EchoMockAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
 
@@ -9,6 +10,7 @@ class AgentRegistry:
         # Register adapters
         self.register(EchoMockAdapter())
         self.register(CodexAdapter())
+        self.register(CopilotAdapter())
 
     def register(self, adapter: BaseAgentAdapter) -> None:
         self._adapters[adapter.agent_id] = adapter
