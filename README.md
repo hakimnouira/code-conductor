@@ -90,7 +90,7 @@ In a separate terminal, test health:
 - [x] **Milestone 2**: Minimal FastAPI backend (token auth, health check, SSE) and working VS Code chat extension.
 - [x] **Milestone 3**: Codex CLI integration using existing ChatGPT subscription login.
 - [x] **Milestone 4**: GitHub Copilot SDK integration using existing subscription.
-- [ ] **Milestone 5**: Antigravity MCP integration experiment.
+- [x] **Milestone 5**: Antigravity MCP integration experiment.
 - [ ] **Milestone 6**: Ollama integration and agent registry.
 - [ ] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
 - [ ] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.

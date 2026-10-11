@@ -1,3 +1,4 @@
+from app.adapters.antigravity import AntigravityAdapter
 from app.adapters.base import BaseAgentAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.copilot import CopilotAdapter
@@ -11,6 +12,7 @@ class AgentRegistry:
         self.register(EchoMockAdapter())
         self.register(CodexAdapter())
         self.register(CopilotAdapter())
+        self.register(AntigravityAdapter())
 
     def register(self, adapter: BaseAgentAdapter) -> None:
         self._adapters[adapter.agent_id] = adapter
