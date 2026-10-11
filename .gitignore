@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Extension
+node_modules/
+out/
+dist/
+*.vsix
+.vscode-test/
+
+# Secrets and environment
+.env
+api_keys.json
+*.log
