@@ -23,9 +23,10 @@ class CopilotPermissionPolicy:
     - Network URLs, Mcp tools, Hooks, Environment/Extension access: Rejected by default.
     """
 
-    def __init__(self, workspace_root: Path | None = None, allow_terminal: bool = False):
+    def __init__(self, workspace_root: Path | None = None, allow_terminal: bool = False, allow_all: bool = False):
         self.workspace_root = workspace_root.resolve() if workspace_root else None
         self.allow_terminal = allow_terminal
+        self.allow_all = allow_all
 
     def evaluate(self, request, invocation):
         from copilot.session import PermissionDecisionApproveOnce, PermissionNoResult
@@ -33,6 +34,8 @@ class CopilotPermissionPolicy:
 
         if getattr(request, "managed_approval_required", False) is True:
             return PermissionNoResult()
+        if self.allow_all:
+            return PermissionDecisionApproveOnce()
 
         req_type_name = type(request).__name__
         kind = getattr(request, "kind", "")
@@ -231,7 +234,8 @@ class CopilotAdapter(BaseAgentAdapter):
             )
             return
 
-        policy = CopilotPermissionPolicy(workspace_root=ws_path, allow_terminal=False)
+        god_mode = request.permission_mode == "god" and request.god_mode_confirmed
+        policy = CopilotPermissionPolicy(workspace_root=ws_path, allow_terminal=(request.permission_mode == "balanced" or god_mode), allow_all=god_mode)
 
 
         try:
