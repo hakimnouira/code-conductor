@@ -198,6 +198,7 @@ export default function App() {
     if (permissionMode === "god" && !window.confirm("GOD MODE WARNING\n\nThis can approve tool actions and run commands broadly. Continue only with a trusted prompt and reviewed workspace.")) return;
     setError(""); setNotice(""); setBusy(true); setEvents([]); setTask(null); setActiveStep(-1);
     const originalPrompt = prompt.trim();
+    let executionFailed = false;
     setConversationPrompt(originalPrompt);
     const controller = new AbortController(); abort.current = controller;
     try {
@@ -229,7 +230,7 @@ export default function App() {
           ].filter(Boolean).join("\n\n");
           const result = await dispatch(stepPrompt, stepAgent, controller.signal);
           outputs.push("Step " + (i + 1) + " — " + step.title + ":\n" + result.output.slice(-3500));
-          if (result.failed) { planFailed = true; setNotice("Plan paused because step " + (i + 1) + " failed. Fix the error, then review the workspace before continuing."); break; }
+          if (result.failed) { planFailed = true; executionFailed = true; setNotice("Plan paused because step " + (i + 1) + " failed. Fix the error, then review the workspace before continuing."); break; }
         }
         if (!controller.signal.aborted && !planFailed) {
           setNotice("Plan execution finished. Review the response and run tests before accepting changes.");
@@ -239,7 +240,7 @@ export default function App() {
         setActiveStep(0);
         await dispatch(originalPrompt, agent, controller.signal);
       }
-      if (task?.status !== "failed") setPrompt("");
+      if (!executionFailed) setPrompt("");
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task failed");
     } finally { setBusy(false); abort.current = null; latestTaskId.current = null; }
