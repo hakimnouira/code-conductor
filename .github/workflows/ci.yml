@@ -32,7 +32,7 @@ jobs:
           node-version: "20"
       - name: Install web dependencies
         working-directory: web
-        run: npm install
+        run: npm ci
       - name: Build dashboard
         working-directory: web
         run: npm run build
