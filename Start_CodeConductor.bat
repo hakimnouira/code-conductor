@@ -16,8 +16,16 @@ start /b "" cmd.exe /c "npm --prefix web run dev"
 
 timeout /t 2 /nobreak >nul
 
-echo [*] Opening browser...
-start http://127.0.0.1:5173
+set "CLOAK_EXE=D:\Downloads\cloakbrowser-windows-x64\chrome.exe"
+set "CLOAK_PROFILE=D:\work\code-conductor\.cloak_profile"
+
+if exist "%CLOAK_EXE%" (
+    echo [*] Opening in CloakBrowser with stealth session and port 9222...
+    start "" "%CLOAK_EXE%" --remote-debugging-port=9222 --user-data-dir="%CLOAK_PROFILE%" --no-first-run --no-default-browser-check "http://127.0.0.1:5173"
+) else (
+    echo [*] Opening system browser...
+    start http://127.0.0.1:5173
+)
 
 echo.
 echo ========================================================

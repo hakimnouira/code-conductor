@@ -1,24 +1,24 @@
 """Code Conductor Desktop Launcher & Process Controller.
 
-Starts backend and frontend services, opens the browser,
+Starts backend and frontend services, opens in CloakBrowser (or system browser),
 and provides a clean one-click Shutdown / Turn Off button.
 """
 
 import os
 import sys
 import time
+import shutil
 import subprocess
 import threading
 import webbrowser
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
 # Determine project root
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
-    # Check if run from Desktop or from project root
     if not os.path.exists(os.path.join(APP_DIR, "backend")):
-        # Default fallback to D:\work\code-conductor
         if os.path.exists(r"D:\work\code-conductor\backend"):
             APP_DIR = r"D:\work\code-conductor"
         elif os.path.exists(r"C:\Users\hakim\Desktop\vs extention\backend"):
@@ -32,11 +32,64 @@ if not os.path.exists(VENV_PYTHON):
 
 BACKEND_DIR = os.path.join(APP_DIR, "backend")
 WEB_DIR = os.path.join(APP_DIR, "web")
+CLOAK_PROFILE_DIR = os.path.join(APP_DIR, ".cloak_profile")
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 backend_proc = None
 frontend_proc = None
+
+CLOAK_CANDIDATES = [
+    Path(r"D:\Downloads\cloakbrowser-windows-x64\chrome.exe"),
+    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")),
+    Path(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe")),
+]
+
+
+def find_cloak_browser() -> Path | None:
+    """Finds CloakBrowser or chromium browser."""
+    for p in CLOAK_CANDIDATES:
+        if p.exists() and p.is_file():
+            return p
+    which_chrome = shutil.which("chrome") or shutil.which("msedge")
+    if which_chrome:
+        return Path(which_chrome)
+    return None
+
+
+def open_in_cloak(url: str = "http://127.0.0.1:5173") -> bool:
+    """Launches URL in CloakBrowser with persistent session and CDP port 9222."""
+    exe = find_cloak_browser()
+    if not exe:
+        return False
+    try:
+        os.makedirs(CLOAK_PROFILE_DIR, exist_ok=True)
+        cmd = [
+            str(exe),
+            "--remote-debugging-port=9222",
+            f"--user-data-dir={CLOAK_PROFILE_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            url,
+        ]
+        flags = 0
+        if sys.platform == "win32":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            cmd,
+            creationflags=flags,
+            close_fds=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def kill_proc_tree(proc):
@@ -88,8 +141,8 @@ class ConductorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Code Conductor — Launcher")
-        self.root.geometry("460x390")
-        self.root.minsize(460, 390)
+        self.root.geometry("490x520")
+        self.root.minsize(490, 520)
         self.root.configure(bg="#0c0e14")
 
         # Top Bar
@@ -115,48 +168,92 @@ class ConductorApp:
         sub_label.pack(anchor="w", pady=(2, 0))
 
         # Status Cards Frame
-        status_frame = tk.Frame(root, bg="#0c0e14", padx=20, pady=16)
+        status_frame = tk.Frame(root, bg="#0c0e14", padx=20, pady=12)
         status_frame.pack(fill="x")
 
-        # Backend Status
-        b_card = tk.Frame(status_frame, bg="#181c28", padx=14, pady=10, relief="flat", highlightthickness=1, highlightbackground="#2d3345")
-        b_card.pack(fill="x", pady=(0, 10))
+        # Backend Status Card
+        b_card = tk.Frame(status_frame, bg="#181c28", padx=12, pady=8, relief="flat", highlightthickness=1, highlightbackground="#2d3345")
+        b_card.pack(fill="x", pady=(0, 6))
 
-        self.b_dot = tk.Label(b_card, text="●", font=("Segoe UI", 12), fg="#f59e0b", bg="#181c28")
+        self.b_dot = tk.Label(b_card, text="●", font=("Segoe UI", 11), fg="#f59e0b", bg="#181c28")
         self.b_dot.pack(side="left", padx=(0, 8))
 
         b_text_frame = tk.Frame(b_card, bg="#181c28")
         b_text_frame.pack(side="left")
 
-        b_name = tk.Label(b_text_frame, text="Backend Server", font=("Segoe UI", 10, "bold"), fg="#e5e7eb", bg="#181c28")
+        b_name = tk.Label(b_text_frame, text="Backend Server", font=("Segoe UI", 9, "bold"), fg="#e5e7eb", bg="#181c28")
         b_name.pack(anchor="w")
 
         self.b_status = tk.Label(b_text_frame, text="Starting on http://127.0.0.1:8765...", font=("Segoe UI", 8), fg="#9ca3af", bg="#181c28")
         self.b_status.pack(anchor="w")
 
-        # Frontend Status
-        f_card = tk.Frame(status_frame, bg="#181c28", padx=14, pady=10, relief="flat", highlightthickness=1, highlightbackground="#2d3345")
-        f_card.pack(fill="x")
+        # Frontend Status Card
+        f_card = tk.Frame(status_frame, bg="#181c28", padx=12, pady=8, relief="flat", highlightthickness=1, highlightbackground="#2d3345")
+        f_card.pack(fill="x", pady=(0, 6))
 
-        self.f_dot = tk.Label(f_card, text="●", font=("Segoe UI", 12), fg="#f59e0b", bg="#181c28")
+        self.f_dot = tk.Label(f_card, text="●", font=("Segoe UI", 11), fg="#f59e0b", bg="#181c28")
         self.f_dot.pack(side="left", padx=(0, 8))
 
         f_text_frame = tk.Frame(f_card, bg="#181c28")
         f_text_frame.pack(side="left")
 
-        f_name = tk.Label(f_text_frame, text="Web Interface", font=("Segoe UI", 10, "bold"), fg="#e5e7eb", bg="#181c28")
+        f_name = tk.Label(f_text_frame, text="Web Interface", font=("Segoe UI", 9, "bold"), fg="#e5e7eb", bg="#181c28")
         f_name.pack(anchor="w")
 
         self.f_status = tk.Label(f_text_frame, text="Starting on http://127.0.0.1:5173...", font=("Segoe UI", 8), fg="#9ca3af", bg="#181c28")
         self.f_status.pack(anchor="w")
 
+        # CloakBrowser Status Card
+        c_card = tk.Frame(status_frame, bg="#181c28", padx=12, pady=8, relief="flat", highlightthickness=1, highlightbackground="#2d3345")
+        c_card.pack(fill="x")
+
+        cloak_exe = find_cloak_browser()
+        is_cloak_installed = cloak_exe is not None
+
+        self.c_dot = tk.Label(
+            c_card,
+            text="●",
+            font=("Segoe UI", 11),
+            fg="#10b981" if is_cloak_installed else "#f59e0b",
+            bg="#181c28",
+        )
+        self.c_dot.pack(side="left", padx=(0, 8))
+
+        c_text_frame = tk.Frame(c_card, bg="#181c28")
+        c_text_frame.pack(side="left")
+
+        c_name = tk.Label(c_text_frame, text="CloakBrowser Stealth Engine", font=("Segoe UI", 9, "bold"), fg="#e5e7eb", bg="#181c28")
+        c_name.pack(anchor="w")
+
+        cloak_info = "Ready · Persistent profile & CDP 9222 for Web APIs" if is_cloak_installed else "Not found · Will use system browser"
+        self.c_status = tk.Label(c_text_frame, text=cloak_info, font=("Segoe UI", 8), fg="#10b981" if is_cloak_installed else "#9ca3af", bg="#181c28")
+        self.c_status.pack(anchor="w")
+
+        # Open Mode Preference Checkbox
+        opt_frame = tk.Frame(root, bg="#0c0e14", padx=20, pady=4)
+        opt_frame.pack(fill="x")
+
+        self.use_cloak_var = tk.BooleanVar(value=is_cloak_installed)
+        self.cloak_check = tk.Checkbutton(
+            opt_frame,
+            text="🛡️ Auto-open in CloakBrowser (Stealth session + Web AI models)",
+            variable=self.use_cloak_var,
+            font=("Segoe UI", 9),
+            fg="#c7d2fe",
+            bg="#0c0e14",
+            activebackground="#0c0e14",
+            activeforeground="#ffffff",
+            selectcolor="#1e1b4b",
+        )
+        self.cloak_check.pack(anchor="w")
+
         # Action Buttons Frame
-        btn_frame = tk.Frame(root, bg="#0c0e14", padx=20, pady=12)
+        btn_frame = tk.Frame(root, bg="#0c0e14", padx=20, pady=10)
         btn_frame.pack(fill="both", expand=True)
 
-        self.open_btn = tk.Button(
+        self.cloak_btn = tk.Button(
             btn_frame,
-            text="🌐 Open in Browser",
+            text="🛡️ Open in CloakBrowser",
             font=("Segoe UI", 10, "bold"),
             bg="#4f46e5",
             fg="#ffffff",
@@ -165,7 +262,22 @@ class ConductorApp:
             relief="flat",
             pady=8,
             cursor="hand2",
-            command=self.open_browser,
+            command=self.open_cloak_action,
+        )
+        self.cloak_btn.pack(fill="x", pady=(0, 6))
+
+        self.open_btn = tk.Button(
+            btn_frame,
+            text="🌐 Open in System Browser",
+            font=("Segoe UI", 9),
+            bg="#1f2937",
+            fg="#e5e7eb",
+            activebackground="#374151",
+            activeforeground="#ffffff",
+            relief="flat",
+            pady=6,
+            cursor="hand2",
+            command=self.open_system_browser,
         )
         self.open_btn.pack(fill="x", pady=(0, 8))
 
@@ -191,7 +303,7 @@ class ConductorApp:
             font=("Segoe UI", 8),
             fg="#6b7280",
             bg="#0c0e14",
-            pady=8,
+            pady=6,
         )
         footer_label.pack(side="bottom")
 
@@ -245,11 +357,20 @@ class ConductorApp:
             self.f_dot.config(fg="#ef4444")
             self.f_status.config(text=f"Error: {exc}", fg="#ef4444")
 
-        # Auto-open browser
+        # Auto-open browser according to preference
         time.sleep(1.0)
-        webbrowser.open("http://127.0.0.1:5173")
+        if self.use_cloak_var.get() and find_cloak_browser():
+            if not open_in_cloak("http://127.0.0.1:5173"):
+                webbrowser.open("http://127.0.0.1:5173")
+        else:
+            webbrowser.open("http://127.0.0.1:5173")
 
-    def open_browser(self):
+    def open_cloak_action(self):
+        if not open_in_cloak("http://127.0.0.1:5173"):
+            messagebox.showinfo("CloakBrowser", "CloakBrowser was not found. Opening in system browser instead.")
+            webbrowser.open("http://127.0.0.1:5173")
+
+    def open_system_browser(self):
         webbrowser.open("http://127.0.0.1:5173")
 
     def shutdown_servers(self):
