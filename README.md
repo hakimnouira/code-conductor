@@ -242,3 +242,14 @@ The standalone web command center uses a chat-first workspace with a persistent 
 Use **GitHub repo** in the composer to shallow-clone a public repository into the selected workspace parent. The importer accepts only HTTPS `github.com` repository URLs, validates the destination folder, and never runs project code, installs dependencies, executes build scripts, or invokes repository hooks. After cloning, the composer is prefilled with a reverse-engineering prompt that asks the agent to map architecture, entry points, data flow, tests, and risks with file references.
 
 The repository importer requires Git to be installed and available on `PATH`. Private repositories and non-GitHub hosts are not supported by this initial implementation. Review untrusted repository contents before asking an agent to modify them, and keep permission mode set to **Safe**.
+
+
+## Automatic GitHub Research & Reuse Engine
+
+Code Conductor evaluates each task before dispatch and, by default, searches public GitHub repositories when the task looks like implementation, UI/design, integration, debugging, testing, or architecture work. Clearly trivial edits and explanations are skipped to avoid needless latency and API use. The composer has a **Research ON/OFF** switch; it is on by default.
+
+The local backend calls the public GitHub repository search API, ranks candidates using task relevance, community adoption, freshness, and license metadata, and shows the repository links and scores in the chat. When a candidate has a recognized permissive SPDX license (MIT, Apache-2.0, BSD-2-Clause/3-Clause, ISC, 0BSD, or Unlicense) and is no larger than 50 MB, Code Conductor may shallow-clone the top suitable candidate to `.code-conductor/references/<owner>__<repo>` within the selected workspace. These reference checkouts are excluded from the workspace Git status where possible. The agent receives links, license details, ranking reasons, and the local path so it can inspect relevant files and adapt patterns to the current project.
+
+**Safety rules:** reference repositories are never executed, installed, built, or initialized with submodules by the research engine. No code is copied automatically. The agent is instructed to preserve the target project's stack, review the source license, keep required attribution, and adapt only relevant patterns. Unlicensed repositories may appear as research results but are not automatically cloned. A failed or rate-limited GitHub search does not block the user's task.
+
+The research preview endpoint is `POST /research/github` with `prompt`, optional `workspace_path`, and optional `clone_best`. The task endpoint also accepts `github_research: true|false`. Anonymous GitHub API limits apply unless `GITHUB_TOKEN` or `GH_TOKEN` is set in the backend environment.
