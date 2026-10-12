@@ -3,7 +3,8 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
-from app.main import app
+from app.main import TaskRecord, _browser_verification_gate, _verify_browser_for_task, app
+from app.models.schemas import TaskCreateRequest
 
 pytestmark = pytest.mark.mocked_integration
 
@@ -152,3 +153,66 @@ async def test_task_list_includes_completed_task(auth_headers):
         assert listing.status_code == 200
         found = next(item for item in listing.json() if item["task_id"] == task_id)
         assert found["status"] == "completed"
+
+
+
+@pytest.mark.asyncio
+async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, monkeypatch):
+    import base64
+
+    async def fake_verify(payload, _):
+        assert payload.url == "http://localhost:3000"
+        return {
+            "success": True,
+            "url": payload.url,
+            "title": "Test app",
+            "checks": {"document_loaded": True, "has_title": True},
+            "error_markers": [],
+            "body_text_excerpt": "hello",
+            "screenshot": "data:image/png;base64," + base64.b64encode(b"test-png").decode("ascii"),
+        }
+
+    monkeypatch.setattr("app.main.verify_browser_page", fake_verify)
+    record = TaskRecord(
+        "task-browser-artifact-test",
+        TaskCreateRequest(
+            prompt="verify local app",
+            workspace_path=str(tmp_path),
+            browser_verify_url="http://localhost:3000",
+            github_research=False,
+        ),
+        "mock",
+    )
+    success, diagnostic = await _verify_browser_for_task(record)
+    artifact = tmp_path / ".code-conductor" / "artifacts" / record.task_id / "browser-verification.png"
+    assert success is True
+    assert artifact.read_bytes() == b"test-png"
+    assert "browser-verification.png" in diagnostic
+
+
+@pytest.mark.asyncio
+async def test_browser_verification_gate_retries_then_fails(monkeypatch, tmp_path):
+    async def fake_check(record):
+        return False, "visible error marker: Application error"
+
+    monkeypatch.setattr("app.main._verify_browser_for_task", fake_check)
+    record = TaskRecord(
+        "task-browser-retry-test",
+        TaskCreateRequest(
+            prompt="fix local app",
+            workspace_path=str(tmp_path),
+            browser_verify_url="http://localhost:3000",
+            verification_max_attempts=2,
+            github_research=False,
+        ),
+        "mock",
+    )
+    action, attempts = await _browser_verification_gate(record, 0)
+    assert action == "retry"
+    assert attempts == 1
+    assert "BROWSER VERIFICATION FAILED" in record.request.prompt
+
+    action, attempts = await _browser_verification_gate(record, attempts)
+    assert action == "failed"
+    assert attempts == 2
+    assert record.status.value == "failed"
