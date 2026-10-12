@@ -50,6 +50,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.loadAgents();
   }
 
+  public async sendPrompt(prompt: string, agentId = 'auto'): Promise<void> {
+    if (!this.view) {
+      throw new Error('Open the AI Coding Hub chat panel before sending an editor action.');
+    }
+    await this.handleSendMessage(prompt, agentId);
+  }
+
   private async handleLoadHistory(): Promise<void> {
     try {
       const records = await this.backendClient.getOrchestrationHistory(15);
