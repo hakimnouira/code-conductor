@@ -215,3 +215,21 @@ The local daemon listens on `http://127.0.0.1:8765` with `Authorization: Bearer 
 - [x] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
 - [x] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
 - [x] **Milestone 9**: Packaging, Windows integration tests, and documentation.
+
+## Agent permissions, notifications, and custom providers
+
+### Google Antigravity
+Code Conductor now uses Google's documented `agy` CLI headless interface instead of the previous undocumented IDE `agentapi` route. Install the official Antigravity CLI, sign in interactively once, and ensure `agy` is on `PATH`. If needed, set `ANTIGRAVITY_CLI` to the full executable path. See Google's [headless CLI documentation](https://www.antigravity.google/docs/cli/headless/).
+
+### Permission modes
+- **Safe**: uses Antigravity's CLI sandbox; Codex and Copilot retain their restrictive defaults.
+- **Balanced**: uses the provider's configured permission behavior; Codex uses `--full-auto` and Copilot allows shell requests.
+- **God Mode**: requires a confirmation dialog and backend confirmation flag. Antigravity uses `--dangerously-skip-permissions`, Codex uses `--dangerously-bypass-approvals-and-sandbox`, and Copilot approves tool permission requests. This can execute arbitrary commands and modify files; use only with trusted prompts and a disposable/reviewed workspace. Other providers may not implement every mode.
+
+### Notifications
+The web dashboard can notify on completion and failure/possible action-needed events. Browser notification permission is optional. Sound presets (chime, bell, alert, silent) are stored in browser local storage and can be tested in Connections & settings.
+
+### Adding API-compatible endpoints
+In **Connections & settings**, enter a provider ID, display name, base URL, model ID, and API key. Remote endpoints must use HTTPS; HTTP is allowed only for loopback endpoints such as local LM Studio-compatible servers. The API key is stored through the operating system credential store via `keyring`; provider metadata contains no key. Use **Test** to verify connectivity and **Delete** to remove the provider and stored key.
+
+This generic connector currently supports OpenAI-compatible `/chat/completions` endpoints for text responses only. It does **not** provide file editing, shell tools, or subscription sign-in. For coding-agent capabilities, use a provider's official CLI/SDK and its supported authentication flow. Do not paste passwords, cookies, OAuth refresh tokens, or subscription session data into the API-key field.
