@@ -1,4 +1,5 @@
 import time
+import subprocess
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
@@ -228,3 +229,51 @@ def test_api_orchestrator_plan_and_history(client: TestClient, tmp_path: Path):
     hist_res = client.get("/orchestrator/history", headers=headers)
     assert hist_res.status_code == 200
     assert isinstance(hist_res.json(), list)
+
+
+
+def test_parallel_orchestrator_isolates_and_integrates_worker_changes(tmp_path: Path, monkeypatch):
+    home = tmp_path / "test-home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("# Fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "initial",
+    ], check=True, capture_output=True)
+
+    orchestrator = ParallelOrchestrator(workspace_root=repo)
+    orchestrator.history_tracker = AuditHistoryTracker(tmp_path / "history.jsonl")
+    message = orchestrator._prepare_isolated_mode()
+    assert orchestrator._isolated_mode is True
+    assert "isolated worktrees" in message
+
+    worker_workspace = orchestrator._create_worker_worktree("task-test", "subtask-test")
+    (worker_workspace / "feature.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+    subtask = Subtask(
+        id="subtask-test",
+        title="Add feature",
+        prompt="Add a feature",
+        target_files=["feature.py"],
+        status=SubtaskStatus.COMPLETED,
+    )
+    orchestrator._integrate_worker(subtask)
+
+    assert subtask.status == SubtaskStatus.COMPLETED
+    assert "def answer" in subtask.diff
+    assert (repo / "feature.py").read_text(encoding="utf-8").find("return 42") >= 0
+    assert "subtask-test" not in orchestrator._worker_worktrees
+
+
+def test_parallel_orchestrator_serializes_dirty_git_workspace(tmp_path: Path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
+    (tmp_path / "local-change.txt").write_text("keep this change", encoding="utf-8")
+    orchestrator = ParallelOrchestrator(workspace_root=tmp_path)
+    message = orchestrator._prepare_isolated_mode()
+    assert orchestrator._isolated_mode is False
+    assert "uncommitted changes" in message
