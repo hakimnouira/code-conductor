@@ -15,6 +15,8 @@ type PermissionMode = "safe" | "balanced" | "god";
 type NotificationPrefs = { enabled: boolean; completion: boolean; action: boolean; sound: string };
 type Provider = { id: string; name: string; base_url: string; model: string; key_configured: boolean; key_count?: number };
 type RepoResult = { repository_url: string; repository_name: string; workspace_path: string; branch: string; cloned: boolean; analysis_safety: string };
+type ConvSummary = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; first_prompt: string };
+type ConvDetail = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; messages: { role: string; content: string; step?: number }[]; artifacts: { name: string; size: number; modified_time: string }[] };
 const API = "http://127.0.0.1:8765";
 const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making changes. Do not execute project code or install dependencies. First map the architecture, entry points, major modules, data flow, external services, configuration, tests, and build system. Identify the most important files and explain how the pieces work together. Then report risks, missing documentation, likely failure points, and the best next steps. Cite concrete file paths and symbols for every important claim. Start with a concise executive summary, then a component map, request/data flow, test strategy, and prioritized findings.";
 const label = (value: string) => value.replace(/_/g, " ");
@@ -54,6 +56,11 @@ export default function App() {
   const [providerDraft, setProviderDraft] = useState({ id: "", name: "", base_url: "https://api.example.com/v1", model: "" });
   const [providerKey, setProviderKey] = useState("");
   const [providerBusy, setProviderBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState<ConvSummary[]>([]);
+  const [selectedConv, setSelectedConv] = useState<ConvDetail | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
   const abort = useRef<AbortController | null>(null);
   const latestTaskId = useRef<string | null>(null);
   const responseRef = useRef<HTMLDivElement | null>(null);
@@ -296,6 +303,42 @@ export default function App() {
     try { await request("/providers/" + encodeURIComponent(provider.id), { method: "DELETE" }); setProviders(old => old.filter(p => p.id !== provider.id)); }
     catch (e) { setError(e instanceof Error ? e.message : "Provider delete failed"); }
   };
+  const fetchHistory = async () => {
+    setHistoryBusy(true);
+    try {
+      const list = await request("/antigravity/history").then(r => r.json()) as ConvSummary[];
+      setHistoryList(list);
+      if (list.length > 0) {
+        void openConversation(list[0].id);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load Antigravity history");
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const openConversation = async (convId: string) => {
+    setHistoryBusy(true);
+    try {
+      const detail = await request("/antigravity/history/" + encodeURIComponent(convId)).then(r => r.json()) as ConvDetail;
+      setSelectedConv(detail);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load conversation details");
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const loadIntoWorkspace = (detail: ConvDetail) => {
+    const lastUser = [...detail.messages].reverse().find(m => m.role === "user");
+    if (lastUser) {
+      setPrompt(lastUser.content);
+      setConversationPrompt(lastUser.content);
+    }
+    setNotice("Loaded prompt from Antigravity session: " + detail.title);
+    setHistoryOpen(false);
+  };
 
   const ready = agents.filter(a => a.state === "ready").length;
   const activeAgent = agents.find(a => a.id === (task?.agent_id || agent));
@@ -311,6 +354,7 @@ export default function App() {
         {!agents.length && <button className="rail-agent muted-agent" onClick={() => setSettings(true)}><span className="agent-dot"/><span>Connect an agent</span><small>Setup</small></button>}
       </div>
       <div className="rail-bottom">
+        <button className="rail-action" onClick={() => { setHistoryOpen(true); void fetchHistory(); }}><History size={16}/> Antigravity Chats</button>
         <div className="connection-pill"><span className={"connection-dot " + (health ? "ready" : "")}/><div><b>{health ? "Backend online" : "Backend offline"}</b><small>{health ? "localhost · v" + health.version : "Local API connection"}</small></div></div>
         <button className="rail-action" onClick={() => setSettings(true)}><Settings2 size={16}/> Settings</button>
       </div>
@@ -319,7 +363,7 @@ export default function App() {
     <main className="chat-shell">
       <header className="topbar">
         <div className="top-project"><div className="top-project-icon"><Code2 size={16}/></div><div><span>PROJECT</span><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "New workspace"}</b></div><ChevronDown size={14}/></div>
-        <div className="top-actions"><span className={"status-chip " + (health ? "connected" : "")}><span/> {health ? "Connected" : "Offline"}</span><button className="icon-button" title="Toggle task context" onClick={() => setContextOpen(v => !v)}><Activity size={16}/></button><button className="icon-button" title="Settings" onClick={() => setSettings(true)}><Settings2 size={16}/></button></div>
+        <div className="top-actions"><span className={"status-chip " + (health ? "connected" : "")}><span/> {health ? "Connected" : "Offline"}</span><button className="icon-button" title="Antigravity Chat History" onClick={() => { setHistoryOpen(true); void fetchHistory(); }}><History size={16}/></button><button className="icon-button" title="Toggle task context" onClick={() => setContextOpen(v => !v)}><Activity size={16}/></button><button className="icon-button" title="Settings" onClick={() => setSettings(true)}><Settings2 size={16}/></button></div>
       </header>
 
       <div className="chat-layout">
@@ -396,5 +440,93 @@ export default function App() {
       <div className="settings-section"><div className="settings-section-head"><KeyRound size={15}/> Custom OpenAI-compatible provider</div><p className="settings-help">Text-only /chat/completions endpoints. API keys are stored in the operating system credential store, not browser storage.</p><div className="provider-form"><label className="settings-field">Provider ID<input value={providerDraft.id} onChange={e => setProviderDraft({ ...providerDraft, id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })} placeholder="my-provider"/></label><label className="settings-field">Display name<input value={providerDraft.name} onChange={e => setProviderDraft({ ...providerDraft, name: e.target.value })} placeholder="My AI provider"/></label><label className="settings-field">Base URL<input value={providerDraft.base_url} onChange={e => setProviderDraft({ ...providerDraft, base_url: e.target.value })} placeholder="https://api.example.com/v1"/></label><label className="settings-field">Model ID<input value={providerDraft.model} onChange={e => setProviderDraft({ ...providerDraft, model: e.target.value })} placeholder="provider/model"/></label><label className="settings-field span-two">API key(s), one per line<textarea rows={3} autoComplete="off" value={providerKey} onChange={e => setProviderKey(e.target.value)} placeholder="API keys are sent to the local backend and stored in the OS credential store."/></label></div><div className="modal-actions"><button className="primary-button" disabled={providerBusy || !providerDraft.id || !providerDraft.name || !providerDraft.base_url || !providerDraft.model || !providerKey} onClick={() => void saveProvider()}>{providerBusy ? "Saving…" : "Save provider"}</button></div>{providers.map(p => <div className="provider-item" key={p.id}><div><b>{p.name}</b><span>{p.model} · {p.key_count || (p.key_configured ? 1 : 0)} key(s)</span></div><button className="icon-button" title="Delete provider" onClick={() => void removeProvider(p)}><Trash2 size={14}/></button></div>)}</div>
       <div className="modal-actions bottom-actions"><button className="outline-button" onClick={() => { setToken(""); sessionStorage.removeItem("cc_token"); setHealth(null); setAgents([]); }}>Clear token</button><button className="primary-button" onClick={() => { setSettings(false); sessionStorage.setItem("cc_api", base); sessionStorage.setItem("cc_token", token.trim()); void connect(); }}>Save & connect <ArrowUpRight size={14}/></button></div>
     </section></div>}
+
+    {historyOpen && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setHistoryOpen(false); }}>
+      <section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+        <div className="history-head">
+          <div>
+            <span>ANTIGRAVITY IDE BRAIN</span>
+            <h2 id="history-title">Antigravity Chat History</h2>
+            <p>Direct access to all your past conversations, transcripts, and model decisions.</p>
+          </div>
+          <button className="icon-button" onClick={() => setHistoryOpen(false)}><X size={17}/></button>
+        </div>
+        <div className="history-body">
+          <aside className="history-sidebar">
+            <div className="history-search">
+              <input
+                placeholder="Search conversations..."
+                value={historySearch}
+                onChange={e => setHistorySearch(e.target.value)}
+              />
+            </div>
+            <div className="history-list">
+              {historyList
+                .filter(c => !historySearch || c.title.toLowerCase().includes(historySearch.toLowerCase()) || c.id.toLowerCase().includes(historySearch.toLowerCase()))
+                .map(c => (
+                  <button
+                    key={c.id}
+                    className={"history-item " + (selectedConv?.id === c.id ? "active" : "")}
+                    onClick={() => void openConversation(c.id)}
+                  >
+                    <b>{c.title}</b>
+                    <div className="history-meta">
+                      <span>{c.updated_time}</span>
+                      <em>{c.message_count} msgs</em>
+                    </div>
+                  </button>
+                ))}
+              {!historyList.length && <p className="history-empty">{historyBusy ? "Loading history..." : "No Antigravity conversations found."}</p>}
+            </div>
+          </aside>
+          <main className="history-content">
+            {selectedConv ? (
+              <>
+                <div className="history-convo-head">
+                  <div>
+                    <h3>{selectedConv.title}</h3>
+                    <span>Updated {selectedConv.updated_time} · {selectedConv.messages.length} messages · ID: {selectedConv.id.slice(0, 8)}</span>
+                  </div>
+                  <div className="history-actions">
+                    <button className="outline-button" onClick={() => loadIntoWorkspace(selectedConv)}>
+                      <ArrowUpRight size={14}/> Load into workspace
+                    </button>
+                  </div>
+                </div>
+                {selectedConv.artifacts.length > 0 && (
+                  <div className="history-artifacts">
+                    <small>Artifacts in this session:</small>
+                    <div className="artifact-chips">
+                      {selectedConv.artifacts.map(a => (
+                        <span key={a.name} className="artifact-chip">
+                          {a.name} ({Math.round(a.size / 1024)} KB)
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="history-messages">
+                  {selectedConv.messages.map((m, idx) => (
+                    <div key={idx} className={"history-msg " + m.role}>
+                      <div className="history-msg-role">
+                        {m.role === "user" ? "YOU" : "ANTIGRAVITY"}
+                      </div>
+                      <div className="history-msg-body">
+                        <pre>{m.content}</pre>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="history-placeholder">
+                <History size={36}/>
+                <p>Select a conversation from the left to view the transcript and past exchanges.</p>
+              </div>
+            )}
+          </main>
+        </div>
+      </section>
+    </div>}
   </div>;
 }

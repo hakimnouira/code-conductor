@@ -57,6 +57,7 @@ from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
 from app.orchestrator.planner import PlanDecomposer
 from pathlib import Path
 from app.repository_import import router as repository_import_router
+from app.antigravity_history import router as antigravity_history_router
 
 
 
@@ -90,6 +91,7 @@ app = FastAPI(
 )
 
 app.include_router(repository_import_router)
+app.include_router(antigravity_history_router)
 
 # Strictly restrict CORS to local origin
 app.add_middleware(
