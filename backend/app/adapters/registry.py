@@ -49,6 +49,8 @@ class AgentRegistry:
         self._adapters[adapter.agent_id] = adapter
 
     def get(self, agent_id: str) -> BaseAgentAdapter | None:
+        if agent_id in ("google-antigravity", "antigravity-ide"):
+            agent_id = "antigravity"
         return self._adapters.get(agent_id)
 
     def unregister(self, agent_id: str) -> None:
@@ -103,6 +105,9 @@ class AgentRegistry:
             - Otherwise routes to the best available ready worker.
             - If NO real provider is ready: returns None (never silently disguises mock as real).
         """
+        if agent_id in ("google-antigravity", "antigravity-ide"):
+            agent_id = "antigravity"
+
         if agent_id != "auto":
             return self._adapters.get(agent_id)
 

@@ -108,7 +108,6 @@ const API = "http://127.0.0.1:8765";
 const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making changes. Do not execute project code or install dependencies. First map the architecture, entry points, major modules, data flow, external services, configuration, tests, and build system. Identify the most important files and explain how the pieces work together. Then report risks, missing documentation, likely failure points, and the best next steps. Cite concrete file paths and symbols for every important claim. Start with a concise executive summary, then a component map, request/data flow, test strategy, and prioritized findings.";
 const SAMPLE_GUIDED_PROMPT = "Build a beautiful project management dashboard";
 const label = (value: string) => value.replace(/_/g, " ");
-const complexPrompt = (value: string) => value.trim().length > 240 || /\b(refactor|architecture|implement.*(entire|full|complete)|multiple files|end.to.end|reverse.engineer|migrate|build.*platform|large task|several modules|whole project)\b/i.test(value);
 const clock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const DEFAULT_TOKEN = "5e542c42b89db11fc7a10a2e19fa6e0929fd09d8d5a4c204a5414ead6c42a6be";
 
@@ -592,12 +591,16 @@ export default function App() {
   };
 
   const dispatch = async (taskPrompt: string, selectedAgent: string, signal: AbortSignal) => {
-    const agentObj = agents.find(a => a.id === selectedAgent);
-    const agentName = agentObj?.name || selectedAgent;
+    let effectiveAgent = selectedAgent;
+    if (effectiveAgent === "google-antigravity" || effectiveAgent === "antigravity-ide") {
+      effectiveAgent = "antigravity";
+    }
+    const agentObj = agents.find(a => a.id === effectiveAgent);
+    const agentName = agentObj?.name || effectiveAgent;
     const created = await request("/tasks", {
       method: "POST",
       body: JSON.stringify({
-        prompt: taskPrompt, agent_id: selectedAgent, workspace_path: workspace || undefined,
+        prompt: taskPrompt, agent_id: effectiveAgent, workspace_path: workspace || undefined,
         stream: true, auto_approve: false, permission_mode: permissionMode,
         god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled
       })
@@ -608,20 +611,25 @@ export default function App() {
   const runTask = async () => {
     if (!prompt.trim() || busy) return;
     if (!health) { setError("Connect the local backend before running a task."); setSettings(true); return; }
-    if (permissionMode === "god" && !window.confirm("GOD MODE WARNING\n\nThis can approve tool actions and run commands broadly. Continue only with a trusted prompt and reviewed workspace.")) return;
-    setError(""); setNotice(""); setBusy(true); setEvents([]); setTask(null); setActiveStep(-1);
+    setError(""); setNotice(""); setBusy(true); setActiveStep(-1);
     const originalPrompt = prompt.trim();
-    let executionFailed = false;
+    setPrompt(""); // Clear input right away so user sees prompt has been submitted
     setConversationPrompt(originalPrompt);
+
+    // Append user message into the thread so conversation context is maintained!
+    setEvents(prev => [
+      ...prev,
+      {
+        task_id: "user-msg-" + Date.now(),
+        event_type: "log",
+        text: `💬 Turn (User):\n${originalPrompt}`,
+        timestamp: Date.now() / 1000
+      }
+    ]);
+
     const controller = new AbortController(); abort.current = controller;
     try {
       let selectedPlan = plan;
-      if (!selectedPlan && complexPrompt(originalPrompt)) {
-        selectedPlan = await makePlan(originalPrompt);
-        if (!selectedPlan) return;
-        setNotice("Large task detected. Review the plan, then choose Run plan to execute its steps.");
-        return;
-      }
       if (selectedPlan && selectedPlan.subtasks.length > 0) {
         const outputs: string[] = [];
         let planFailed = false;
@@ -643,7 +651,7 @@ export default function App() {
           ].filter(Boolean).join("\n\n");
           const result = await dispatch(stepPrompt, stepAgent, controller.signal);
           outputs.push("Step " + (i + 1) + " — " + step.title + ":\n" + result.output.slice(-3500));
-          if (result.failed) { planFailed = true; executionFailed = true; setNotice("Plan paused because step " + (i + 1) + " failed."); break; }
+          if (result.failed) { planFailed = true; setNotice("Plan paused because step " + (i + 1) + " failed."); break; }
         }
         if (!controller.signal.aborted && !planFailed) {
           setNotice("Plan execution finished. Review the response and run tests before accepting changes.");
@@ -651,11 +659,13 @@ export default function App() {
         }
       } else {
         setActiveStep(0);
-        await dispatch(originalPrompt, agent, controller.signal);
+        const effectiveAgent = (agent === "google-antigravity" || agent === "antigravity-ide") ? "antigravity" : agent;
+        await dispatch(originalPrompt, effectiveAgent, controller.signal);
       }
-      if (!executionFailed) setPrompt("");
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task failed");
+      // Restore prompt in case of error so user can re-try or edit
+      setPrompt(originalPrompt);
     } finally { setBusy(false); abort.current = null; latestTaskId.current = null; }
   };
 
@@ -771,7 +781,7 @@ export default function App() {
     const loadedTask: Task = {
       task_id: "antigravity-" + detail.id,
       status: "completed",
-      agent_id: "google-antigravity",
+      agent_id: "antigravity",
       prompt: effectivePrompt,
       workspace_path: detail.workspace_path || workspace,
     };
@@ -782,6 +792,7 @@ export default function App() {
     setPrompt("");
     setPlan(null);
     setSelectedHistoryId("antigravity-" + detail.id);
+    setAgent("antigravity");
 
     // Switch and save project workspace directory if present in Antigravity chat
     if (detail.workspace_path) {
@@ -796,7 +807,7 @@ export default function App() {
       id: "antigravity-" + detail.id,
       timestamp: (detail.updated_at ? detail.updated_at * 1000 : Date.now()),
       prompt: detail.title || effectivePrompt,
-      agentId: "google-antigravity",
+      agentId: "antigravity",
       agentName: "Antigravity IDE",
       status: "completed",
       output: effectiveOutput,
@@ -1351,8 +1362,13 @@ export default function App() {
                 <textarea
                   value={prompt}
                   onChange={e => { const val = e.target.value; setPrompt(val); if (plan && val.trim() !== plan.goal) setPlan(null); }}
-                  onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void runTask(); } }}
-                  placeholder="Ask Conductor to explore, plan, debug, or build something…"
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void runTask();
+                    }
+                  }}
+                  placeholder="Ask Conductor to explore, plan, debug, or build something… (Press Enter to send, Shift+Enter for newline)"
                   rows={3}
                 />
                 <div className="composer-bottom">
@@ -1550,7 +1566,7 @@ export default function App() {
                     <Edit3 size={11} className="dir-edit-glyph"/>
                   </button>
                   <div className="composer-hints">
-                    <span><Command size={11}/> Enter to write · Ctrl/⌘ + Enter to run</span>
+                    <span><Command size={11}/> Enter to send · Shift + Enter for newline</span>
                     <span><ShieldCheck size={12}/> Safe sandbox</span>
                   </div>
                 </div>
