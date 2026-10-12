@@ -18,6 +18,26 @@ Open http://127.0.0.1:5173 and configure the local backend URL and bearer token 
 
 ---
 
+## Run Code Conductor from anywhere (Windows)
+
+Install a user-wide `cxcode` command from the repository root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-cxcode.ps1
+```
+
+Then you can call it from any folder or terminal:
+
+- `cxcode` or `cxcode start` — start the local dashboard.
+- `cxcode stop` — stop the backend and dashboard.
+- `cxcode test` — run backend tests and compile the VS Code extension.
+- `cxcode setup` — install/repair Python, extension, and web dependencies.
+- `cxcode where` — show which checkout the command launches.
+
+The first setup can take a few minutes and requires Python 3.11+ and Node.js/npm. If Windows does not recognize `cxcode` in an already-open terminal, open a new terminal. The dashboard stays local at `http://127.0.0.1:5173`; choose the project/workspace you want to work on inside the dashboard.
+
+---
+
 ## Architecture Overview
 
 1. **VS Code Extension (TypeScript)**:
