@@ -73,7 +73,24 @@ class TaskRecord:
         self.agent_id = agent_id
         self.status = TaskStatus.PENDING
         self.created_at = time.time()
+        self.started_at: float | None = None
+        self.completed_at: float | None = None
+        self.error: str | None = None
         self.event_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def snapshot(self) -> dict:
+        """Return a stable status payload without exposing request secrets."""
+        return {
+            "task_id": self.task_id,
+            "status": self.status.value,
+            "agent_id": self.agent_id,
+            "prompt": self.request.prompt,
+            "workspace_path": self.request.workspace_path,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "error": self.error,
+        }
 
 _tasks: dict[str, TaskRecord] = {}
 _start_time = time.time()
@@ -186,7 +203,14 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
     )
 
 async def _run_task_pipeline(record: TaskRecord, adapter):
+    # Status is authoritative: a provider stream must never resurrect a cancelled
+    # task or leave a task permanently RUNNING when it closes without a terminal event.
+    if record.status == TaskStatus.CANCELLED:
+        await record.event_queue.put(None)
+        return
     record.status = TaskStatus.RUNNING
+    record.started_at = time.time()
+    terminal_event_seen = False
     try:
         if record.request.github_research:
             research_event = {
@@ -234,25 +258,65 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         async for event in adapter.stream_task(record.task_id, record.request):
             payload = event.model_dump_json()
             await record.event_queue.put(payload)
-            if event.event_type == EventType.COMPLETED:
-                record.status = TaskStatus.COMPLETED
-            elif event.event_type == EventType.CANCELLED:
-                record.status = TaskStatus.CANCELLED
-            elif event.event_type == EventType.ERROR:
-                record.status = TaskStatus.FAILED
+            if event.event_type in (EventType.COMPLETED, EventType.CANCELLED, EventType.ERROR):
+                terminal_event_seen = True
+                if record.status != TaskStatus.CANCELLED:
+                    if event.event_type == EventType.COMPLETED:
+                        record.status = TaskStatus.COMPLETED
+                    elif event.event_type == EventType.CANCELLED:
+                        record.status = TaskStatus.CANCELLED
+                    else:
+                        record.status = TaskStatus.FAILED
+                        record.error = event.text or "Agent reported an execution error."
+                record.completed_at = time.time()
+    except asyncio.CancelledError:
+        record.status = TaskStatus.CANCELLED
+        record.completed_at = time.time()
+        raise
     except Exception as e:
-        record.status = TaskStatus.FAILED
+        if record.status != TaskStatus.CANCELLED:
+            record.status = TaskStatus.FAILED
+            record.error = str(e)[:1000]
+        record.completed_at = time.time()
         err_event = {
             "task_id": record.task_id,
             "event_type": "error",
-            "text": f"Execution error: {str(e)}",
+            "text": f"Execution error: {str(e)[:1000]}",
             "timestamp": time.time(),
             "data": {},
         }
         await record.event_queue.put(json.dumps(err_event))
     finally:
+        if record.status == TaskStatus.RUNNING:
+            # A provider that ends its stream without completed/error is not success.
+            record.status = TaskStatus.FAILED
+            record.error = "Agent stream ended without a terminal event."
+            record.completed_at = time.time()
+            await record.event_queue.put(json.dumps({
+                "task_id": record.task_id,
+                "event_type": "error",
+                "text": record.error,
+                "timestamp": record.completed_at,
+                "data": {"reason": "missing_terminal_event"},
+            }))
+        elif record.completed_at is None and record.status in (
+            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
+        ):
+            record.completed_at = time.time()
         # Signal stream termination
         await record.event_queue.put(None)
+
+@app.get("/tasks/{task_id}")
+async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
+    """Return authoritative task state so clients can recover after losing an SSE stream."""
+    record = _tasks.get(task_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found.",
+        )
+    return record.snapshot()
+
 
 @app.get("/tasks/{task_id}/events")
 async def stream_task_events(
@@ -286,13 +350,25 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
             detail=f"Task '{task_id}' not found.",
         )
 
+    if record.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+        return {"task_id": task_id, "cancelled": False, "status": record.status}
+
     registry = get_agent_registry()
     adapter = registry.get(record.agent_id)
     cancelled = False
     if adapter:
         cancelled = await adapter.cancel_task(task_id)
 
+    # Cancellation is final even if the provider emits a late completion event.
     record.status = TaskStatus.CANCELLED
+    record.completed_at = time.time()
+    await record.event_queue.put(json.dumps({
+        "task_id": task_id,
+        "event_type": "cancelled",
+        "text": "Task cancelled by user.",
+        "timestamp": record.completed_at,
+        "data": {},
+    }))
     return {"task_id": task_id, "cancelled": cancelled, "status": record.status}
 
 # ---------------------------------------------------------
