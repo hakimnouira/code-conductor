@@ -78,3 +78,25 @@ async def test_openai_compat_list_models():
         model_ids = [m["id"] for m in data["data"]]
         assert "web-chatgpt" in model_ids
         assert "web-claude" in model_ids
+
+
+@pytest.mark.asyncio
+async def test_web_model_stream_task_events():
+    model = PRESET_MODELS[0]
+    adapter = WebBrowserModelAdapter(model)
+    req = TaskCreateRequest(prompt="Hello", agent_id=model.id)
+
+    with patch("app.adapters.web_model.is_cdp_connected", new_callable=AsyncMock) as mock_cdp, \
+         patch.object(adapter, "_get_or_open_tab", new_callable=AsyncMock) as mock_tab:
+        mock_cdp.return_value = False
+        # When CloakBrowser fails to launch in unit test, it yields STARTED and ERROR gracefully
+        with patch("app.adapters.web_model.launch_cloakbrowser", side_effect=RuntimeError("No browser")):
+            events = []
+            async for ev in adapter.stream_task("task-123", req):
+                events.append(ev)
+            
+            assert len(events) >= 2
+            assert events[0].event_type == EventType.STARTED
+            assert events[-1].event_type == EventType.ERROR
+            assert "task-123" == events[0].task_id
+

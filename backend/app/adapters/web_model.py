@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import urllib.parse
 from collections.abc import AsyncIterator
 from urllib.parse import urlparse
@@ -17,7 +18,7 @@ import httpx
 import websockets
 
 from app.adapters.base import BaseAgentAdapter
-from app.browser.cloak_launcher import is_cdp_connected
+from app.browser.cloak_launcher import is_cdp_connected, launch_cloakbrowser
 from app.models.schemas import (
     AgentCapabilities,
     AgentEvent,
@@ -104,7 +105,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             create_res = await client.put(f"{self.cdp_base}/json/new?{encoded_url}")
             tab_data = create_res.json()
             # Give the new tab a moment to navigate
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(2.5)
             return tab_data
 
     async def cancel_task(self, task_id: str) -> bool:
@@ -115,26 +116,52 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
         self._active_tasks[task_id] = True
 
         yield AgentEvent(
-            event_type=EventType.STEP_UPDATE,
+            task_id=task_id,
+            event_type=EventType.STARTED,
             text=f"Connecting to {self.config.name} in CloakBrowser...",
             data={"agent_id": self.agent_id, "url": self.config.url},
+            timestamp=time.time(),
         )
+
+        # Auto-launch CloakBrowser if it's not currently running
+        if not await is_cdp_connected(timeout=1.0):
+            yield AgentEvent(
+                task_id=task_id,
+                event_type=EventType.STARTED,
+                text="CloakBrowser is offline. Auto-launching browser with your session profile...",
+                timestamp=time.time(),
+            )
+            try:
+                await launch_cloakbrowser(open_url=self.config.url)
+                await asyncio.sleep(2.5)
+            except Exception as launch_exc:
+                yield AgentEvent(
+                    task_id=task_id,
+                    event_type=EventType.ERROR,
+                    text=f"Could not launch CloakBrowser: {launch_exc}. Click 'Launch CloakBrowser' in the control center.",
+                    timestamp=time.time(),
+                )
+                return
 
         try:
             tab = await self._get_or_open_tab()
         except Exception as exc:
             yield AgentEvent(
+                task_id=task_id,
                 event_type=EventType.ERROR,
-                text=f"Failed to access CloakBrowser tab: {exc}. Ensure CloakBrowser is launched.",
+                text=f"Failed to access CloakBrowser tab: {exc}. Ensure CloakBrowser is open.",
                 data={"error": str(exc)},
+                timestamp=time.time(),
             )
             return
 
         ws_url = tab.get("webSocketDebuggerUrl")
         if not ws_url:
             yield AgentEvent(
+                task_id=task_id,
                 event_type=EventType.ERROR,
                 text="Tab does not provide a WebSocket debugging interface.",
+                timestamp=time.time(),
             )
             return
 
@@ -161,7 +188,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             }}
 
             if (!inputEl) {{
-                return {{ success: false, error: "Prompt input element not found in DOM. Ensure you are on the chat page." }};
+                return {{ success: false, error: "Prompt input field not found. Please log in to your account in the CloakBrowser window." }};
             }}
 
             // 2. Insert text
@@ -194,7 +221,6 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 }}
             }}
             if (!sent) {{
-                // Fallback to Enter key event
                 inputEl.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", code: "Enter", keyCode: 13, bubbles: true }}));
                 sent = true;
             }}
@@ -205,7 +231,6 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
 
         try:
             async with websockets.connect(ws_url, close_timeout=5.0) as ws:
-                # Send injection command
                 req_id = 1
                 await ws.send(json.dumps({
                     "id": req_id,
@@ -220,16 +245,20 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 inject_res = json.loads(raw_resp).get("result", {}).get("result", {}).get("value", {})
 
                 if not inject_res.get("success"):
-                    err_msg = inject_res.get("error", "Failed to find chat input field.")
+                    err_msg = inject_res.get("error", "Chat input not found.")
                     yield AgentEvent(
+                        task_id=task_id,
                         event_type=EventType.ERROR,
-                        text=f"{self.config.name}: {err_msg} Please ensure you are logged into your account in CloakBrowser.",
+                        text=f"{self.config.name}: {err_msg} Check your CloakBrowser window to ensure you are logged in.",
+                        timestamp=time.time(),
                     )
                     return
 
                 yield AgentEvent(
-                    event_type=EventType.STEP_UPDATE,
+                    task_id=task_id,
+                    event_type=EventType.STARTED,
                     text=f"Prompt submitted to {self.config.name}. Reading response stream...",
+                    timestamp=time.time(),
                 )
 
                 # Script to extract the latest assistant response text
@@ -252,7 +281,6 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     const latest = elements[elements.length - 1];
                     const text = latest.innerText || latest.textContent || "";
                     
-                    // Check if generation is still in progress
                     const stopBtn = document.querySelector(
                         'button[aria-label*="Stop" i], button[data-testid*="stop" i], button:has(svg[aria-label*="Stop" i])'
                     );
@@ -261,17 +289,18 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 }})()
                 """
 
-                # Poll and stream tokens
                 last_seen_length = 0
                 full_text = ""
                 still_count = 0
-                max_polls = 120  # Up to 60 seconds of generation
+                max_polls = 120
 
                 for _ in range(max_polls):
                     if not self._active_tasks.get(task_id, True):
                         yield AgentEvent(
-                            event_type=EventType.STEP_UPDATE,
+                            task_id=task_id,
+                            event_type=EventType.CANCELLED,
                             text="Task cancelled by user.",
+                            timestamp=time.time(),
                         )
                         break
 
@@ -297,17 +326,17 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                         full_text = current_text
                         still_count = 0
                         yield AgentEvent(
+                            task_id=task_id,
                             event_type=EventType.TOKEN,
                             text=new_chunk,
+                            timestamp=time.time(),
                         )
                     else:
                         if full_text:
                             still_count += 1
 
-                    # Stop condition: not generating anymore and text has stabilized
                     if full_text and not is_generating and still_count >= 3:
                         break
-                    # Or stabilized for over 5 seconds
                     if full_text and still_count >= 10:
                         break
 
@@ -315,16 +344,20 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     full_text = "Prompt submitted to web session. Please check your CloakBrowser window."
 
                 yield AgentEvent(
+                    task_id=task_id,
                     event_type=EventType.COMPLETED,
                     text=full_text,
                     data={"agent_id": self.agent_id, "model": self.config.name},
+                    timestamp=time.time(),
                 )
 
         except Exception as exc:
             logger.exception("Web model execution error")
             yield AgentEvent(
+                task_id=task_id,
                 event_type=EventType.ERROR,
                 text=f"Error communicating with web session: {exc}",
+                timestamp=time.time(),
             )
         finally:
             self._active_tasks.pop(task_id, None)

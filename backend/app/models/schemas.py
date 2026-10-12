@@ -1,3 +1,4 @@
+import time
 from enum import Enum
 from typing import Any, Literal
 from pydantic import BaseModel, Field
@@ -64,6 +65,7 @@ class TaskResponse(BaseModel):
 class EventType(str, Enum):
     STARTED = "started"
     TOKEN = "token"
+    STEP_UPDATE = "step_update"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     LOG = "log"
@@ -73,11 +75,11 @@ class EventType(str, Enum):
     CANCELLED = "cancelled"
 
 class AgentEvent(BaseModel):
-    task_id: str
+    task_id: str = ""
     event_type: EventType
     data: dict[str, Any] = Field(default_factory=dict)
     text: str = ""
-    timestamp: float
+    timestamp: float = Field(default_factory=time.time)
 
 class HealthResponse(BaseModel):
     status: Literal["healthy", "degraded", "unhealthy"] = "healthy"

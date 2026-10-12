@@ -365,12 +365,37 @@ async def list_configured_web_models(
 ) -> list[dict[str, Any]]:
     """List all configured web AI models and their live CloakBrowser tab availability."""
     from app.web_models_store import load_web_models
-    from app.adapters.web_model import WebBrowserModelAdapter
+    from app.browser.cloak_launcher import is_cdp_connected
+    from app.models.schemas import AvailabilityState
+    from urllib.parse import urlparse
+    import httpx
+
     models = load_web_models()
+    connected = await is_cdp_connected(timeout=0.6)
+    active_tabs = []
+    if connected:
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                res = await client.get("http://127.0.0.1:9222/json/list")
+                active_tabs = res.json()
+        except Exception:
+            active_tabs = []
+
     results = []
     for m in models:
-        adapter = WebBrowserModelAdapter(m)
-        state, diag = await adapter.check_availability()
+        if not connected:
+            state = AvailabilityState.MISSING_CLI
+            diag = "CloakBrowser is offline. Click 'Launch CloakBrowser' to connect."
+        else:
+            domain = urlparse(m.url).netloc.lower()
+            matching = [t for t in active_tabs if domain in t.get("url", "").lower()]
+            if matching:
+                state = AvailabilityState.READY
+                diag = f"{m.name} tab is active and ready in CloakBrowser."
+            else:
+                state = AvailabilityState.READY
+                diag = f"CloakBrowser connected. Tab will open automatically on demand."
+
         results.append({
             "id": m.id,
             "name": m.name,

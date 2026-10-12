@@ -985,6 +985,7 @@ export default function App() {
                               if (event.event_type === "error") return <div className="event-card error-event" key={i}><CircleAlert size={14}/><span>{event.text}</span></div>;
                               if (event.event_type === "log") return <div className="event-card" key={i}><Activity size={14}/><span>{event.text}</span></div>;
                               if (event.event_type === "started") return <div className="event-card" key={i}><LoaderCircle size={14}/><span>{event.text || "Task started"}</span></div>;
+                              if (event.event_type === "step_update") return <div className="event-card" key={i}><Activity size={14}/><span>{event.text}</span></div>;
                               return null;
                             })}
                           </div>
