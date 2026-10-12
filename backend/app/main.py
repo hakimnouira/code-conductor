@@ -14,10 +14,13 @@ import secrets
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials
 from sse_starlette.sse import EventSourceResponse
 
 from app.adapters.registry import get_agent_registry
+from app.adapters.custom_provider import CustomProviderAdapter
+from app.core.provider_store import delete_provider, list_providers, upsert_provider
 from app.core.config import get_settings
 from app.core.security import require_bearer_token, security_scheme
 from app.models.schemas import (
@@ -345,3 +348,56 @@ async def get_orchestration_record(task_id: str, _: str = Depends(require_bearer
             detail=f"Audit record '{task_id}' not found.",
         )
     return record
+
+
+# ---------------------------------------------------------
+# User-configured OpenAI-compatible providers
+# ---------------------------------------------------------
+class ProviderConfigRequest(BaseModel):
+    id: str
+    name: str
+    base_url: str
+    model: str
+    api_key: str | None = None
+
+
+@app.get("/providers")
+async def get_providers(_: str = Depends(require_bearer_token)):
+    return list_providers()
+
+
+@app.post("/providers")
+async def save_provider(req: ProviderConfigRequest, _: str = Depends(require_bearer_token)):
+    try:
+        provider = upsert_provider(
+            provider_id=req.id, name=req.name, base_url=req.base_url,
+            model=req.model, api_key=req.api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    registry = get_agent_registry()
+    registry.register(CustomProviderAdapter(provider))
+    return {key: value for key, value in provider.items() if key != "api_key"}
+
+
+@app.post("/providers/{provider_id}/test")
+async def test_provider(provider_id: str, _: str = Depends(require_bearer_token)):
+    provider = next((p for p in list_providers() if p["id"] == provider_id), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found.")
+    adapter = CustomProviderAdapter(provider)
+    try:
+        result = await asyncio.to_thread(adapter._query, "Reply with exactly: OK")
+        return {"ok": True, "provider_id": provider_id, "model": provider["model"], "sample": result[:160]}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Provider test failed: {str(exc)[:500]}")
+
+
+@app.delete("/providers/{provider_id}")
+async def remove_provider(provider_id: str, _: str = Depends(require_bearer_token)):
+    if not delete_provider(provider_id):
+        raise HTTPException(status_code=404, detail="Provider not found.")
+    get_agent_registry().unregister("custom-" + provider_id)
+    return {"deleted": True, "provider_id": provider_id}
