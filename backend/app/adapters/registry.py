@@ -47,7 +47,8 @@ class AgentRegistry:
 
     async def get_ready_workers(self) -> list[BaseAgentAdapter]:
         """Returns all currently ready real worker adapters (excluding orchestrator and mock)."""
-        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"] + [wid for wid in self._adapters if wid.startswith("custom-")]
+        # Text-only custom endpoints are selectable explicitly, but are not auto-routed as coding agents.
+        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"]
         ready_workers: list[BaseAgentAdapter] = []
         for wid in worker_ids:
             adapter = self._adapters.get(wid)
