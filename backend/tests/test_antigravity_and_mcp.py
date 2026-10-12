@@ -39,7 +39,7 @@ async def test_antigravity_disabled_diagnostic(monkeypatch):
 @pytest.mark.asyncio
 async def test_antigravity_stream_when_disabled(monkeypatch):
     adapter = AntigravityAdapter()
-    monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
+    monkeypatch.setattr(adapter, "find_cli", lambda: None)
 
     req = TaskCreateRequest(prompt="Analyze architecture", agent_id="antigravity")
     events = []
