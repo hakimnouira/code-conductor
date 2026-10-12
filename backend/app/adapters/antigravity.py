@@ -132,7 +132,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             self._active[task_id] = proc
             assert proc.stdout is not None
             assert proc.stdin is not None
-            proc.stdin.write((json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\\n").encode("utf-8"))
+            proc.stdin.write((json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\n").encode("utf-8"))
             await proc.stdin.drain()
             proc.stdin.close()
             stderr_task = asyncio.create_task(proc.stderr.read()) if proc.stderr else None
