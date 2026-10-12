@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.security import require_bearer_token
+from app.core.config import get_settings
 from app.safety.workspace import WorkspaceValidationError, validate_workspace_path
 
 router = APIRouter(prefix="/workspace/git/worktrees", tags=["git-worktrees"])
@@ -35,7 +36,7 @@ def _git(repo: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProce
 
 def _repo_root(workspace_path: str | None) -> Path:
     try:
-        workspace = validate_workspace_path(workspace_path)
+        workspace = validate_workspace_path(workspace_path, default_root=get_settings().workspace_root)
     except WorkspaceValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid workspace path: {exc}") from exc
     result = _git(workspace, "rev-parse", "--show-toplevel")
