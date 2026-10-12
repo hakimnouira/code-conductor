@@ -722,12 +722,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .history-sidebar { width: 320px; flex: 0 0 320px; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding-right: 14px; }
 .history-search input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--input-bg); color: var(--text); font-size: 10px; outline: none; }
 .history-list { flex: 1; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 5px; padding-right: 4px; }
-.history-item { display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--soft); text-align: left; transition: all .15s; }
+.history-item { display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--soft); text-align: left; transition: all .15s; cursor: pointer; }
 .history-item:hover { background: var(--panel-2); border-color: var(--line-strong); }
 .history-item.active { background: var(--violet-bg); border-color: var(--violet); color: var(--text-heading); }
 .history-item b { font-size: 11px; font-weight: 600; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 9px; color: var(--muted); }
 .history-meta em { font-style: normal; background: var(--panel-2); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.history-quick-load-btn {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--violet-bg);
+  border: 1px solid var(--violet);
+  color: var(--violet);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.history-quick-load-btn:hover {
+  background: var(--violet);
+  color: #fff;
+}
 .history-content { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .history-convo-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .history-convo-head h3 { margin: 0; font-size: 14px; color: var(--text-heading); line-height: 1.4; }

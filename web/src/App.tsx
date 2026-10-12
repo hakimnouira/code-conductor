@@ -674,12 +674,74 @@ export default function App() {
   };
 
   const loadIntoWorkspace = (detail: ConvDetail) => {
-    const lastUser = [...detail.messages].reverse().find(m => m.role === "user");
-    if (lastUser) {
-      setPrompt(lastUser.content);
-      setConversationPrompt(lastUser.content);
+    const msgs = detail.messages || [];
+    const lastUser = [...msgs].reverse().find(m => m.role === "user");
+    const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
+
+    // Convert all transcript turns into structured chat events
+    const convEvents: Ev[] = [];
+    msgs.forEach((m, idx) => {
+      if (m.role === "user") {
+        convEvents.push({
+          task_id: "antigravity-" + detail.id,
+          event_type: "log",
+          text: `💬 Turn ${idx + 1} (User):\n${m.content}`,
+          timestamp: detail.updated_at,
+        });
+      } else {
+        convEvents.push({
+          task_id: "antigravity-" + detail.id,
+          event_type: "completed",
+          text: m.content,
+          timestamp: detail.updated_at,
+        });
+      }
+    });
+
+    if (convEvents.length === 0) {
+      convEvents.push({
+        task_id: "antigravity-" + detail.id,
+        event_type: "completed",
+        text: `Antigravity session "${detail.title}" loaded.`,
+        timestamp: detail.updated_at,
+      });
     }
-    setNotice("Loaded prompt from Antigravity session: " + detail.title);
+
+    const effectivePrompt = lastUser?.content || detail.title || "Antigravity Chat";
+    const effectiveOutput = lastAssistant?.content || (convEvents.find(e => e.event_type === "completed")?.text) || "";
+
+    const loadedTask: Task = {
+      task_id: "antigravity-" + detail.id,
+      status: "completed",
+      agent_id: "google-antigravity",
+      prompt: effectivePrompt,
+    };
+
+    setTask(loadedTask);
+    setEvents(convEvents);
+    setConversationPrompt(detail.title || effectivePrompt);
+    setPrompt("");
+    setPlan(null);
+    setSelectedHistoryId("antigravity-" + detail.id);
+
+    // Save into persistent taskHistory so it shows up in CHATS & TASKS left sidebar
+    const historyItem: TaskHistoryItem = {
+      id: "antigravity-" + detail.id,
+      timestamp: (detail.updated_at ? detail.updated_at * 1000 : Date.now()),
+      prompt: detail.title || effectivePrompt,
+      agentId: "google-antigravity",
+      agentName: "Antigravity IDE",
+      status: "completed",
+      output: effectiveOutput,
+      events: convEvents,
+    };
+
+    setTaskHistory(old => {
+      const filtered = old.filter(h => h.id !== historyItem.id);
+      return [historyItem, ...filtered];
+    });
+
+    setNotice(`Loaded Antigravity chat: "${detail.title}" (${msgs.length} messages) into workspace.`);
     setHistoryOpen(false);
   };
 
@@ -1985,13 +2047,35 @@ export default function App() {
                 </div>
                 <div className="history-list">
                   {historyList.filter(c => !historySearch || c.title.toLowerCase().includes(historySearch.toLowerCase())).map(c => (
-                    <button key={c.id} className={"history-item " + (selectedConv?.id === c.id ? "active" : "")} onClick={() => void openConversation(c.id)}>
+                    <div
+                      key={c.id}
+                      className={"history-item " + (selectedConv?.id === c.id ? "active" : "")}
+                      onClick={() => void openConversation(c.id)}
+                    >
                       <b>{c.title || "Untitled Conversation"}</b>
                       <div className="history-meta">
                         <span>{c.updated_time}</span>
-                        <em>{c.message_count} msgs</em>
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          <em>{c.message_count} msgs</em>
+                          <button
+                            type="button"
+                            className="history-quick-load-btn"
+                            title="Load directly into workspace chat"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const d = await request("/antigravity/history/" + encodeURIComponent(c.id)).then(r => r.json()) as ConvDetail;
+                                loadIntoWorkspace(d);
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : "Failed to load conversation");
+                              }
+                            }}
+                          >
+                            <ArrowUpRight size={11}/> Load
+                          </button>
+                        </div>
                       </div>
-                    </button>
+                    </div>
                   ))}
                   {historyList.length === 0 && !historyBusy && (
                     <div className="history-empty">No Antigravity conversations found in ~/.gemini/antigravity-ide/brain.</div>
@@ -2008,7 +2092,7 @@ export default function App() {
                         <span>ID: {selectedConv.id} · {selectedConv.messages.length} turns · Updated {selectedConv.updated_time}</span>
                       </div>
                       <button className="primary-button" onClick={() => loadIntoWorkspace(selectedConv)}>
-                        Load into Workspace <ArrowUpRight size={13}/>
+                        Load into Workspace ({selectedConv.messages.length} msgs) <ArrowUpRight size={13}/>
                       </button>
                     </div>
 
