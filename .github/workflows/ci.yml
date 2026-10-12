@@ -40,3 +40,40 @@ jobs:
       - name: Build dashboard
         working-directory: web
         run: npm run build
+
+
+  windows-command-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $files = @(
+            "scripts/install-cxcode.ps1",
+            "scripts/setup.ps1",
+            "scripts/test.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file : $_" }
+              exit 1
+            }
+          }
+      - name: Install and smoke-test cxcode command
+        shell: pwsh
+        run: |
+          ./scripts/install-cxcode.ps1
+          $bin = Join-Path $env:USERPROFILE "bin"
+          $env:Path = "$bin;$env:Path"
+          $actual = (cxcode where).Trim()
+          $expected = (Resolve-Path ".").Path
+          if ($actual -ne $expected) {
+            throw "cxcode points to '$actual'; expected '$expected'"
+          }
+          Write-Host "cxcode command resolves correctly to $actual"
