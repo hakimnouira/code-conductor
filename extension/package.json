@@ -1,13 +1,13 @@
 {
   "name": "unified-ai-hub",
-  "displayName": "Unified AI Coding Hub",
-  "description": "Unified AI Coding Hub for VS Code integrating Codex, Copilot, Antigravity, and Local Models",
+  "displayName": "Code Conductor",
+  "description": "Code Conductor VS Code extension for Codex, Copilot, Antigravity, Ollama, and multi-agent coding workflows",
   "version": "0.1.0",
   "publisher": "local-developer",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/local/unified-ai-hub"
+    "url": "https://github.com/hakimnouira/code-conductor.git"
   },
   "keywords": [
     "ai",
@@ -32,7 +32,10 @@
     "onView:aiHub.chatView",
     "onCommand:aiHub.openChat",
     "onCommand:aiHub.checkHealth",
-    "onCommand:aiHub.restartBackend"
+    "onCommand:aiHub.restartBackend",
+    "onCommand:aiHub.explainSelection",
+    "onCommand:aiHub.refactorSelection",
+    "onCommand:aiHub.fixDiagnostics"
   ],
   "contributes": {
     "viewsContainers": {
@@ -65,8 +68,39 @@
       {
         "command": "aiHub.restartBackend",
         "title": "AI Hub: Restart Backend Server"
+      },
+      {
+        "command": "aiHub.explainSelection",
+        "title": "AI Hub: Explain Selection"
+      },
+      {
+        "command": "aiHub.refactorSelection",
+        "title": "AI Hub: Refactor Selection"
+      },
+      {
+        "command": "aiHub.fixDiagnostics",
+        "title": "AI Hub: Fix Current File Diagnostics"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aiHub.explainSelection",
+          "when": "editorTextFocus",
+          "group": "aiHub@1"
+        },
+        {
+          "command": "aiHub.refactorSelection",
+          "when": "editorTextFocus",
+          "group": "aiHub@2"
+        },
+        {
+          "command": "aiHub.fixDiagnostics",
+          "when": "editorTextFocus",
+          "group": "aiHub@3"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
