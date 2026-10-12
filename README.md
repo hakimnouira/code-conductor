@@ -4,6 +4,20 @@ A Windows-first VS Code extension and local Python/FastAPI backend integrating m
 
 ---
 
+## Standalone Web Command Center
+
+A responsive local dashboard is available alongside the VS Code extension. It shows real backend health, agent availability, task events, Git status, an explicit orchestration plan preview, and a manual test-run action.
+
+Quick start (Windows):
+```powershell
+cd web
+npm install
+npm run dev
+```
+Open http://127.0.0.1:5173 and configure the local backend URL and bearer token in **Connections & settings**. Start the backend first using the setup instructions below. See [web/README.md](web/README.md) for details. Keep the backend bound to localhost.
+
+---
+
 ## Architecture Overview
 
 1. **VS Code Extension (TypeScript)**:
