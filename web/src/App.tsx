@@ -215,6 +215,7 @@ export default function App() {
           if (controller.signal.aborted) break;
           const step = selectedPlan.subtasks[i];
           setActiveStep(i);
+          setEvents(old => [...old, { event_type: "log", text: "Plan step " + (i + 1) + "/" + selectedPlan.subtasks.length + " · " + step.title, timestamp: Date.now() / 1000 }]);
           const stepAgent = agents.some(a => a.id === step.assigned_agent) ? step.assigned_agent : agent;
           const context = outputs.slice(-2).join("\n\n").slice(-3500);
           const stepPrompt = [
@@ -238,7 +239,7 @@ export default function App() {
         setActiveStep(0);
         await dispatch(originalPrompt, agent, controller.signal);
       }
-      setPrompt("");
+      if (task?.status !== "failed") setPrompt("");
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task failed");
     } finally { setBusy(false); abort.current = null; latestTaskId.current = null; }
@@ -261,6 +262,7 @@ export default function App() {
         body: JSON.stringify({ repository_url: repoUrl.trim(), parent_path: workspace || health.workspace || undefined, directory_name: repoFolder.trim() || undefined })
       }).then(r => r.json()) as RepoResult;
       setRepo(result); setWorkspace(result.workspace_path); setRepoOpen(false); setRepoUrl(""); setRepoFolder("");
+      setConversationPrompt("");
       setPrompt("Reverse-engineer this GitHub repository. " + REVERSE_ENGINEER_PROMPT);
       setPlan(null); setEvents([]);
       setNotice("Repository cloned into " + result.workspace_path + ". Nothing from the repository was executed. Review the workspace, then plan the analysis.");
