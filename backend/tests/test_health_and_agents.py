@@ -53,3 +53,26 @@ async def test_agent_routing_and_auto_resolution(monkeypatch):
     invalid_adapter = await registry.resolve_agent("non_existent_engine_id_xyz", "prompt")
     assert invalid_adapter is None
 
+
+@pytest.mark.asyncio
+async def test_auto_detect_provider(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Test Groq detection
+        res = await client.post(
+            "/providers/auto-detect",
+            json={"site": "console.groq.com", "is_free": True, "api_key": "gsk_test123"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        assert data["detected"]["name"] == "Groq Cloud"
+        assert data["detected"]["base_url"] == "https://api.groq.com/openai/v1"
+        assert data["detected"]["model"] == "qwen/qwen3.8-27b"
+
+        # Verify it now appears in /providers and /agents
+        p_res = await client.get("/providers", headers=auth_headers)
+        assert p_res.status_code == 200
+        p_list = p_res.json()
+        assert any(p["id"] == "groq" for p in p_list)
+

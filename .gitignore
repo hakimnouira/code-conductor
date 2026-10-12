@@ -20,3 +20,4 @@ dist/
 api_keys.json
 *.log
 *.zip
+scratch/

@@ -467,3 +467,142 @@ async def remove_provider(provider_id: str, _: str = Depends(require_bearer_toke
         raise HTTPException(status_code=404, detail="Provider not found.")
     get_agent_registry().unregister("custom-" + provider_id)
     return {"deleted": True, "provider_id": provider_id}
+
+
+class SmartProviderDetectRequest(BaseModel):
+    site: str
+    is_free: bool = True
+    api_key: str
+
+
+KNOWN_PROVIDER_RULES = [
+    {
+        "keys": ["groq", "groq.com", "console.groq.com"],
+        "id": "groq",
+        "name": "Groq Cloud",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model_free": "qwen/qwen3.8-27b",
+        "model_paid": "llama-3.3-70b-versatile",
+    },
+    {
+        "keys": ["openrouter", "openrouter.ai"],
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model_free": "meta-llama/llama-3.3-70b-instruct:free",
+        "model_paid": "anthropic/claude-3.5-sonnet",
+    },
+    {
+        "keys": ["deepseek", "deepseek.com"],
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com/v1",
+        "model_free": "deepseek-chat",
+        "model_paid": "deepseek-chat",
+    },
+    {
+        "keys": ["together", "together.ai", "together.xyz"],
+        "id": "together",
+        "name": "Together AI",
+        "base_url": "https://api.together.xyz/v1",
+        "model_free": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        "model_paid": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    },
+    {
+        "keys": ["mistral", "mistral.ai"],
+        "id": "mistral",
+        "name": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "model_free": "mistral-small-latest",
+        "model_paid": "mistral-large-latest",
+    },
+    {
+        "keys": ["cerebras", "cerebras.ai"],
+        "id": "cerebras",
+        "name": "Cerebras",
+        "base_url": "https://api.cerebras.ai/v1",
+        "model_free": "llama3.1-70b",
+        "model_paid": "llama3.1-70b",
+    },
+    {
+        "keys": ["sambanova", "sambanova.ai"],
+        "id": "sambanova",
+        "name": "SambaNova",
+        "base_url": "https://api.sambanova.ai/v1",
+        "model_free": "Meta-Llama-3.1-70B-Instruct",
+        "model_paid": "Meta-Llama-3.1-70B-Instruct",
+    },
+    {
+        "keys": ["apmix", "apmix.net"],
+        "id": "apmix",
+        "name": "APMix Gateway",
+        "base_url": "https://api.apmix.net/v1",
+        "model_free": "claude-sonnet-4-6-free",
+        "model_paid": "claude-sonnet-4-6",
+    },
+    {
+        "keys": ["perplexity", "perplexity.ai"],
+        "id": "perplexity",
+        "name": "Perplexity",
+        "base_url": "https://api.perplexity.ai",
+        "model_free": "llama-3.1-sonar-small-128k-online",
+        "model_paid": "llama-3.1-sonar-large-128k-online",
+    },
+    {
+        "keys": ["ollama", "localhost:11434"],
+        "id": "ollama",
+        "name": "Ollama Local",
+        "base_url": "http://localhost:11434/v1",
+        "model_free": "llama3.2",
+        "model_paid": "llama3.2",
+    },
+]
+
+
+@app.post("/providers/auto-detect")
+async def auto_detect_provider(req: SmartProviderDetectRequest, _: str = Depends(require_bearer_token)):
+    """Automatically figure out provider details from site name or URL, tier, and API key."""
+    site_clean = req.site.strip().lower()
+    matched = None
+    for rule in KNOWN_PROVIDER_RULES:
+        if any(k in site_clean for k in rule["keys"]):
+            matched = rule
+            break
+
+    if matched:
+        prov_id = matched["id"]
+        name = matched["name"]
+        base_url = matched["base_url"]
+        model = matched["model_free"] if req.is_free else matched["model_paid"]
+    else:
+        # Generic heuristic from URL or string
+        import re
+        domain = re.sub(r"^https?://", "", site_clean).split("/")[0].replace("www.", "")
+        short_name = domain.split(".")[0] or "custom"
+        prov_id = re.sub(r"[^a-z0-9_-]", "", short_name)[:16] or "custom-ai"
+        name = short_name.capitalize() + " AI"
+        base_url = site_clean if site_clean.startswith("http") else f"https://api.{domain}/v1"
+        model = "default-model"
+
+    try:
+        provider = upsert_provider(
+            provider_id=prov_id,
+            name=name,
+            base_url=base_url,
+            model=model,
+            api_key=req.api_key.strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to configure provider: {exc}")
+
+    get_agent_registry().register(CustomProviderAdapter(provider))
+    return {
+        "success": True,
+        "provider": provider,
+        "detected": {
+            "name": name,
+            "base_url": base_url,
+            "model": model,
+            "tier": "free" if req.is_free else "paid"
+        }
+    }

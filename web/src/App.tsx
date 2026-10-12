@@ -107,6 +107,16 @@ export default function App() {
   const [providerKey, setProviderKey] = useState("");
   const [providerBusy, setProviderBusy] = useState(false);
 
+  // Custom Animated Select Dropdown & Smart Add Provider
+  const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
+  const [permissionDropdownOpen, setPermissionDropdownOpen] = useState(false);
+  const [smartAddOpen, setSmartAddOpen] = useState(false);
+  const [smartSite, setSmartSite] = useState("");
+  const [smartIsFree, setSmartIsFree] = useState(true);
+  const [smartApiKey, setSmartApiKey] = useState("");
+  const [smartBusy, setSmartBusy] = useState(false);
+  const [smartShowKey, setSmartShowKey] = useState(false);
+
   // Antigravity History
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyList, setHistoryList] = useState<ConvSummary[]>([]);
@@ -132,6 +142,19 @@ export default function App() {
   const abort = useRef<AbortController | null>(null);
   const latestTaskId = useRef<string | null>(null);
   const responseRef = useRef<HTMLDivElement | null>(null);
+
+  // Close dropdowns on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".custom-dropdown-container")) {
+        setAgentDropdownOpen(false);
+        setPermissionDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Synchronize theme to document attribute
   useEffect(() => {
@@ -561,8 +584,57 @@ export default function App() {
     setHistoryOpen(false);
   };
 
+  const saveSmartProvider = async () => {
+    if (!smartSite.trim() || !smartApiKey.trim() || smartBusy) return;
+    setSmartBusy(true); setError(""); setNotice("");
+    try {
+      const res = await request("/providers/auto-detect", {
+        method: "POST",
+        body: JSON.stringify({
+          site: smartSite.trim(),
+          is_free: smartIsFree,
+          api_key: smartApiKey.trim(),
+        }),
+      });
+      const data = await res.json();
+      setNotice(`✨ Connected ${data.detected.name}! Configured model: ${data.detected.model} (${data.detected.tier.toUpperCase()})`);
+
+      const [agentsRes, providersRes] = await Promise.all([
+        request("/agents").then(r => r.json()),
+        request("/providers").then(r => r.json()).catch(() => []),
+      ]);
+      setAgents(agentsRes);
+      setProviders(providersRes);
+
+      // Automatically select newly registered agent
+      const newAgentId = "custom-" + data.provider.id;
+      setAgent(newAgentId);
+
+      setSmartSite("");
+      setSmartApiKey("");
+      setSmartAddOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Provider detection failed");
+    } finally {
+      setSmartBusy(false);
+    }
+  };
+
+  const getAgentBadge = (id: string) => {
+    const lower = id.toLowerCase();
+    if (lower === "auto") return { text: "Auto", className: "tag-auto" };
+    if (lower.includes("groq") || lower.includes("fast")) return { text: "Fast", className: "tag-fast" };
+    if (lower.includes("apmix") || lower.includes("free") || lower.includes("tokenharbor")) return { text: "Free", className: "tag-free" };
+    if (lower.includes("codecraft") || lower.includes("openai") || lower.includes("paid")) return { text: "Pro", className: "tag-paid" };
+    if (lower.includes("local") || lower.includes("ollama")) return { text: "Local", className: "tag-local" };
+    if (lower.includes("router")) return { text: "Dual", className: "tag-auto" };
+    if (lower.includes("mock")) return { text: "Test", className: "" };
+    return { text: "Ready", className: "" };
+  };
+
   const ready = agents.filter(a => a.state === "ready").length;
   const activeAgent = agents.find(a => a.id === (task?.agent_id || agent));
+  const activeAgentDisplay = agent === "auto" ? "Auto agent" : (agents.find(a => a.id === agent)?.name || agent);
   const runningLabel = activeStep >= 0 && plan ? "Step " + (activeStep + 1) + " of " + plan.subtasks.length : "Working";
 
   return (
@@ -619,6 +691,9 @@ export default function App() {
               <small>{health ? "localhost · v" + health.version : "Local API connection"}</small>
             </div>
           </div>
+          <button className="rail-action highlight-action" onClick={() => setSmartAddOpen(true)}>
+            <KeyRound size={16}/> + Add AI Provider
+          </button>
           <button className="rail-action" onClick={() => setSettings(true)}><Settings2 size={16}/> Settings</button>
         </div>
       </aside>
@@ -631,6 +706,9 @@ export default function App() {
             <ChevronDown size={14}/>
           </div>
           <div className="top-actions">
+            <button className="status-chip add-api-chip" title="Connect any AI Provider automatically" onClick={() => setSmartAddOpen(true)}>
+              <KeyRound size={13}/> + Add API
+            </button>
             <button className="icon-button" title={"Toggle theme (current: " + theme + ")"} onClick={toggleTheme}>
               {theme === "dark" ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
@@ -795,8 +873,179 @@ export default function App() {
                 />
                 <div className="composer-bottom">
                   <div className="composer-tools">
-                    <label className="select-pill"><Bot size={14}/><select value={agent} onChange={e => setAgent(e.target.value)}><option value="auto">Auto agent</option>{agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select><ChevronDown size={12}/></label>
-                    <label className={"select-pill permission-pill " + (permissionMode === "god" ? "danger-mode" : "")}><ShieldCheck size={14}/><select aria-label="Permission mode" value={permissionMode} onChange={e => setMode(e.target.value as PermissionMode)}><option value="safe">Safe</option><option value="balanced">Balanced</option><option value="god">God mode</option></select><ChevronDown size={12}/></label>
+                    {/* Custom Animated Agent Dropdown */}
+                    <div className="custom-dropdown-container">
+                      <button
+                        type="button"
+                        className={"select-pill custom-select-trigger " + (agentDropdownOpen ? "active" : "")}
+                        onClick={() => {
+                          setAgentDropdownOpen(v => !v);
+                          setPermissionDropdownOpen(false);
+                        }}
+                        aria-label="Select AI agent"
+                      >
+                        <Bot size={14} className="trigger-icon" />
+                        <span>{activeAgentDisplay}</span>
+                        <ChevronDown size={12} className={"chevron-icon " + (agentDropdownOpen ? "rotate-180" : "")} />
+                      </button>
+
+                      {agentDropdownOpen && (
+                        <div className="custom-dropdown-popover agent-popover">
+                          <div className="custom-dropdown-head">
+                            <div className="dropdown-head-title">
+                              <Bot size={13} />
+                              <span>Select AI Agent</span>
+                            </div>
+                            <span className="dropdown-count">{agents.length + 1} available</span>
+                          </div>
+
+                          <div className="custom-dropdown-list">
+                            {/* Auto Agent Option */}
+                            <button
+                              type="button"
+                              className={"custom-dropdown-item " + (agent === "auto" ? "active" : "")}
+                              onClick={() => { setAgent("auto"); setAgentDropdownOpen(false); }}
+                            >
+                              <div className="item-left">
+                                <span className="item-dot ready" />
+                                <div className="item-text">
+                                  <span className="item-title">Auto agent</span>
+                                  <span className="item-sub">Intelligent routing across ready models</span>
+                                </div>
+                              </div>
+                              <div className="item-right">
+                                <span className="badge-tag tag-auto">Auto</span>
+                                {agent === "auto" && <Check size={13} className="item-check" />}
+                              </div>
+                            </button>
+
+                            {/* Discovered & Registered Agents */}
+                            {agents.map(a => {
+                              const b = getAgentBadge(a.id);
+                              const isSelected = agent === a.id;
+                              return (
+                                <button
+                                  type="button"
+                                  key={a.id}
+                                  className={"custom-dropdown-item " + (isSelected ? "active" : "")}
+                                  onClick={() => { setAgent(a.id); setAgentDropdownOpen(false); }}
+                                >
+                                  <div className="item-left">
+                                    <span className={"item-dot " + (a.state === "ready" ? "ready" : "standby")} />
+                                    <div className="item-text">
+                                      <span className="item-title">{a.name}</span>
+                                      <span className="item-sub">{a.description || a.id}</span>
+                                    </div>
+                                  </div>
+                                  <div className="item-right">
+                                    {b.text && <span className={"badge-tag " + b.className}>{b.text}</span>}
+                                    {isSelected && <Check size={13} className="item-check" />}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="custom-dropdown-footer">
+                            <button
+                              type="button"
+                              className="dropdown-add-btn"
+                              onClick={() => { setAgentDropdownOpen(false); setSmartAddOpen(true); }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <Sparkles size={13} />
+                                <span>+ Add API / Provider</span>
+                              </div>
+                              <span className="tag-pill">AI Auto-Detect</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Custom Animated Permission Mode Dropdown */}
+                    <div className="custom-dropdown-container">
+                      <button
+                        type="button"
+                        className={"select-pill permission-pill custom-select-trigger " + (permissionMode === "god" ? "danger-mode " : "") + (permissionDropdownOpen ? "active" : "")}
+                        onClick={() => {
+                          setPermissionDropdownOpen(v => !v);
+                          setAgentDropdownOpen(false);
+                        }}
+                        aria-label="Select permission mode"
+                      >
+                        {permissionMode === "god" ? <ShieldAlert size={14} className="trigger-icon" /> : <ShieldCheck size={14} className="trigger-icon" />}
+                        <span>{permissionMode === "safe" ? "Safe" : permissionMode === "balanced" ? "Balanced" : "God mode"}</span>
+                        <ChevronDown size={12} className={"chevron-icon " + (permissionDropdownOpen ? "rotate-180" : "")} />
+                      </button>
+
+                      {permissionDropdownOpen && (
+                        <div className="custom-dropdown-popover permission-popover">
+                          <div className="custom-dropdown-head">
+                            <div className="dropdown-head-title">
+                              <ShieldCheck size={13} />
+                              <span>Permission Guard</span>
+                            </div>
+                          </div>
+
+                          <div className="custom-dropdown-list">
+                            <button
+                              type="button"
+                              className={"custom-dropdown-item " + (permissionMode === "safe" ? "active" : "")}
+                              onClick={() => { setMode("safe"); setPermissionDropdownOpen(false); }}
+                            >
+                              <div className="item-left">
+                                <span className="item-dot ready" />
+                                <div className="item-text">
+                                  <span className="item-title">Safe mode</span>
+                                  <span className="item-sub">Default sandbox & Git guardrails</span>
+                                </div>
+                              </div>
+                              <div className="item-right">
+                                <span className="badge-tag tag-free">Recommended</span>
+                                {permissionMode === "safe" && <Check size={13} className="item-check" />}
+                              </div>
+                            </button>
+
+                            <button
+                              type="button"
+                              className={"custom-dropdown-item " + (permissionMode === "balanced" ? "active" : "")}
+                              onClick={() => { setMode("balanced"); setPermissionDropdownOpen(false); }}
+                            >
+                              <div className="item-left">
+                                <span className="item-dot standby" />
+                                <div className="item-text">
+                                  <span className="item-title">Balanced</span>
+                                  <span className="item-sub">Interactive prompt before shell writes</span>
+                                </div>
+                              </div>
+                              <div className="item-right">
+                                <span className="badge-tag">Standard</span>
+                                {permissionMode === "balanced" && <Check size={13} className="item-check" />}
+                              </div>
+                            </button>
+
+                            <button
+                              type="button"
+                              className={"custom-dropdown-item " + (permissionMode === "god" ? "active" : "")}
+                              onClick={() => { setMode("god"); setPermissionDropdownOpen(false); }}
+                            >
+                              <div className="item-left">
+                                <span className="item-dot" style={{ background: "var(--red)" }} />
+                                <div className="item-text">
+                                  <span className="item-title">God mode</span>
+                                  <span className="item-sub">Autonomous execution without pauses</span>
+                                </div>
+                              </div>
+                              <div className="item-right">
+                                <span className="badge-tag tag-danger">High Risk</span>
+                                {permissionMode === "god" && <Check size={13} className="item-check" />}
+                              </div>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <button className="tool-pill active" title="Run 4-Phase Guided Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={14}/> Guided Flow</button>
                     <button className={"tool-pill " + (githubResearchEnabled ? "research-enabled" : "")} title="Automatically research public GitHub projects" onClick={() => { const next = !githubResearchEnabled; setGithubResearchEnabled(next); localStorage.setItem("cc_github_research", String(next)); }}><Github size={14}/> Research {githubResearchEnabled ? "ON" : "OFF"}</button>
                     <button className="tool-pill" onClick={() => void makePlan()} disabled={!prompt.trim() || planning}><Workflow size={14}/>{planning ? "Planning…" : "Plan task"}</button>
@@ -1146,6 +1395,138 @@ export default function App() {
                   </div>
                 )}
               </section>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Smart Add API Provider Modal */}
+      {smartAddOpen && (
+        <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setSmartAddOpen(false); }}>
+          <section className="smart-add-modal" role="dialog" aria-modal="true" aria-labelledby="smart-add-title">
+            <div className="smart-add-head">
+              <div className="smart-add-title-wrap">
+                <div className="smart-add-icon">
+                  <Sparkles size={20} />
+                </div>
+                <div>
+                  <h3 id="smart-add-title">Add AI Provider</h3>
+                  <p>Just enter where you got your key from and if it's free or paid.<br />The AI configures the endpoint, models, and connection automatically!</p>
+                </div>
+              </div>
+              <button className="icon-button" onClick={() => setSmartAddOpen(false)}><X size={17}/></button>
+            </div>
+
+            <div className="smart-add-body">
+              {/* Question 1: Where did you get it from? */}
+              <label className="smart-field-label">
+                <div>Where did you get it from? (Site name or URL)<span className="req">*</span></div>
+                <input
+                  type="text"
+                  className="smart-input"
+                  placeholder="e.g. Groq, OpenRouter, DeepSeek, Together, Mistral, APMix, or website URL"
+                  value={smartSite}
+                  onChange={e => setSmartSite(e.target.value)}
+                  autoFocus
+                />
+                <div className="quick-site-pills">
+                  {["Groq", "OpenRouter", "DeepSeek", "Together AI", "Mistral", "APMix", "Cerebras", "Ollama"].map(chip => (
+                    <button
+                      key={chip}
+                      type="button"
+                      className={"quick-site-pill " + (smartSite.toLowerCase() === chip.toLowerCase() ? "selected" : "")}
+                      onClick={() => setSmartSite(chip)}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </label>
+
+              {/* Question 2: Is it Free or Paid? */}
+              <div className="smart-field-label">
+                <div>Is it a Free or Paid Tier?<span className="req">*</span></div>
+                <div className="tier-toggle-grid">
+                  <div
+                    className={"tier-card " + (smartIsFree ? "selected" : "")}
+                    onClick={() => setSmartIsFree(true)}
+                  >
+                    <div className="tier-card-head">
+                      <span className="tier-card-title">🟢 Free Tier</span>
+                      <span className="badge-tag tag-free">Zero Cost</span>
+                    </div>
+                    <p>AI will select fast free models (e.g. Qwen 27B, Llama 3.3 Free, Claude Sonnet Free).</p>
+                  </div>
+
+                  <div
+                    className={"tier-card " + (!smartIsFree ? "selected" : "")}
+                    onClick={() => setSmartIsFree(false)}
+                  >
+                    <div className="tier-card-head">
+                      <span className="tier-card-title">🟣 Paid / Pro Tier</span>
+                      <span className="badge-tag tag-paid">Flagship</span>
+                    </div>
+                    <p>AI will select maximum intelligence flagship models (e.g. Llama 70B, Claude 3.5 Sonnet, Mistral Large).</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Question 3: API Key */}
+              <label className="smart-field-label">
+                <div>API Key<span className="req">*</span></div>
+                <div className="smart-key-wrap">
+                  <input
+                    type={smartShowKey ? "text" : "password"}
+                    className="smart-input"
+                    placeholder="Paste your API key here (e.g. gsk_..., sk-or-..., or bearer token)"
+                    value={smartApiKey}
+                    onChange={e => setSmartApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    className="smart-key-toggle"
+                    onClick={() => setSmartShowKey(v => !v)}
+                    title={smartShowKey ? "Hide key" : "Show key"}
+                  >
+                    <Eye size={15} />
+                  </button>
+                </div>
+              </label>
+
+              <div className="smart-info-note">
+                <ShieldCheck size={15} />
+                <span>Encrypted & stored securely in your OS credential store (Keyring). Never transmitted to any 3rd-party.</span>
+              </div>
+            </div>
+
+            <div className="smart-actions">
+              <button
+                type="button"
+                className="outline-button"
+                onClick={() => { setSmartAddOpen(false); setSettings(true); }}
+                style={{ fontSize: "11px" }}
+              >
+                Advanced Setup
+              </button>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="subtle-button"
+                  onClick={() => setSmartAddOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={smartBusy || !smartSite.trim() || !smartApiKey.trim()}
+                  onClick={() => void saveSmartProvider()}
+                >
+                  {smartBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>}
+                  <span>{smartBusy ? "Configuring & Connecting…" : "✨ Let AI Configure & Connect"}</span>
+                </button>
+              </div>
             </div>
           </section>
         </div>
