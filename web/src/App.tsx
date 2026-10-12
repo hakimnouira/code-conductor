@@ -128,6 +128,8 @@ export default function App() {
   const [conversationPrompt, setConversationPrompt] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
+  const [artifactUrls, setArtifactUrls] = useState<Record<string, string>>({});
+  const artifactRequests = useRef<Set<string>>(new Set());
   const [plan, setPlan] = useState<Plan | null>(null);
   const [activeStep, setActiveStep] = useState(-1);
   const [busy, setBusy] = useState(false);
@@ -308,6 +310,29 @@ export default function App() {
     }
     return response;
   }, [base, token]);
+
+  const loadBrowserScreenshot = async (taskId: string) => {
+    if (!taskId || artifactRequests.current.has(taskId) || artifactUrls[taskId]) return;
+    artifactRequests.current.add(taskId);
+    try {
+      const response = await request("/tasks/" + encodeURIComponent(taskId) + "/artifacts/browser-verification.png");
+      const objectUrl = URL.createObjectURL(await response.blob());
+      setArtifactUrls(old => {
+        if (old[taskId]) URL.revokeObjectURL(old[taskId]);
+        return { ...old, [taskId]: objectUrl };
+      });
+    } catch {
+      artifactRequests.current.delete(taskId);
+    }
+  };
+
+  useEffect(() => {
+    for (const event of events) {
+      if (event.event_type !== "log" || event.data?.phase !== "browser_verification") continue;
+      const result = event.data.result as { screenshot_artifact?: string } | undefined;
+      if (result?.screenshot_artifact && event.task_id) void loadBrowserScreenshot(event.task_id);
+    }
+  }, [events, base, token]);
 
   const playSound = (sound: string) => {
     if (sound === "none") return;
@@ -1532,6 +1557,15 @@ export default function App() {
                               if (event.event_type === "tool_call") return <div className="event-card tool-event" key={i}><Terminal size={14}/><span>{event.text || "Agent requested a tool"}</span></div>;
                               if (event.event_type === "tool_result") return <div className="event-card" key={i}><CheckCircle2 size={14}/><span>{event.text}</span></div>;
                               if (event.event_type === "error") return <div className="event-card error-event" key={i}><CircleAlert size={14}/><span>{event.text}</span></div>;
+                              if (event.event_type === "log" && event.data?.phase === "browser_verification") {
+                                const screenshotUrl = event.task_id ? artifactUrls[event.task_id] : undefined;
+                                return (
+                                  <div className="event-card" key={i} style={{ flexWrap: "wrap" }}>
+                                    <Activity size={14}/><span>{event.text}</span>
+                                    {screenshotUrl && <img src={screenshotUrl} alt="Browser verification screenshot" style={{ width: "100%", maxWidth: "640px", borderRadius: "8px", marginTop: "8px" }} />}
+                                  </div>
+                                );
+                              }
                               if (event.event_type === "log") return <div className="event-card" key={i}><Activity size={14}/><span>{event.text}</span></div>;
                               if (event.event_type === "started") return <div className="event-card" key={i}><LoaderCircle size={14}/><span>{event.text || "Task started"}</span></div>;
                               if (event.event_type === "step_update") return <div className="event-card" key={i}><Activity size={14}/><span>{event.text}</span></div>;
