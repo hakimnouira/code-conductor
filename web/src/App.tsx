@@ -764,7 +764,7 @@ export default function App() {
             prompt: row.prompt || prior?.prompt || "Task",
             agentId: row.agent_id,
             agentName: agents.find(a => a.id === row.agent_id)?.name || prior?.agentName || row.agent_id,
-            status: prior?.status === "running" && status !== "running" ? status : (prior?.status || status),
+            status,
             output: prior?.output || "",
             events: prior?.events || [],
           });
