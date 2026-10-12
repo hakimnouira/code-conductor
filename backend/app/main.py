@@ -481,7 +481,7 @@ def _project_rules_path(workspace_root: Path) -> Path:
     resolved = rules_path.resolve()
     if not resolved.is_relative_to(root):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project rules path escapes workspace.")
-    return resolved
+    return rules_path
 
 
 def _load_project_rules(workspace_root: str | Path) -> str:
