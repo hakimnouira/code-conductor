@@ -24,16 +24,16 @@ async def test_antigravity_metadata():
 async def test_antigravity_availability():
     adapter = AntigravityAdapter()
     state, diag = await adapter.check_availability()
-    assert state in (AvailabilityState.READY, AvailabilityState.DISABLED)
+    assert state in (AvailabilityState.READY, AvailabilityState.DISABLED, AvailabilityState.MISSING_CLI, AvailabilityState.ERROR)
     assert len(diag) > 0
 
 @pytest.mark.asyncio
 async def test_antigravity_disabled_diagnostic(monkeypatch):
     adapter = AntigravityAdapter()
-    monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
+    monkeypatch.setattr(adapter, "find_cli", lambda: None)
 
     state, diag = await adapter.check_availability()
-    assert state == AvailabilityState.DISABLED
+    assert state == AvailabilityState.MISSING_CLI
     assert "not found" in diag.lower()
 
 @pytest.mark.asyncio
@@ -48,7 +48,7 @@ async def test_antigravity_stream_when_disabled(monkeypatch):
 
     assert len(events) >= 1
     assert events[0].event_type == EventType.ERROR
-    assert "unavailable" in events[0].text.lower()
+    assert "not found" in events[0].text.lower()
 
 
 @pytest.mark.asyncio
@@ -131,32 +131,33 @@ async def test_mcp_client_tool_discovery_and_call():
 @pytest.mark.asyncio
 async def test_antigravity_cancellation(monkeypatch):
     adapter = AntigravityAdapter()
-    async def mock_check():
-        return (AvailabilityState.READY, "Mock ready")
-    monkeypatch.setattr(adapter, "check_availability", mock_check)
-
-
-
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # Create a mock batch script that sleeps
-        mock_bat = Path(tmp_dir) / "mock_agentapi.bat"
-        mock_bat.write_text("@echo off\r\nping -n 5 127.0.0.1 >nul\r\n", encoding="utf-8")
-        monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: str(mock_bat))
-
+        fake_cli = Path(tmp_dir) / "agy"
+        fake_cli.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys, time\n"
+            "if '--version' in sys.argv:\n"
+            "    print('agy test 1.0')\n"
+            "    raise SystemExit(0)\n"
+            "message = json.loads(sys.stdin.readline())\n"
+            "print(json.dumps({'event':'init','init':{'permission_mode':'request-review'}}), flush=True)\n"
+            "time.sleep(3)\n"
+            "print(json.dumps({'event':'result','result':{'status':'SUCCESS','response':'done'}}), flush=True)\n",
+            encoding="utf-8",
+        )
+        fake_cli.chmod(0o755)
+        monkeypatch.setattr(adapter, "find_cli", lambda: str(fake_cli))
         req = TaskCreateRequest(prompt="Long analysis", agent_id="antigravity", workspace_path=tmp_dir)
-
         events = []
+
         async def run_and_collect():
             async for ev in adapter.stream_task("ag-cancel-task", req):
                 events.append(ev)
                 if ev.event_type == EventType.STARTED:
-                    # Cancel immediately after start
                     await asyncio.sleep(0.05)
-                    await adapter.cancel_task("ag-cancel-task")
+                    assert await adapter.cancel_task("ag-cancel-task") is True
 
         await asyncio.wait_for(run_and_collect(), timeout=4.0)
-
-        event_types = [e.event_type for e in events]
+        event_types = [event.event_type for event in events]
         assert EventType.STARTED in event_types
         assert EventType.CANCELLED in event_types
-
