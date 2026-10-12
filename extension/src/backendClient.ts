@@ -1,4 +1,7 @@
+import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 
 export interface AgentInfo {
   id: string;
@@ -44,8 +47,20 @@ export class BackendClient {
     return this.port;
   }
 
-  private request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private reloadToken(): void {
+    try {
+      const tokenFile = path.join(os.homedir(), '.aihub_token');
+      if (fs.existsSync(tokenFile)) {
+        this.token = fs.readFileSync(tokenFile, 'utf8').trim();
+      }
+    } catch (_) {}
+  }
+
+  private request<T>(method: string, reqPath: string, body?: unknown, isRetry = false): Promise<T> {
     return new Promise((resolve, reject) => {
+      if (!this.token) {
+        this.reloadToken();
+      }
       const dataString = body ? JSON.stringify(body) : undefined;
       const headers: http.OutgoingHttpHeaders = {
         'Authorization': `Bearer ${this.token}`,
@@ -59,7 +74,7 @@ export class BackendClient {
         {
           host: this.host,
           port: this.port,
-          path,
+          path: reqPath,
           method,
           headers,
           timeout: 10000,
@@ -77,12 +92,16 @@ export class BackendClient {
               } catch (e) {
                 reject(new Error(`Failed to parse response: ${responseBody}`));
               }
+            } else if (res.statusCode === 401 && !isRetry) {
+              this.reloadToken();
+              this.request<T>(method, reqPath, body, true).then(resolve).catch(reject);
             } else {
               reject(new Error(`HTTP ${res.statusCode}: ${responseBody}`));
             }
           });
         }
       );
+
 
       req.on('error', (err) => reject(err));
       req.on('timeout', () => {
@@ -120,8 +139,12 @@ export class BackendClient {
     onError: (err: Error) => void
   ): { cancel: () => void } {
     let aborted = false;
+    if (!this.token) {
+      this.reloadToken();
+    }
 
     const req = http.request(
+
       {
         host: this.host,
         port: this.port,

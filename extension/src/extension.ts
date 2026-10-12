@@ -16,12 +16,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider)
   );
 
+  // Create a status bar item for instant one-click access
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = 'aiHub.openChat';
+  statusBarItem.text = '$(robot) AI Hub';
+  statusBarItem.tooltip = 'Open Unified AI Coding Hub Chat Panel';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
   // Register commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('aiHub.openChat', () => {
-      vscode.commands.executeCommand('workbench.view.extension.ai-coding-hub');
+    vscode.commands.registerCommand('aiHub.openChat', async () => {
+      try {
+        await vscode.commands.executeCommand('workbench.view.extension.ai-coding-hub');
+      } catch (_) {}
+      try {
+        await vscode.commands.executeCommand('aiHub.chatView.focus');
+      } catch (_) {}
     })
   );
+
 
   context.subscriptions.push(
     vscode.commands.registerCommand('aiHub.checkHealth', async () => {

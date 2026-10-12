@@ -3,6 +3,7 @@ from app.adapters.base import BaseAgentAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.copilot import CopilotAdapter
 from app.adapters.echo import EchoMockAdapter
+from app.adapters.multimodel import MultiModelAdapter
 from app.adapters.ollama import OllamaAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
 
@@ -10,11 +11,14 @@ class AgentRegistry:
     def __init__(self):
         self._adapters: dict[str, BaseAgentAdapter] = {}
         # Register adapters
-        self.register(EchoMockAdapter())
         self.register(CodexAdapter())
+        self.register(MultiModelAdapter("auto"))
+        self.register(MultiModelAdapter("groq"))
         self.register(CopilotAdapter())
         self.register(AntigravityAdapter())
         self.register(OllamaAdapter())
+        self.register(EchoMockAdapter())
+
 
     def register(self, adapter: BaseAgentAdapter) -> None:
         self._adapters[adapter.agent_id] = adapter

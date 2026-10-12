@@ -47,15 +47,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.loadAgents();
   }
 
-  private async loadAgents(): Promise<void> {
+  private async loadAgents(retries = 3): Promise<void> {
     try {
       const agents = await this.backendClient.getAgents();
       this.postMessage({ type: 'setAgents', agents });
     } catch (err: unknown) {
+      if (retries > 0) {
+        await new Promise((r) => setTimeout(r, 1000));
+        return this.loadAgents(retries - 1);
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.postMessage({ type: 'setError', text: `Failed to load agents: ${message}` });
     }
   }
+
 
   private async handleSendMessage(prompt: string, agentId: string): Promise<void> {
     if (!prompt.trim()) {

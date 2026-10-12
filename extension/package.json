@@ -13,7 +13,11 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onView:aiHub.chatView"
+    "onStartupFinished",
+    "onView:aiHub.chatView",
+    "onCommand:aiHub.openChat",
+    "onCommand:aiHub.checkHealth",
+    "onCommand:aiHub.restartBackend"
   ],
   "contributes": {
     "viewsContainers": {

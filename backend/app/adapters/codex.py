@@ -44,7 +44,7 @@ class CodexAdapter(BaseAgentAdapter):
         if which_path:
             return which_path
 
-        # 2. Check standard Windows locations
+        # 2. Check standard Windows locations and VS Code extensions
         user_profile = os.environ.get("USERPROFILE", "")
         candidates = [
             os.path.join(user_profile, ".local", "bin", "codex.exe"),
@@ -52,11 +52,19 @@ class CodexAdapter(BaseAgentAdapter):
             os.path.join(user_profile, "AppData", "Local", "Programs", "codex", "codex.exe"),
             r"C:\Program Files\OpenAI\Codex\codex.exe",
         ]
+        # Search VS Code extensions folder for bundled official codex.exe
+        vscode_ext_pattern = os.path.join(
+            user_profile, ".vscode", "extensions", "openai.chatgpt*", "bin", "windows-x86_64", "codex.exe"
+        )
+        import glob
+        candidates.extend(glob.glob(vscode_ext_pattern))
+
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
 
         return None
+
 
     def has_chatgpt_auth(self) -> bool:
         """Check if ~/.codex contains an existing authenticated session."""

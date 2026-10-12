@@ -29,6 +29,7 @@ Write-Host "Loading extension: $WorkspaceRoot\extension" -ForegroundColor Yellow
 
 $Arguments = @(
     "--extensionDevelopmentPath=$WorkspaceRoot\extension",
+    "--new-window",
     "$WorkspaceRoot"
 )
 

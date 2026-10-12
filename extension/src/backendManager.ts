@@ -1,5 +1,7 @@
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BackendClient } from './backendClient';
@@ -24,22 +26,61 @@ export class BackendManager {
   }
 
   public async start(): Promise<void> {
-    // 1. Generate or retrieve session bearer token
-    let token = await this.context.secrets.get(TOKEN_SECRET_KEY);
+    // 1. Synchronize token with ~/.aihub_token
+    const tokenFile = path.join(os.homedir(), '.aihub_token');
+    let token = '';
+    if (fs.existsSync(tokenFile)) {
+      try {
+        token = fs.readFileSync(tokenFile, 'utf8').trim();
+      } catch (_) {}
+    }
+    if (!token) {
+      token = (await this.context.secrets.get(TOKEN_SECRET_KEY)) || '';
+    }
     if (!token) {
       token = crypto.randomBytes(32).toString('hex');
-      await this.context.secrets.store(TOKEN_SECRET_KEY, token);
     }
+    try {
+      fs.writeFileSync(tokenFile, token, 'utf8');
+    } catch (_) {}
+    await this.context.secrets.store(TOKEN_SECRET_KEY, token);
     this.client.setToken(token);
 
-    // 2. Locate workspace backend and Python virtual environment
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const rootPath = workspaceFolders && workspaceFolders.length > 0
-      ? workspaceFolders[0].uri.fsPath
-      : path.resolve(__dirname, '..', '..');
+    // 2. Check if backend is already running and healthy with this token
+    try {
+      const health = await this.client.getHealth();
+      this.outputChannel.appendLine(
+        `[BackendManager] Connected to active FastAPI backend (v${health.version}) on 127.0.0.1:${this.port}`
+      );
+      return;
+    } catch (_) {
+      // Backend not running or token needs renewal
+    }
 
-    const pythonPath = path.join(rootPath, '.venv', 'Scripts', 'python.exe');
+    // 3. Locate workspace backend and Python virtual environment
+    let rootPath = 'c:\\Users\\hakim\\Desktop\\vs extention';
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const candidate = workspaceFolders[0].uri.fsPath;
+      if (fs.existsSync(path.join(candidate, 'backend', 'app', 'main.py'))) {
+        rootPath = candidate;
+      }
+    }
+
+    let pythonPath = path.join(rootPath, '.venv', 'Scripts', 'python.exe');
+    if (!fs.existsSync(pythonPath)) {
+      pythonPath = 'c:\\Users\\hakim\\Desktop\\vs extention\\.venv\\Scripts\\python.exe';
+    }
     const backendPath = path.join(rootPath, 'backend');
+
+    // If port 8765 is occupied by an unresponsive or mismatched process, kill it
+    if (process.platform === 'win32') {
+      try {
+        child_process.execSync(
+          `powershell -Command "Get-NetTCPConnection -LocalPort ${this.port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`
+        );
+      } catch (_) {}
+    }
 
     this.outputChannel.appendLine(`[BackendManager] Starting backend at ${backendPath}`);
     this.outputChannel.appendLine(`[BackendManager] Using Python: ${pythonPath}`);
@@ -51,7 +92,7 @@ export class BackendManager {
       PYTHONPATH: backendPath,
     };
 
-    // 3. Spawn Uvicorn process
+    // 4. Spawn Uvicorn process
     this.process = child_process.spawn(
       pythonPath,
       ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', this.port.toString()],
@@ -76,7 +117,7 @@ export class BackendManager {
       this.process = null;
     });
 
-    // 4. Poll health endpoint until responsive
+    // 5. Poll health endpoint until responsive
     const startTime = Date.now();
     const timeoutMs = 15000;
     while (Date.now() - startTime < timeoutMs) {
@@ -98,11 +139,9 @@ export class BackendManager {
       if (process.platform === 'win32') {
         try {
           child_process.execSync(`taskkill /F /T /PID ${this.process.pid}`);
-        } catch {
-          // Process might already be stopped
-        }
+        } catch (_) {}
       } else {
-        this.process.kill('SIGTERM');
+        this.process.kill();
       }
       this.process = null;
     }
