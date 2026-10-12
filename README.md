@@ -258,3 +258,8 @@ The research preview endpoint is `POST /research/github` with `prompt`, optional
 ## Local authentication token
 
 The backend creates or reuses the per-user token in `%USERPROFILE%\.aihub_token` on Windows (or `~/.aihub_token` elsewhere). The Windows launcher passes that token to Vite as `VITE_AI_HUB_TOKEN` at startup, so the UI and backend use the same generated token without embedding a shared secret in source control. The UI keeps the token in session storage, migrates/removes any legacy local-storage copy, and never commits or writes provider API keys to the frontend.
+
+
+## Portable local paths
+
+The web-model configuration is stored in the checkout's `.web_models.json` by default, so moving or cloning the repository does not require editing a drive-specific path. Set `CODE_CONDUCTOR_WEB_MODELS_PATH` to override it. The Windows launcher resolves the project directory relative to its own location; set `CODE_CONDUCTOR_CLOAK_EXE` to use a non-default CloakBrowser executable.

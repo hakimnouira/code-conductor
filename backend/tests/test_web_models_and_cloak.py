@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.web_models_store import (
     WebModelConfig,
@@ -6,9 +7,21 @@ from app.web_models_store import (
     save_web_model,
     delete_web_model,
     PRESET_MODELS,
+    _default_store_path,
+    STORE_PATH,
 )
 from app.adapters.web_model import WebBrowserModelAdapter
 from app.models.schemas import AvailabilityState, TaskCreateRequest, EventType
+
+
+def test_web_model_store_defaults_to_checkout_and_supports_override(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODE_CONDUCTOR_WEB_MODELS_PATH", raising=False)
+    expected = Path(__file__).resolve().parents[2] / ".web_models.json"
+    assert _default_store_path() == expected
+
+    custom_path = tmp_path / "custom-models.json"
+    monkeypatch.setenv("CODE_CONDUCTOR_WEB_MODELS_PATH", str(custom_path))
+    assert _default_store_path() == custom_path
 
 
 def test_presets_exist():
@@ -19,7 +32,8 @@ def test_presets_exist():
     assert "web-deepseek" in ids
 
 
-def test_save_and_delete_web_model():
+def test_save_and_delete_web_model(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.web_models_store.STORE_PATH", tmp_path / "web_models.json")
     custom = WebModelConfig(
         id="web-test-custom",
         name="Test Custom Model",
