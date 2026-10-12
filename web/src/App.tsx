@@ -129,6 +129,7 @@ export default function App() {
 
   const makePlan = async (text = prompt) => {
     if (!text.trim()) return null;
+    setConversationPrompt(text.trim());
     setPlanning(true); setError(""); setNotice("");
     try {
       const next = await request("/orchestrator/plan", {
@@ -357,7 +358,7 @@ export default function App() {
           <div className="composer-wrap">
             {notice && <div className="notice-line"><CheckCircle2 size={14}/><span>{notice}</span><button onClick={() => setNotice("")}><X size={13}/></button></div>}
             <div className="composer">
-              <textarea value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void runTask(); } }} placeholder="Ask Conductor to explore, plan, debug, or build something…" rows={3}/>
+              <textarea value={prompt} onChange={e => { const value = e.target.value; setPrompt(value); if (plan && value.trim() !== plan.goal) setPlan(null); }} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void runTask(); } }} placeholder="Ask Conductor to explore, plan, debug, or build something…" rows={3}/>
               <div className="composer-bottom"><div className="composer-tools">
                 <label className="select-pill"><Bot size={14}/><select value={agent} onChange={e => setAgent(e.target.value)}><option value="auto">Auto agent</option>{agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select><ChevronDown size={12}/></label>
                 <label className={"select-pill permission-pill " + (permissionMode === "god" ? "danger-mode" : "")}><ShieldCheck size={14}/><select aria-label="Permission mode" value={permissionMode} onChange={e => setMode(e.target.value as PermissionMode)}><option value="safe">Safe</option><option value="balanced">Balanced</option><option value="god">God mode</option></select><ChevronDown size={12}/></label>
