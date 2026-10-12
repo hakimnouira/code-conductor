@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown,
-  CircleAlert, Code2, Command, ExternalLink, Eye, FolderGit2, Github,
+  CircleAlert, Code2, Command, Copy, ExternalLink, Eye, FolderGit2, Github,
   Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
 } from "lucide-react";
@@ -17,6 +17,16 @@ type Provider = { id: string; name: string; base_url: string; model: string; key
 type RepoResult = { repository_url: string; repository_name: string; workspace_path: string; branch: string; cloned: boolean; analysis_safety: string };
 type ConvSummary = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; first_prompt: string };
 type ConvDetail = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; messages: { role: string; content: string; step?: number }[]; artifacts: { name: string; size: number; modified_time: string }[] };
+type TaskHistoryItem = {
+  id: string;
+  timestamp: number;
+  prompt: string;
+  agentId: string;
+  agentName: string;
+  status: "completed" | "failed" | "running" | "cancelled";
+  output: string;
+  events: Ev[];
+};
 
 // 4-Phase Guided Workflow types
 type GuidedStep = { step_id: number; title: string; description: string; target_files: string[]; reference_citation?: string };
@@ -135,6 +145,26 @@ export default function App() {
   const [selectedConv, setSelectedConv] = useState<ConvDetail | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
+
+  // Persistent Task & Chat History
+  const [taskHistory, setTaskHistory] = useState<TaskHistoryItem[]>(() => {
+    try {
+      const raw = localStorage.getItem("cc_task_history");
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [taskHistorySearch, setTaskHistorySearch] = useState("");
+  const [copiedAnswer, setCopiedAnswer] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cc_task_history", JSON.stringify(taskHistory.slice(0, 50)));
+    } catch {}
+  }, [taskHistory]);
 
   // 4-Phase Guided Workflow
   const [guidedModalOpen, setGuidedModalOpen] = useState(false);
@@ -430,14 +460,35 @@ export default function App() {
     } finally { setPlanning(false); }
   };
 
-  const streamTask = async (created: Task, signal: AbortSignal) => {
+  const streamTask = async (created: Task, signal: AbortSignal, taskPrompt: string = "", agentName: string = "") => {
     latestTaskId.current = created.task_id;
     setTask(created);
+
+    // Initial history entry
+    const effectivePrompt = taskPrompt || prompt || "Task";
+    const effectiveAgent = agentName || agents.find(a => a.id === created.agent_id)?.name || created.agent_id;
+    setTaskHistory(old => {
+      const exists = old.some(h => h.id === created.task_id);
+      if (exists) return old;
+      return [{
+        id: created.task_id,
+        timestamp: Date.now(),
+        prompt: effectivePrompt,
+        agentId: created.agent_id,
+        agentName: effectiveAgent,
+        status: "running",
+        output: "",
+        events: []
+      }, ...old];
+    });
+    setSelectedHistoryId(created.task_id);
+
     const response = await request("/tasks/" + encodeURIComponent(created.task_id) + "/events", { signal });
     if (!response.body) throw new Error("No event stream returned.");
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = "", taskOutput = "";
     let taskFailed = false;
+    const collectedEvents: Ev[] = [];
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -448,8 +499,10 @@ export default function App() {
         if (!data || data === "[DONE]") continue;
         try {
           const event = JSON.parse(data) as Ev;
+          collectedEvents.push(event);
           setEvents(old => [...old, event]);
           if (event.event_type === "token") taskOutput += event.text || "";
+          if (event.event_type === "completed" && !taskOutput && event.text) taskOutput = event.text;
           if (event.event_type === "error") taskFailed = true;
           if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
           if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
@@ -462,10 +515,26 @@ export default function App() {
         } catch { /* Ignore malformed SSE */ }
       }
     }
+
+    // Finalize history entry
+    setTaskHistory(old => old.map(item => {
+      if (item.id === created.task_id) {
+        return {
+          ...item,
+          status: taskFailed ? "failed" : "completed",
+          output: taskOutput,
+          events: [...collectedEvents]
+        };
+      }
+      return item;
+    }));
+
     return { output: taskOutput, failed: taskFailed };
   };
 
   const dispatch = async (taskPrompt: string, selectedAgent: string, signal: AbortSignal) => {
+    const agentObj = agents.find(a => a.id === selectedAgent);
+    const agentName = agentObj?.name || selectedAgent;
     const created = await request("/tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -474,7 +543,7 @@ export default function App() {
         god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled
       })
     }).then(r => r.json()) as Task;
-    return streamTask(created, signal);
+    return streamTask(created, signal, taskPrompt, agentName);
   };
 
   const runTask = async () => {
@@ -611,6 +680,62 @@ export default function App() {
     }
     setNotice("Loaded prompt from Antigravity session: " + detail.title);
     setHistoryOpen(false);
+  };
+
+  const formatTimeAgo = (ts: number) => {
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 60) return "just now";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+  };
+
+  const loadHistoryItem = (item: TaskHistoryItem) => {
+    if (busy) return;
+    setSelectedHistoryId(item.id);
+    setConversationPrompt(item.prompt);
+    setEvents(item.events || []);
+    setTask({
+      task_id: item.id,
+      status: item.status,
+      agent_id: item.agentId,
+      prompt: item.prompt,
+    });
+    setAgent(item.agentId);
+    setPlan(null);
+    setNotice("");
+    setError("");
+    setHistoryDrawerOpen(false);
+  };
+
+  const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setTaskHistory(old => old.filter(item => item.id !== id));
+    if (selectedHistoryId === id) {
+      setSelectedHistoryId(null);
+    }
+  };
+
+  const clearAllHistory = () => {
+    if (window.confirm("Clear all task history?")) {
+      setTaskHistory([]);
+      setSelectedHistoryId(null);
+    }
+  };
+
+  const copyAnswer = async () => {
+    const tokenText = events.filter(e => e.event_type === "token").map(e => e.text || "").join("");
+    const completedEv = events.find(e => e.event_type === "completed" && e.text);
+    const toCopy = tokenText.trim() || completedEv?.text?.trim() || "";
+    if (toCopy) {
+      try {
+        await navigator.clipboard.writeText(toCopy);
+        setCopiedAnswer(true);
+        setTimeout(() => setCopiedAnswer(false), 2000);
+      } catch {}
+    }
   };
 
   const saveSmartProvider = async () => {
@@ -803,7 +928,7 @@ export default function App() {
           <div className="brand-symbol"><Sparkles size={20}/></div>
           <div><strong>conductor</strong><span>AI workspace</span></div>
         </div>
-        <button className="new-chat" onClick={() => { if (busy) return; setPrompt(""); setConversationPrompt(""); setEvents([]); setPlan(null); setTask(null); setRepo(null); setNotice(""); setError(""); }}>
+        <button className="new-chat" onClick={() => { if (busy) return; setSelectedHistoryId(null); setPrompt(""); setConversationPrompt(""); setEvents([]); setPlan(null); setTask(null); setRepo(null); setNotice(""); setError(""); }}>
           <Plus size={16}/> New task <span>⌘ K</span>
         </button>
 
@@ -830,6 +955,44 @@ export default function App() {
             <button className="rail-agent muted-agent" onClick={() => setSettings(true)}>
               <span className="agent-dot"/><span>Connect an agent</span><small>Setup</small>
             </button>
+          )}
+        </div>
+
+        {/* TASK & CHAT HISTORY SECTION */}
+        <div className="rail-label">
+          <span>TASK HISTORY</span>
+          {taskHistory.length > 0 && (
+            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              <small>{taskHistory.length}</small>
+              <button className="rail-history-clear" onClick={clearAllHistory} title="Clear all history">
+                <Trash2 size={11}/>
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="rail-history-list">
+          {taskHistory.slice(0, 15).map(item => (
+            <div
+              key={item.id}
+              className={"rail-history-item " + (selectedHistoryId === item.id ? "active" : "")}
+              onClick={() => loadHistoryItem(item)}
+              title={item.prompt}
+            >
+              <div className="rail-history-top">
+                <span className={"history-dot " + item.status}/>
+                <span className="rail-history-agent">{item.agentName}</span>
+                <span className="rail-history-time">{formatTimeAgo(item.timestamp)}</span>
+                <button className="rail-history-del" onClick={(e) => deleteHistoryItem(e, item.id)} title="Delete item">
+                  <X size={10}/>
+                </button>
+              </div>
+              <div className="rail-history-prompt">{item.prompt}</div>
+            </div>
+          ))}
+          {taskHistory.length === 0 && (
+            <div className="rail-history-empty">
+              No tasks yet. Your chats & tasks will appear here!
+            </div>
           )}
         </div>
 
@@ -871,6 +1034,9 @@ export default function App() {
             <button className="status-chip add-api-chip" title="Connect any AI Provider automatically" onClick={() => setSmartAddOpen(true)}>
               <KeyRound size={13}/> + Add API
             </button>
+            <button className={"status-chip " + (historyDrawerOpen ? "active" : "")} title="View all task and chat history" onClick={() => setHistoryDrawerOpen(v => !v)}>
+              <History size={13}/> History ({taskHistory.length})
+            </button>
             <button className="icon-button" title={"Toggle theme (current: " + theme + ")"} onClick={toggleTheme}>
               {theme === "dark" ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
@@ -879,7 +1045,6 @@ export default function App() {
             </button>
             <span className={"status-chip " + (health ? "connected" : "")}><span/> {health ? "Connected" : "Offline"}</span>
             <button className="icon-button" title="Guided 4-Phase Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={16}/></button>
-            <button className="icon-button" title="Antigravity Chat History" onClick={() => { setHistoryOpen(true); void fetchHistory(); }}><History size={16}/></button>
             <button className="icon-button" title="Toggle task context" onClick={() => setContextOpen(v => !v)}><Activity size={16}/></button>
             <button className="icon-button" title="Settings" onClick={() => setSettings(true)}><Settings2 size={16}/></button>
             <button className="icon-button shutdown-btn" title="Turn Off / Shut Down Conductor" onClick={() => void shutdownSystem()}>
@@ -980,6 +1145,13 @@ export default function App() {
                           <div className="response-body">
                             {events.map((event, i) => {
                               if (event.event_type === "token") return <span key={i}>{event.text}</span>;
+                              if (event.event_type === "completed" && !events.some(e => e.event_type === "token") && event.text) {
+                                return (
+                                  <div className="completed-answer-box" key={i}>
+                                    <pre className="output-content">{event.text}</pre>
+                                  </div>
+                                );
+                              }
                               if (event.event_type === "tool_call") return <div className="event-card tool-event" key={i}><Terminal size={14}/><span>{event.text || "Agent requested a tool"}</span></div>;
                               if (event.event_type === "tool_result") return <div className="event-card" key={i}><CheckCircle2 size={14}/><span>{event.text}</span></div>;
                               if (event.event_type === "error") return <div className="event-card error-event" key={i}><CircleAlert size={14}/><span>{event.text}</span></div>;
@@ -991,9 +1163,12 @@ export default function App() {
                           </div>
                         )}
                         {busy && events.length > 0 && <div className="streaming-cursor"><span/> Generating response</div>}
-                        {!busy && task?.status === "completed" && (
+                        {!busy && (task?.status === "completed" || events.some(e => e.event_type === "completed")) && (
                           <div className="answer-actions">
                             <span><CheckCircle2 size={14}/> Response complete</span>
+                            <button className={copiedAnswer ? "copy-btn-active" : ""} onClick={() => void copyAnswer()} title="Copy answer to clipboard">
+                              <Copy size={14}/> {copiedAnswer ? "Copied!" : "Copy Answer"}
+                            </button>
                             <button onClick={() => void runTests()}><Terminal size={14}/> Run tests</button>
                             <button onClick={() => { setPrompt("Review the changes from the last task. Inspect the diff and identify regressions or missing tests."); setPlan(null); }}><ShieldCheck size={14}/> Review changes</button>
                           </div>
@@ -1988,6 +2163,90 @@ export default function App() {
             <div className="modal-actions bottom-actions">
               <button className="outline-button" onClick={() => { setToken(""); sessionStorage.removeItem("cc_token"); setHealth(null); setAgents([]); }}>Clear token</button>
               <button className="primary-button" onClick={() => { setSettings(false); sessionStorage.setItem("cc_api", base); sessionStorage.setItem("cc_token", token.trim()); void connect(); }}>Save & connect <ArrowUpRight size={14}/></button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {historyDrawerOpen && (
+        <div className="modal-backdrop" onClick={() => setHistoryDrawerOpen(false)}>
+          <section className="settings-modal task-history-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-modal-head">
+              <div>
+                <h2>Task & Chat History</h2>
+                <p>{taskHistory.length} recorded tasks · click any item to load into the dashboard</p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {taskHistory.length > 0 && (
+                  <button className="subtle-button" onClick={clearAllHistory} title="Clear all history">
+                    <Trash2 size={13}/> Clear All
+                  </button>
+                )}
+                <button className="icon-button" onClick={() => setHistoryDrawerOpen(false)}><X size={17}/></button>
+              </div>
+            </div>
+
+            <div className="task-history-search-bar">
+              <input
+                type="text"
+                placeholder="Search history by prompt or response..."
+                value={taskHistorySearch}
+                onChange={e => setTaskHistorySearch(e.target.value)}
+              />
+            </div>
+
+            <div className="task-history-body">
+              {taskHistory
+                .filter(item => {
+                  if (!taskHistorySearch.trim()) return true;
+                  const q = taskHistorySearch.toLowerCase();
+                  return item.prompt.toLowerCase().includes(q) || item.output.toLowerCase().includes(q) || item.agentName.toLowerCase().includes(q);
+                })
+                .map(item => (
+                  <div key={item.id} className="history-entry-card">
+                    <div className="history-entry-head">
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className={"history-dot " + item.status}/>
+                        <b style={{ fontSize: "11px", color: "var(--text)" }}>{item.agentName}</b>
+                        <small style={{ color: "var(--muted)", fontSize: "10px" }}>{formatTimeAgo(item.timestamp)}</small>
+                      </div>
+                      <span className="status-chip" style={{ fontSize: "9px", padding: "2px 6px" }}>{item.status}</span>
+                    </div>
+
+                    <div className="history-entry-prompt">{item.prompt}</div>
+
+                    {item.output && (
+                      <div className="history-entry-preview">
+                        {item.output}
+                      </div>
+                    )}
+
+                    <div className="history-entry-actions">
+                      <button className="primary-button" style={{ padding: "4px 10px", fontSize: "11px" }} onClick={() => loadHistoryItem(item)}>
+                        Load into Dashboard
+                      </button>
+                      <button className="outline-button" style={{ padding: "4px 8px", fontSize: "11px" }} onClick={async () => {
+                        if (item.output) {
+                          await navigator.clipboard.writeText(item.output);
+                          setNotice("Copied task output to clipboard!");
+                        }
+                      }}>
+                        <Copy size={12}/> Copy Answer
+                      </button>
+                      <button className="subtle-button" style={{ padding: "4px 8px", fontSize: "11px", marginLeft: "auto" }} onClick={(e) => deleteHistoryItem(e, item.id)}>
+                        <Trash2 size={12}/> Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+              {taskHistory.length === 0 && (
+                <div className="history-empty" style={{ padding: "40px 0" }}>
+                  <History size={32}/>
+                  <b>No task history yet</b>
+                  <p>Submit your first prompt or ask a web model to start building your history!</p>
+                </div>
+              )}
             </div>
           </section>
         </div>

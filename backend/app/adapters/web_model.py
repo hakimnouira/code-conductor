@@ -165,25 +165,60 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             )
             return
 
-        # Prepare injection script that inputs prompt and starts generation
-        prompt_escaped = json.dumps(request.prompt)
+        async def _cdp_eval(ws, expression: str, req_id: int, timeout: float = 15.0) -> dict:
+            await ws.send(json.dumps({
+                "id": req_id,
+                "method": "Runtime.evaluate",
+                "params": {
+                    "expression": expression,
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                },
+            }))
+            start_t = asyncio.get_event_loop().time()
+            while True:
+                rem = timeout - (asyncio.get_event_loop().time() - start_t)
+                if rem <= 0:
+                    return {}
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=rem)
+                    msg = json.loads(raw)
+                    if msg.get("id") == req_id:
+                        return msg.get("result", {}).get("result", {}).get("value") or {}
+                except Exception:
+                    return {}
+
+        prompt_json = json.dumps(request.prompt)
         input_sel = json.dumps(self.config.input_selector or "")
         send_sel = json.dumps(self.config.send_selector or "")
+        resp_sel = json.dumps(self.config.response_selector or "")
+
+        measure_script = f"""
+        (function() {{
+            const respSelector = {resp_sel};
+            const customCount = respSelector ? document.querySelectorAll(respSelector).length : 0;
+            const h4Count = document.querySelectorAll('h4[data-conversation-role="assistant"]').length;
+            const elsCount = document.querySelectorAll(
+                '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
+            ).length;
+            return {{ customCount: customCount, h4Count: h4Count, elsCount: elsCount }};
+        }})()
+        """
 
         injection_script = f"""
-        (function() {{
-            const promptText = {prompt_escaped};
+        (async function() {{
+            const promptText = {prompt_json};
             const inputSelector = {input_sel};
             const sendSelector = {send_sel};
 
-            // 1. Locate prompt input element
+            // 1. Locate input element
             let inputEl = null;
             if (inputSelector) {{
                 inputEl = document.querySelector(inputSelector);
             }}
             if (!inputEl) {{
                 inputEl = document.querySelector(
-                    '#prompt-textarea, textarea[placeholder*="message" i], textarea[placeholder*="ask" i], textarea, div[contenteditable="true"], div[role="textbox"]'
+                    '#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[placeholder*="message" i], textarea[placeholder*="ask" i], textarea, div[contenteditable="true"], div[role="textbox"]'
                 );
             }}
 
@@ -212,6 +247,9 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 inputEl.dispatchEvent(new KeyboardEvent("keyup", {{ key: "e", bubbles: true }}));
             }}
 
+            // Let ProseMirror update internal state
+            await new Promise(r => setTimeout(r, 250));
+
             // 3. Trigger submit
             let sent = false;
             if (sendSelector) {{
@@ -223,7 +261,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             }}
             if (!sent) {{
                 const sendBtn = document.querySelector(
-                    'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[aria-label*="Send" i], button[aria-label*="Submit" i], button:has(svg)'
+                    'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[aria-label*="Send" i], button[aria-label*="Submit" i]'
                 );
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
@@ -231,7 +269,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 }}
             }}
             if (!sent) {{
-                inputEl.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", code: "Enter", keyCode: 13, bubbles: true }}));
+                inputEl.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }}));
                 sent = true;
             }}
 
@@ -242,17 +280,16 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
         try:
             async with websockets.connect(ws_url, close_timeout=5.0) as ws:
                 req_id = 1
-                await ws.send(json.dumps({
-                    "id": req_id,
-                    "method": "Runtime.evaluate",
-                    "params": {
-                        "expression": injection_script,
-                        "returnByValue": True,
-                        "awaitPromise": True,
-                    },
-                }))
-                raw_resp = await ws.recv()
-                inject_res = json.loads(raw_resp).get("result", {}).get("result", {}).get("value", {})
+                
+                # Baseline measurement
+                baseline = await _cdp_eval(ws, measure_script, req_id)
+                base_custom = baseline.get("customCount", 0)
+                base_h4 = baseline.get("h4Count", 0)
+                base_els = baseline.get("elsCount", 0)
+
+                # Inject prompt
+                req_id += 1
+                inject_res = await _cdp_eval(ws, injection_script, req_id)
 
                 if not inject_res.get("success"):
                     err_msg = inject_res.get("error", "Chat input not found.")
@@ -271,8 +308,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     timestamp=time.time(),
                 )
 
-                # Script to extract the latest assistant response text
-                resp_sel = json.dumps(self.config.response_selector or "")
+                # Script to extract the new assistant response text
                 extract_script = f"""
                 (function() {{
                     const respSelector = {resp_sel};
@@ -287,16 +323,25 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     // Method 1: Custom configured selector
                     if (respSelector) {{
                         const customEls = Array.from(document.querySelectorAll(respSelector));
-                        if (customEls.length > 0) {{
+                        if (customEls.length > {base_custom}) {{
                             const latest = customEls[customEls.length - 1];
-                            text = (latest.innerText || latest.textContent || "").trim();
+                            if (latest.tagName === "H4" && latest.parentElement) {{
+                                let rep = "";
+                                for (const ch of latest.parentElement.children) {{
+                                    if (ch !== latest) rep += (ch.innerText || "") + "\\n";
+                                }}
+                                text = rep.trim();
+                            }} else {{
+                                text = (latest.innerText || latest.textContent || "").trim();
+                            }}
                         }}
                     }}
+                    if (text === "ChatGPT said:") text = "";
 
                     // Method 2: ChatGPT latest UI (h4 with data-conversation-role="assistant")
                     if (!text) {{
                         const h4List = Array.from(document.querySelectorAll('h4[data-conversation-role="assistant"]'));
-                        if (h4List.length > 0) {{
+                        if (h4List.length > {base_h4}) {{
                             const lastH4 = h4List[h4List.length - 1];
                             const parent = lastH4.parentElement;
                             let reply = "";
@@ -314,6 +359,17 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                         const elements = Array.from(document.querySelectorAll(
                             '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
                         ));
+                        if (elements.length > {base_els}) {{
+                            const latest = elements[elements.length - 1];
+                            text = (latest.innerText || latest.textContent || "").trim();
+                        }}
+                    }}
+
+                    // Fallback if message count didn't increment but text exists in last element
+                    if (!text && is_generating) {{
+                        const elements = Array.from(document.querySelectorAll(
+                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
+                        ));
                         if (elements.length > 0) {{
                             const latest = elements[elements.length - 1];
                             text = (latest.innerText || latest.textContent || "").trim();
@@ -327,7 +383,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 last_seen_length = 0
                 full_text = ""
                 still_count = 0
-                max_polls = 120
+                max_polls = 140
 
                 for _ in range(max_polls):
                     if not self._active_tasks.get(task_id, True):
@@ -341,17 +397,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
 
                     await asyncio.sleep(0.5)
                     req_id += 1
-                    await ws.send(json.dumps({
-                        "id": req_id,
-                        "method": "Runtime.evaluate",
-                        "params": {
-                            "expression": extract_script,
-                            "returnByValue": True,
-                            "awaitPromise": True,
-                        },
-                    }))
-                    raw = await ws.recv()
-                    val = json.loads(raw).get("result", {}).get("result", {}).get("value", {})
+                    val = await _cdp_eval(ws, extract_script, req_id)
                     current_text = val.get("text", "")
                     is_generating = val.get("is_generating", False)
 
