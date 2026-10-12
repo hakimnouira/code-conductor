@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -95,14 +96,24 @@ class AntigravityAdapter(BaseAgentAdapter):
             yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text="God Mode was selected but its explicit confirmation is missing. Re-submit after confirming the high-risk mode.", timestamp=time.time())
             return
 
-        cmd = [executable, "-p", request.prompt, "--output-format", "stream-json", "--print-timeout", "20m"]
+        # Send the prompt over stdin (not the process command line). This also supports
+        # Windows npm .cmd shims without interpolating user prompt text into cmd.exe.
+        args = ["--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "20m"]
         if request.model and request.model not in {"auto", "antigravity-default"}:
-            cmd.extend(["--model", request.model])
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request.model):
+                yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text="Invalid Antigravity model slug.", timestamp=time.time())
+                return
+            args.extend(["--model", request.model])
         if mode == "safe":
-            cmd.append("--sandbox")
+            args.append("--sandbox")
         elif mode == "god" and confirmed:
             # Explicitly requested high-risk behavior; never enabled by default.
-            cmd.append("--dangerously-skip-permissions")
+            args.append("--dangerously-skip-permissions")
+
+        if executable.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline([executable, *args])]
+        else:
+            cmd = [executable, *args]
 
         cancel_event = asyncio.Event()
         self._cancel[task_id] = cancel_event
@@ -115,11 +126,15 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(workspace),
+                *cmd, cwd=str(workspace), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             self._active[task_id] = proc
             assert proc.stdout is not None
+            assert proc.stdin is not None
+            proc.stdin.write((json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\\n").encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
             stderr_task = asyncio.create_task(proc.stderr.read()) if proc.stderr else None
             final_status: str | None = None
             final_error = ""
