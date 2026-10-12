@@ -56,6 +56,7 @@ from app.orchestrator.history import AuditHistoryTracker
 from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
 from app.orchestrator.planner import PlanDecomposer
 from pathlib import Path
+from app.repository_import import router as repository_import_router
 
 
 
@@ -87,6 +88,8 @@ app = FastAPI(
     version=get_settings().version,
     lifespan=lifespan,
 )
+
+app.include_router(repository_import_router)
 
 # Strictly restrict CORS to local origin
 app.add_middleware(
