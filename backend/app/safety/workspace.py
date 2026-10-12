@@ -37,6 +37,49 @@ FORBIDDEN_SYSTEM_ROOTS = [
 
 
 
+def is_contained_in_workspace(target: str | Path | None, workspace_root: str | Path | None) -> bool:
+    """
+    Canonical path containment check.
+    Guarantees that target resolves strictly inside workspace_root (or is workspace_root itself).
+    Handles:
+    - Sibling directories with identical textual prefixes (e.g. /workspace vs /workspace-evil)
+    - Symlinks pointing outside workspace
+    - Nonexistent destinations within workspace
+    - Windows drive differences (e.g. C: vs D:)
+    - Path traversal attempts (../../)
+    Rejects any path whose containment cannot be established.
+    """
+    if not target or not workspace_root:
+        return False
+
+    try:
+        root_path = Path(workspace_root).resolve()
+        t_path = Path(target)
+        if not t_path.is_absolute():
+            t_path = root_path / t_path
+        resolved_target = t_path.resolve()
+
+        # Check drive letter on Windows / multi-drive systems
+        if root_path.drive or resolved_target.drive:
+            if root_path.drive.lower() != resolved_target.drive.lower():
+                return False
+
+        # Use os.path.normcase for case-insensitive platform comparison (Windows)
+        norm_root = Path(os.path.normcase(str(root_path)))
+        norm_target = Path(os.path.normcase(str(resolved_target)))
+
+        if norm_target == norm_root:
+            return True
+
+        rel = norm_target.relative_to(norm_root)
+        rel_str = str(rel)
+        if rel_str == ".." or rel_str.startswith(".." + os.sep) or rel_str.startswith("../"):
+            return False
+        return True
+    except (ValueError, RuntimeError, OSError, TypeError):
+        return False
+
+
 def validate_workspace_path(
     path_str: str | Path | None,
     default_root: str | Path | None = None,
@@ -67,27 +110,21 @@ def validate_workspace_path(
     if resolved == resolved.parent or str(resolved).rstrip("\\/") in ("C:", "D:", "E:", "F:", ""):
         raise WorkspaceValidationError(f"Root drive '{resolved}' cannot be used as an isolated workspace.")
 
-    # Reject critical system directories
+    # Reject critical system directories using canonical containment
     for sys_root in FORBIDDEN_SYSTEM_ROOTS:
-        try:
-            if resolved == sys_root or resolved.is_relative_to(sys_root):
-                raise WorkspaceValidationError(f"Forbidden system directory '{resolved}' cannot be used as a workspace.")
-        except AttributeError:
-            if str(resolved).lower().startswith(str(sys_root).lower()):
-                raise WorkspaceValidationError(f"Forbidden system directory '{resolved}' cannot be used as a workspace.")
+        if resolved == sys_root or is_contained_in_workspace(resolved, sys_root):
+            raise WorkspaceValidationError(f"Forbidden system directory '{resolved}' cannot be used as a workspace.")
 
     # If allowed_roots are configured, enforce boundary containment
     if allowed_roots:
-        resolved_allowed = [Path(r).resolve() for r in allowed_roots]
         is_allowed = any(
-            resolved == ar
-            or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(ar))
-            or str(resolved).lower().startswith(str(ar).lower())
-            for ar in resolved_allowed
+            is_contained_in_workspace(resolved, ar)
+            for ar in allowed_roots
         )
         if not is_allowed:
+            resolved_allowed = [str(Path(r).resolve()) for r in allowed_roots]
             raise WorkspaceValidationError(
-                f"Workspace '{resolved}' is not within configured allowed workspace roots: {[str(r) for r in resolved_allowed]}"
+                f"Workspace '{resolved}' is not within configured allowed workspace roots: {resolved_allowed}"
             )
 
     return resolved
@@ -165,19 +202,16 @@ class WorkspaceSecurityManager:
         else:
             resolved = (self.workspace_root / input_path).resolve()
 
-        # Check path traversal
-        try:
-            rel_path = resolved.relative_to(self.workspace_root)
-        except ValueError:
+        # Canonical path containment check
+        if not is_contained_in_workspace(resolved, self.workspace_root):
             raise PathTraversalError(
                 f"Access denied: '{raw_path}' resolves outside workspace root '{self.workspace_root}'"
             )
 
-        # On Windows, verify case-insensitive prefix match as well
-        if not str(resolved).lower().startswith(str(self.workspace_root).lower()):
-            raise PathTraversalError(
-                f"Access denied: '{raw_path}' escapes workspace root '{self.workspace_root}'"
-            )
+        # Compute safe relative path
+        norm_root = Path(os.path.normcase(str(self.workspace_root)))
+        norm_resolved = Path(os.path.normcase(str(resolved)))
+        rel_path = norm_resolved.relative_to(norm_root)
 
         # Check sensitive file pattern
         rel_str = str(rel_path).replace("\\", "/")

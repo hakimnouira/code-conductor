@@ -3,6 +3,8 @@ import pytest
 from app.adapters.copilot import CopilotAdapter
 from app.models.schemas import AvailabilityState, EventType, TaskCreateRequest
 
+pytestmark = [pytest.mark.live_provider, pytest.mark.mocked_integration]
+
 @pytest.mark.asyncio
 async def test_copilot_adapter_metadata():
     adapter = CopilotAdapter()

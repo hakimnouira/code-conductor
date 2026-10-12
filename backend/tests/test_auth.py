@@ -3,6 +3,8 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
 from app.main import app
 
+pytestmark = pytest.mark.unit
+
 @pytest.mark.asyncio
 async def test_auth_missing_header():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

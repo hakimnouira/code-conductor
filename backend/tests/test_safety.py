@@ -16,6 +16,8 @@ from app.safety.workspace import (
     WorkspaceSecurityManager,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def temp_workspace(tmp_path: Path):

@@ -63,6 +63,43 @@ class GitGuard:
         except Exception as e:
             return -1, "", str(e)
 
+    async def _run_git_bytes(
+        self,
+        *args: str,
+        timeout: float = 15.0,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, str]:
+        """Runs a git command inside the workspace directory returning raw stdout bytes."""
+        if not self._git_path:
+            return -1, b"", "Git executable not found in PATH."
+
+        merged_env = os.environ.copy()
+        if env:
+            merged_env.update(env)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._git_path,
+                *args,
+                cwd=str(self.workspace_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=merged_env,
+            )
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stderr_str = stderr_b.decode("utf-8", errors="replace")
+            return proc.returncode or 0, stdout_b, stderr_str
+        except asyncio.TimeoutError:
+            return -1, b"", "Git command timed out."
+        except Exception as e:
+            return -1, b"", str(e)
+
+    async def is_path_ignored(self, rel_path: str) -> bool:
+        """Checks if a relative path is ignored by git (.gitignore)."""
+        code, _, _ = await self._run_git("check-ignore", rel_path)
+        return code == 0
+
+
     async def get_status(self) -> GitStatusResponse:
         """Retrieves structured git status."""
         if not self.is_git_repo():
@@ -241,16 +278,47 @@ class GitGuard:
                 except OSError:
                     pass
 
+    async def get_tree_entries(self, tree_sha: str) -> dict[str, tuple[str, str]]:
+        """
+        Retrieves all blob entries for a git tree object.
+        Returns a dict mapping relative_path -> (mode, blob_sha).
+        Uses ls-tree -r -z for safe handling of all filenames.
+        """
+        code, stdout_b, _ = await self._run_git_bytes("ls-tree", "-r", "-z", tree_sha)
+        if code != 0:
+            return {}
+
+        entries: dict[str, tuple[str, str]] = {}
+        raw_items = stdout_b.split(b"\x00")
+        for item in raw_items:
+            if not item:
+                continue
+            parts = item.split(b"\t", 1)
+            if len(parts) != 2:
+                continue
+            meta_part, path_part = parts
+            meta_tokens = meta_part.decode("utf-8", errors="replace").split()
+            if len(meta_tokens) >= 3 and meta_tokens[1] == "blob":
+                mode = meta_tokens[0]
+                sha = meta_tokens[2]
+                rel_path = path_part.decode("utf-8", errors="replace").replace("\\", "/")
+                entries[rel_path] = (mode, sha)
+
+        return entries
+
     async def restore_checkpoint(self, checkpoint_id: str, force: bool = False) -> CheckpointResponse:
         """
-        Durable restore mechanism:
-        1. Resolves checkpoint commit and tree object.
-        2. Inspects working tree: if conflicting uncommitted or subsequent changes exist and force=False,
-           refuses to restore to prevent silent data loss.
-        3. When clean or forced:
-           - Overwrites tracked/modified files to exact checkpoint state.
-           - Removes untracked files created after the checkpoint that were not in the checkpoint.
-           - Reinstates deleted files.
+        Safe transactional restore mechanism:
+        1. Resolves checkpoint tree SHA without touching the real Git index.
+        2. Inspects working tree:
+           - Checks if checkpointed files have been modified or deleted.
+           - If conflicting changes exist and force=False, refuses to restore to prevent data loss.
+        3. Preserves:
+           - Ignored files (.gitignore, .env, local configs).
+           - Unrelated user files and directories absent from the checkpoint.
+           - The original Git index and any pre-existing staged changes.
+        4. Restores files transactionally using an isolated temporary GIT_INDEX_FILE.
+        5. Verifies working tree and index before declaring success; rolls back on any error.
         """
         if not self.is_git_repo():
             return CheckpointResponse(
@@ -290,85 +358,130 @@ class GitGuard:
                 message=f"Checkpoint '{checkpoint_id}' not found in repository.",
             )
 
-        # 1. Snapshot current working tree using temporary index to check for differences
-        tmp_idx_path = git_dir / f"aihub_restore_check_{uuid.uuid4().hex[:6]}"
-        tmp_env = {"GIT_INDEX_FILE": str(tmp_idx_path)}
-        try:
-            head_code, _, _ = await self._run_git("rev-parse", "--verify", "HEAD")
-            if head_code == 0:
-                await self._run_git("read-tree", "HEAD", env=tmp_env)
-            await self._run_git("add", "-A", ".", env=tmp_env)
-            cur_code, cur_tree_sha, _ = await self._run_git("write-tree", env=tmp_env)
-            cur_tree_sha = cur_tree_sha.strip()
-        finally:
-            if tmp_idx_path.exists():
-                try:
-                    tmp_idx_path.unlink()
-                except OSError:
-                    pass
-
-        # If current tree already matches checkpoint tree exactly, nothing to do
-        if cur_code == 0 and cur_tree_sha == tree_sha:
-            return CheckpointResponse(
-                checkpoint_id=checkpoint_id,
-                success=True,
-                message=f"Working tree already matches checkpoint '{checkpoint_id}'.",
-            )
-
-        # 2. Check for conflicting changes if force is False
-        if not force:
-            diff_code, diff_out, _ = await self._run_git("diff-tree", "-r", "--name-only", tree_sha, cur_tree_sha)
-            changed_files = [f.strip() for f in diff_out.splitlines() if f.strip()]
-            if changed_files:
-                sample = ", ".join(changed_files[:5])
-                if len(changed_files) > 5:
-                    sample += f" (+{len(changed_files) - 5} more)"
+        # 1. Retrieve entries recorded in this checkpoint tree
+        checkpoint_entries = await self.get_tree_entries(tree_sha)
+        if not checkpoint_entries:
+            # Tree may be empty (valid empty commit)
+            c, out, _ = await self._run_git("rev-parse", "--verify", f"{tree_sha}^{{tree}}")
+            if c != 0:
                 return CheckpointResponse(
                     checkpoint_id=checkpoint_id,
                     success=False,
-                    message=(
-                        f"Refusing to restore checkpoint '{checkpoint_id}': conflicting uncommitted or subsequent "
-                        f"changes detected in [{sample}]. Pass force=True or stash changes to overwrite."
-                    ),
+                    message=f"Failed to inspect checkpoint tree object '{tree_sha}'.",
                 )
 
-        # 3. Perform exact restoration
-        # A. Read checkpoint tree into real git index
-        code, _, err = await self._run_git("read-tree", tree_sha)
-        if code != 0:
+        # 2. Detect conflicts before modifying any files on disk
+        conflicts: list[str] = []
+        for rel_p, (_, expected_sha) in checkpoint_entries.items():
+            abs_p = self.workspace_root / rel_p
+            if abs_p.exists():
+                c, cur_sha, _ = await self._run_git("hash-object", str(abs_p))
+                if c == 0 and cur_sha.strip() != expected_sha:
+                    conflicts.append(f"{rel_p} (modified)")
+            else:
+                conflicts.append(f"{rel_p} (missing)")
+
+        if conflicts and not force:
+            sample = ", ".join(conflicts[:5])
+            if len(conflicts) > 5:
+                sample += f" (+{len(conflicts) - 5} more)"
             return CheckpointResponse(
                 checkpoint_id=checkpoint_id,
                 success=False,
-                message=f"Failed to load checkpoint tree: {err.strip()}",
+                message=(
+                    f"Refusing to restore checkpoint '{checkpoint_id}': conflicting uncommitted or subsequent "
+                    f"changes detected in [{sample}]. Pass force=True to overwrite."
+                ),
             )
 
-        # B. Checkout all files from index to working directory
-        code, _, err = await self._run_git("checkout-index", "-a", "-f")
-        if code != 0:
+        # 3. Snapshot pre-restoration state of checkpointed files and .git/index for transactional rollback & verification
+        index_file = git_dir / "index"
+        orig_index_bytes: bytes | None = None
+        if index_file.exists():
+            try:
+                orig_index_bytes = index_file.read_bytes()
+            except OSError:
+                pass
+
+        backup_files: dict[str, bytes | None] = {}
+        for rel_p in checkpoint_entries:
+            abs_p = self.workspace_root / rel_p
+            if abs_p.exists() and abs_p.is_file():
+                try:
+                    backup_files[rel_p] = abs_p.read_bytes()
+                except OSError:
+                    backup_files[rel_p] = None
+            else:
+                backup_files[rel_p] = None
+
+        # 4. Perform restoration using isolated temporary index file
+        # This completely guarantees the real .git/index is NEVER modified.
+        # Furthermore, checkout-index -a ONLY updates files in the temporary index,
+        # leaving ignored files, untracked files, and unrelated user files completely untouched.
+        restore_idx_path = git_dir / f"aihub_restore_idx_{uuid.uuid4().hex[:8]}"
+        restore_env = {"GIT_INDEX_FILE": str(restore_idx_path)}
+
+        try:
+            # Read checkpoint tree into isolated temporary index
+            c, _, err = await self._run_git("read-tree", tree_sha, env=restore_env)
+            if c != 0:
+                raise RuntimeError(f"Failed to load checkpoint tree into temporary index: {err.strip()}")
+
+            # Checkout all files from isolated index into workspace
+            c, _, err = await self._run_git("checkout-index", "-a", "-f", "--", env=restore_env)
+            if c != 0:
+                raise RuntimeError(f"Failed to checkout checkpoint files: {err.strip()}")
+
+            # 5. Verify working tree files match checkpoint exactly
+            for rel_p, (_, expected_sha) in checkpoint_entries.items():
+                abs_p = self.workspace_root / rel_p
+                if not abs_p.exists():
+                    raise RuntimeError(f"Verification failed: expected file '{rel_p}' is missing after restoration.")
+                c, actual_sha, _ = await self._run_git("hash-object", str(abs_p))
+                if c != 0 or actual_sha.strip() != expected_sha:
+                    raise RuntimeError(
+                        f"Verification failed: hash mismatch on '{rel_p}' (expected {expected_sha}, got {actual_sha.strip()})."
+                    )
+
+            # 6. Verify original Git index was preserved
+            if orig_index_bytes is not None:
+                if not index_file.exists() or index_file.read_bytes() != orig_index_bytes:
+                    raise RuntimeError("Verification failed: original Git index was unexpectedly altered.")
+            elif index_file.exists():
+                raise RuntimeError("Verification failed: Git index file was created when none previously existed.")
+
+        except Exception as ex:
+            # ROLLBACK TRANSACTION: restore pre-restoration file contents and remove newly created files
+            for rel_p, orig_bytes in backup_files.items():
+                abs_p = self.workspace_root / rel_p
+                try:
+                    if orig_bytes is not None:
+                        abs_p.parent.mkdir(parents=True, exist_ok=True)
+                        abs_p.write_bytes(orig_bytes)
+                    else:
+                        abs_p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
             return CheckpointResponse(
                 checkpoint_id=checkpoint_id,
                 success=False,
-                message=f"Failed to checkout files from checkpoint: {err.strip()}",
+                message=f"Checkpoint restoration failed: {str(ex)}. Transaction rolled back safely.",
             )
-
-        # C. Remove untracked files in working tree that were not part of the checkpoint tree
-        code, ls_out, _ = await self._run_git("ls-tree", "-r", "--name-only", tree_sha)
-        if code == 0:
-            checkpoint_files = {f.strip().replace("\\", "/") for f in ls_out.splitlines() if f.strip()}
-            for root, dirs, files in os.walk(str(self.workspace_root)):
-                dirs[:] = [d for d in dirs if d not in {".git", ".venv", "node_modules", "__pycache__"}]
-                for file_name in files:
-                    abs_p = Path(root) / file_name
-                    try:
-                        rel_p = str(abs_p.relative_to(self.workspace_root)).replace("\\", "/")
-                        if rel_p not in checkpoint_files:
-                            abs_p.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+        finally:
+            if restore_idx_path.exists():
+                try:
+                    restore_idx_path.unlink()
+                except OSError:
+                    pass
 
         return CheckpointResponse(
             checkpoint_id=checkpoint_id,
             success=True,
-            message=f"Restored files from checkpoint '{checkpoint_id}' exactly (tree: {tree_sha[:8]}).",
+            message=(
+                f"Restored files from checkpoint '{checkpoint_id}' exactly (tree: {tree_sha[:8]}). "
+                f"Original Git index and untracked/ignored files preserved."
+            ),
         )
+
 

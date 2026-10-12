@@ -17,6 +17,8 @@ from app.orchestrator.models import (
 from app.orchestrator.planner import PlanDecomposer
 from app.orchestrator.reviewer import CodeReviewer
 
+pytestmark = pytest.mark.unit
+
 
 # -------------------------------------------------------------
 # 1. PlanDecomposer Tests

@@ -8,6 +8,8 @@ from app.adapters.antigravity import AntigravityAdapter
 from app.mcp.client import MCPClientManager, MCPServerConfig
 from app.models.schemas import AvailabilityState, EventType, TaskCreateRequest
 
+pytestmark = [pytest.mark.mocked_integration, pytest.mark.unit]
+
 @pytest.mark.asyncio
 async def test_antigravity_metadata():
     adapter = AntigravityAdapter()

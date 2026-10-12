@@ -7,6 +7,8 @@ import pytest
 from app.adapters.codex import CodexAdapter
 from app.models.schemas import AvailabilityState, EventType, TaskCreateRequest
 
+pytestmark = [pytest.mark.mocked_integration, pytest.mark.unit]
+
 @pytest.mark.asyncio
 async def test_codex_adapter_metadata():
     adapter = CodexAdapter()

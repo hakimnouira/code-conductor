@@ -11,6 +11,8 @@ from app.safety.workspace import (
     validate_workspace_path,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.windows]
+
 @pytest.fixture
 def auth_client():
     token = get_settings().auth_token
@@ -105,3 +107,118 @@ def test_api_workspace_isolation(auth_client: TestClient, tmp_path: Path):
     )
     assert res_task.status_code == 400
     assert "Invalid workspace path" in res_task.json()["detail"]
+
+
+def test_canonical_containment_sibling_prefix(tmp_path: Path):
+    from app.safety.workspace import is_contained_in_workspace
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    ws_sibling = tmp_path / "workspace_evil"
+    ws_sibling.mkdir()
+
+    # Direct sibling is rejected
+    assert is_contained_in_workspace(ws_sibling, ws) is False
+    assert is_contained_in_workspace(ws_sibling / "secret.txt", ws) is False
+
+    # Inside workspace is accepted
+    assert is_contained_in_workspace(ws, ws) is True
+    assert is_contained_in_workspace(ws / "file.txt", ws) is True
+    assert is_contained_in_workspace("sub/dir/nested.py", ws) is True
+
+
+def test_canonical_containment_nonexistent_destination(tmp_path: Path):
+    from app.safety.workspace import is_contained_in_workspace
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    # Nonexistent file/folder inside workspace is accepted
+    nonexistent_inside = ws / "nonexistent_dir" / "file.txt"
+    assert is_contained_in_workspace(nonexistent_inside, ws) is True
+
+    # Nonexistent file outside workspace is rejected
+    nonexistent_outside = ws.parent / "other_nonexistent" / "file.txt"
+    assert is_contained_in_workspace(nonexistent_outside, ws) is False
+
+
+def test_canonical_containment_traversal_attempts(tmp_path: Path):
+    from app.safety.workspace import is_contained_in_workspace
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    assert is_contained_in_workspace(ws / ".." / "evil.txt", ws) is False
+    assert is_contained_in_workspace(ws / "sub" / ".." / ".." / "evil.txt", ws) is False
+    assert is_contained_in_workspace("../evil.txt", ws) is False
+    assert is_contained_in_workspace("..", ws) is False
+
+
+def test_canonical_containment_drive_differences():
+    from app.safety.workspace import is_contained_in_workspace
+
+    # Drive difference test
+    assert is_contained_in_workspace("D:\\other\\file.txt", "C:\\workspace") is False
+    assert is_contained_in_workspace("C:\\workspace\\file.txt", "D:\\workspace") is False
+
+
+def test_canonical_containment_symlinks(tmp_path: Path):
+    from app.safety.workspace import is_contained_in_workspace
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    target_outside_file = outside / "sensitive.txt"
+    target_outside_file.write_text("classified", encoding="utf-8")
+
+    link_to_outside = ws / "symlink_outside"
+    try:
+        os.symlink(str(outside), str(link_to_outside), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlink creation requires elevated privileges or is not supported.")
+
+    # Symlink pointing outside workspace resolves outside and must be rejected
+    assert is_contained_in_workspace(link_to_outside / "sensitive.txt", ws) is False
+
+    # Symlink pointing inside workspace is accepted
+    inside_target = ws / "inside_target"
+    inside_target.mkdir()
+    link_to_inside = ws / "symlink_inside"
+    try:
+        os.symlink(str(inside_target), str(link_to_inside), target_is_directory=True)
+        assert is_contained_in_workspace(link_to_inside / "nested.txt", ws) is True
+    except (OSError, NotImplementedError):
+        pass
+
+
+def test_copilot_permission_handler_containment(tmp_path: Path):
+    from app.adapters.copilot import CopilotPermissionHandler
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    ws_evil = tmp_path / "workspace_evil"
+    ws_evil.mkdir()
+
+    handler = CopilotPermissionHandler(workspace_root=ws, allow_terminal=False)
+
+    class DummyReq:
+        def __init__(self, kind: str, path: str):
+            self.kind = kind
+            self.path = path
+
+    # Sibling with same textual prefix must be rejected
+    evil_req = DummyReq("read", str(ws_evil / "passwords.txt"))
+    res = handler.evaluate(evil_req, None)
+    assert type(res).__name__ == "PermissionDecisionReject"
+
+    # Traversal attempt must be rejected
+    traversal_req = DummyReq("write", str(ws / ".." / "evil.txt"))
+    res = handler.evaluate(traversal_req, None)
+    assert type(res).__name__ == "PermissionDecisionReject"
+
+    # Valid inside path is accepted
+    valid_req = DummyReq("read", str(ws / "main.py"))
+    res = handler.evaluate(valid_req, None)
+    assert type(res).__name__ == "PermissionDecisionApproveOnce"
+

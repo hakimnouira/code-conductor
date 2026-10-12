@@ -56,6 +56,7 @@ class TaskResponse(BaseModel):
     prompt: str
     created_at: float
     message: str = "Task queued"
+    workspace_path: str | None = None
 
 class EventType(str, Enum):
     STARTED = "started"

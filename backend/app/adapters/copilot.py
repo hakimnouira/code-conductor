@@ -41,16 +41,8 @@ class CopilotPermissionPolicy:
         if "Read" in req_type_name or kind == "read":
             target_path = getattr(request, "resolved_path", None) or getattr(request, "path", None)
             if target_path and self.workspace_root:
-                try:
-                    resolved = Path(target_path).resolve()
-                    is_contained = (
-                        resolved == self.workspace_root
-                        or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(self.workspace_root))
-                        or str(resolved).lower().startswith(str(self.workspace_root).lower())
-                    )
-                    if not is_contained:
-                        return PermissionDecisionReject()
-                except Exception:
+                from app.safety.workspace import is_contained_in_workspace
+                if not is_contained_in_workspace(target_path, self.workspace_root):
                     return PermissionDecisionReject()
             return PermissionDecisionApproveOnce()
 
@@ -65,17 +57,8 @@ class CopilotPermissionPolicy:
             if not target_path or not self.workspace_root:
                 return PermissionDecisionReject()
 
-            try:
-                # Resolve symbolic links and confirm workspace containment
-                resolved = Path(target_path).resolve()
-                is_contained = (
-                    resolved == self.workspace_root
-                    or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(self.workspace_root))
-                    or str(resolved).lower().startswith(str(self.workspace_root).lower())
-                )
-                if not is_contained:
-                    return PermissionDecisionReject()
-            except Exception:
+            from app.safety.workspace import is_contained_in_workspace
+            if not is_contained_in_workspace(target_path, self.workspace_root):
                 return PermissionDecisionReject()
 
             return PermissionDecisionApproveOnce()
@@ -89,6 +72,9 @@ class CopilotPermissionPolicy:
         # 4. Network URLs, MCP tools, Hooks, Memory, Environment/Extension access: rejected by default
         return PermissionDecisionReject()
 
+
+# Backward-compatible alias
+CopilotPermissionHandler = CopilotPermissionPolicy
 
 
 class CopilotAdapter(BaseAgentAdapter):

@@ -148,6 +148,7 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
         prompt=request.prompt,
         created_at=record.created_at,
         message=f"Task assigned to '{adapter.name}'",
+        workspace_path=str(validated_ws),
     )
 
 async def _run_task_pipeline(record: TaskRecord, adapter):

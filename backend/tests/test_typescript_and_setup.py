@@ -6,6 +6,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+pytestmark = [pytest.mark.windows, pytest.mark.unit]
+
 def test_typescript_compilation():
     npm_bin = shutil.which("npm.cmd") or shutil.which("npm")
     if not npm_bin:

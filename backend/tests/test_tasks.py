@@ -4,6 +4,8 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
 from app.main import app
 
+pytestmark = pytest.mark.mocked_integration
+
 @pytest.fixture
 def auth_headers():
     token = get_settings().auth_token

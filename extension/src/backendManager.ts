@@ -74,30 +74,92 @@ export class BackendManager {
     return process.platform === 'win32' ? 'python.exe' : 'python3';
   }
 
+  private isAiHubBackendProcess(pid: number): boolean {
+    if (process.platform === 'win32') {
+      try {
+        const cmd = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`;
+        const output = child_process.execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', cmd],
+          { encoding: 'utf8', timeout: 5000 }
+        );
+        if (!output) {
+          return false;
+        }
+        const lower = output.toLowerCase();
+        return lower.includes('uvicorn') && lower.includes('app.main:app');
+      } catch (_) {
+        return false;
+      }
+    } else {
+      try {
+        const procCmdPath = `/proc/${pid}/cmdline`;
+        if (fs.existsSync(procCmdPath)) {
+          const cmdline = fs.readFileSync(procCmdPath, 'utf8').toLowerCase();
+          return cmdline.includes('uvicorn') && cmdline.includes('app.main:app');
+        }
+        const output = child_process.execFileSync(
+          'ps',
+          ['-p', pid.toString(), '-o', 'args='],
+          { encoding: 'utf8', timeout: 4000 }
+        );
+        const lower = output.toLowerCase();
+        return lower.includes('uvicorn') && lower.includes('app.main:app');
+      } catch (_) {
+        return false;
+      }
+    }
+  }
+
   private cleanStaleTrackedProcess(): void {
     if (!fs.existsSync(this.pidFile)) {
       return;
     }
 
     try {
-      const pidStr = fs.readFileSync(this.pidFile, 'utf8').trim();
-      const pid = parseInt(pidStr, 10);
-      if (pid && !isNaN(pid)) {
-        this.outputChannel.appendLine(`[BackendManager] Found previous backend PID in lock file: ${pid}`);
-        if (process.platform === 'win32') {
-          // Terminate only this specific PID and its tree, never blanket port termination
-          try {
-            child_process.execSync(`taskkill /F /T /PID ${pid} 2>nul`);
-          } catch (_) {}
+      const rawContent = fs.readFileSync(this.pidFile, 'utf8').trim();
+      let pid = 0;
+
+      // Handle JSON lock file format or legacy raw PID
+      try {
+        const parsed = JSON.parse(rawContent);
+        if (parsed && typeof parsed.pid === 'number') {
+          pid = parsed.pid;
+        }
+      } catch (_) {
+        pid = parseInt(rawContent, 10);
+      }
+
+      if (pid && !isNaN(pid) && pid > 0) {
+        this.outputChannel.appendLine(`[BackendManager] Checking recorded backend PID in lock file: ${pid}`);
+
+        // Robust Windows-compatible process identity verification
+        // Never terminate an unrelated process due to stale lock files or PID reuse
+        const isVerifiedBackend = this.isAiHubBackendProcess(pid);
+        if (!isVerifiedBackend) {
+          this.outputChannel.appendLine(
+            `[BackendManager] PID ${pid} is not a valid AI Hub backend process (PID reuse detected or process already exited). Skipping termination.`
+          );
         } else {
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch (_) {}
+          this.outputChannel.appendLine(
+            `[BackendManager] Verified stale AI Hub backend process on PID ${pid}. Safely terminating.`
+          );
+          if (process.platform === 'win32') {
+            try {
+              child_process.execSync(`taskkill /F /T /PID ${pid} 2>nul`);
+            } catch (_) {}
+          } else {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch (_) {}
+          }
         }
       }
     } catch (_) {} finally {
       try {
-        fs.unlinkSync(this.pidFile);
+        if (fs.existsSync(this.pidFile)) {
+          fs.unlinkSync(this.pidFile);
+        }
       } catch (_) {}
     }
   }
@@ -170,7 +232,14 @@ export class BackendManager {
 
     if (this.process.pid) {
       try {
-        fs.writeFileSync(this.pidFile, this.process.pid.toString(), 'utf8');
+        const record = {
+          pid: this.process.pid,
+          port: this.port,
+          startTime: Date.now(),
+          workspaceRoot: rootPath,
+          command: `${pythonPath} -m uvicorn app.main:app --host 127.0.0.1 --port ${this.port}`,
+        };
+        fs.writeFileSync(this.pidFile, JSON.stringify(record, null, 2), 'utf8');
       } catch (_) {}
     }
 
@@ -184,10 +253,14 @@ export class BackendManager {
 
     this.process.on('exit', (code, signal) => {
       this.outputChannel.appendLine(`[BackendManager] Process exited with code ${code}, signal ${signal}`);
+      const exitedPid = this.process?.pid;
       this.process = null;
       try {
         if (fs.existsSync(this.pidFile)) {
-          fs.unlinkSync(this.pidFile);
+          const raw = fs.readFileSync(this.pidFile, 'utf8');
+          if (!exitedPid || raw.includes(`"pid": ${exitedPid}`) || raw.includes(`"pid":${exitedPid}`) || raw.trim() === exitedPid.toString()) {
+            fs.unlinkSync(this.pidFile);
+          }
         }
       } catch (_) {}
     });
@@ -211,7 +284,7 @@ export class BackendManager {
   public stop(): void {
     if (this.process && this.process.pid) {
       const pid = this.process.pid;
-      this.outputChannel.appendLine(`[BackendManager] Terminating tracked backend PID: ${pid}`);
+      this.outputChannel.appendLine(`[BackendManager] Terminating tracked backend child process: ${pid}`);
       if (process.platform === 'win32') {
         try {
           child_process.execSync(`taskkill /F /T /PID ${pid} 2>nul`);
@@ -222,11 +295,15 @@ export class BackendManager {
         } catch (_) {}
       }
       this.process = null;
+
+      try {
+        if (fs.existsSync(this.pidFile)) {
+          const raw = fs.readFileSync(this.pidFile, 'utf8');
+          if (raw.includes(`"pid": ${pid}`) || raw.includes(`"pid":${pid}`) || raw.trim() === pid.toString()) {
+            fs.unlinkSync(this.pidFile);
+          }
+        }
+      } catch (_) {}
     }
-    try {
-      if (fs.existsSync(this.pidFile)) {
-        fs.unlinkSync(this.pidFile);
-      }
-    } catch (_) {}
   }
 }

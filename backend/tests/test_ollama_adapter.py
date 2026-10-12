@@ -8,6 +8,8 @@ from starlette.routing import Route
 from app.adapters.ollama import OllamaAdapter
 from app.models.schemas import AvailabilityState, EventType, TaskCreateRequest
 
+pytestmark = pytest.mark.mocked_integration
+
 @pytest.mark.asyncio
 async def test_ollama_metadata():
     adapter = OllamaAdapter()

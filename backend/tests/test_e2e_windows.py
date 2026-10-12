@@ -10,6 +10,8 @@ from app.core.config import get_settings
 from app.main import app
 from app.models.schemas import AvailabilityState, EventType
 
+pytestmark = [pytest.mark.windows, pytest.mark.mocked_integration]
+
 
 @pytest.fixture
 def auth_headers():
