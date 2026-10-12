@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useRef,useState} from "react";
-import {Activity,ArrowDown,ArrowRight,Bot,CheckCircle2,ChevronDown,Clock3,Code2,Command,GitBranch,LayoutDashboard,LoaderCircle,MessageSquare,RefreshCw,Send,Settings2,ShieldCheck,Sparkles,Square,TestTube2,Workflow,X,CircleAlert,Bell,Volume2,KeyRound,ShieldAlert,Trash2} from "lucide-react";
+import {Activity,ArrowDown,ArrowRight,Bot,CheckCircle2,ChevronDown,Clock3,Code2,Command,GitBranch,LayoutDashboard,LoaderCircle,MessageSquare,RefreshCw,Send,Settings2,ShieldCheck,Sparkles,Square,TestTube2,Workflow,X,CircleAlert,Bell,KeyRound,ShieldAlert,Trash2} from "lucide-react";
 type Agent={id:string;name:string;description:string;state:string;diagnostic?:string;capabilities?:{supported_models?:string[]}};
 type Health={status:string;version:string;workspace:string;active_tasks:number};
 type Task={task_id:string;status:string;agent_id:string;prompt?:string;workspace_path?:string};
