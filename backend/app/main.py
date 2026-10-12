@@ -129,7 +129,8 @@ app.add_middleware(
         "http://127.0.0.1:4173", "http://localhost:4173",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    # The dashboard uses PUT/DELETE for project rules and browser model management.
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -320,6 +321,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
 
             verification_attempt += 1
             result = await runner.run_tests(command_key=command_key, timeout_seconds=120)
+            # Cancellation can arrive while the test subprocess is running. Do not
+            # emit a stale verification result or let this pipeline overwrite it.
+            if record.status == TaskStatus.CANCELLED:
+                break
             await record.event_queue.put(json.dumps({
                 "task_id": record.task_id, "event_type": "log",
                 "text": f"Verification attempt {verification_attempt}/{record.request.verification_max_attempts}: {command_key} {'passed' if result.passed else 'failed'} (exit {result.exit_code}).",

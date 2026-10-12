@@ -49,20 +49,48 @@ class SafeTestRunner:
         }
 
     def discover_runner(self) -> str | None:
-        """Select a known test runner from project metadata without executing scripts."""
+        """Select a likely test runner from explicit test configuration or test files.
+
+        Merely having a generic pyproject.toml/setup.cfg is not evidence that pytest
+        is configured; doing so can trigger a failing verification run in unrelated
+        Python projects.
+        """
         import json
 
         root = self.workspace_root
-        if (root / "pytest.ini").is_file() or (root / "pyproject.toml").is_file() or (root / "setup.cfg").is_file():
+        if (root / "pytest.ini").is_file():
             return "pytest"
-        if (root / "tests").is_dir() and any(root.glob("tests/test_*.py")):
+
+        pyproject = root / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                text = pyproject.read_text(encoding="utf-8")
+                if "[tool.pytest.ini_options]" in text:
+                    return "pytest"
+            except (OSError, UnicodeError):
+                pass
+
+        setup_cfg = root / "setup.cfg"
+        if setup_cfg.is_file():
+            try:
+                text = setup_cfg.read_text(encoding="utf-8")
+                if "[tool:pytest]" in text:
+                    return "pytest"
+            except (OSError, UnicodeError):
+                pass
+
+        tests_dir = root / "tests"
+        if tests_dir.is_dir() and any(tests_dir.glob("test_*.py")):
             return "pytest"
+        if any(root.glob("test_*.py")):
+            return "pytest"
+
         package_file = root / "package.json"
         if package_file.is_file():
             try:
                 package = json.loads(package_file.read_text(encoding="utf-8"))
                 scripts = package.get("scripts", {})
-                if isinstance(scripts, dict) and scripts.get("test"):
+                if isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and scripts["test"].strip():
                     return "npm_test"
             except (OSError, UnicodeError, json.JSONDecodeError):
                 return None
