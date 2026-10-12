@@ -14,7 +14,7 @@ import secrets
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from fastapi.security import HTTPAuthorizationCredentials
 from sse_starlette.sse import EventSourceResponse
 
