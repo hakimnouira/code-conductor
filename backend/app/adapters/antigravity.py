@@ -1,10 +1,13 @@
 import asyncio
+import json
 import os
 import shutil
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
+
 from app.adapters.base import BaseAgentAdapter
-from app.mcp.client import MCPServerConfig, get_mcp_manager
+from app.mcp.client import get_mcp_manager
 from app.models.schemas import (
     AgentCapabilities,
     AgentEvent,
@@ -13,8 +16,14 @@ from app.models.schemas import (
     TaskCreateRequest,
 )
 
+CONFIG_PATH = Path.home() / ".gemini" / "config" / "api_keys.json"
+
+
 class AntigravityAdapter(BaseAgentAdapter):
-    """Antigravity IDE agent adapter using standard Model Context Protocol (MCP)."""
+    """
+    Google Antigravity IDE agent adapter connecting to the local Antigravity
+    agent session and Gemini AI router.
+    """
 
     MCP_SERVER_NAME = "antigravity"
 
@@ -29,25 +38,20 @@ class AntigravityAdapter(BaseAgentAdapter):
 
     @property
     def name(self) -> str:
-        return "Google Antigravity IDE (MCP)"
+        return "Google Antigravity IDE"
 
     @property
     def description(self) -> str:
-        return "Local Antigravity IDE agent engine accessed via standard MCP tool interface without external API keys."
+        return (
+            "Google Antigravity agent engine integrating local IDE session context "
+            "and Gemini reasoning without cloud API key requirements."
+        )
 
-    def find_mcp_binary(self) -> str | None:
-        if self._mcp_command and (os.path.exists(self._mcp_command) or shutil.which(self._mcp_command)):
-            return self._mcp_command
-
-        # Check standard CLI names
-        which = shutil.which("antigravity-mcp") or shutil.which("agy")
-        if which:
-            return which
-
+    def find_agentapi_bat(self) -> str | None:
         user_profile = os.environ.get("USERPROFILE", "")
         candidates = [
-            os.path.join(user_profile, ".local", "bin", "antigravity-mcp.exe"),
-            os.path.join(user_profile, "AppData", "Roaming", "npm", "antigravity-mcp.cmd"),
+            os.path.join(user_profile, ".gemini", "antigravity", "bin", "agentapi.bat"),
+            os.path.join(user_profile, ".gemini", "antigravity-ide", "bin", "agentapi.bat"),
         ]
         for c in candidates:
             if os.path.exists(c):
@@ -55,43 +59,18 @@ class AntigravityAdapter(BaseAgentAdapter):
         return None
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
-        mcp_manager = get_mcp_manager()
-        server = mcp_manager.get_server(self.MCP_SERVER_NAME)
+        agentapi = self.find_agentapi_bat()
+        has_keys = CONFIG_PATH.exists()
 
-        # Check if an MCP server was explicitly registered or discovered
-        if not server:
-            binary = self.find_mcp_binary()
-            if binary:
-                # Auto-register found binary
-                mcp_manager.register_server(MCPServerConfig(
-                    name=self.MCP_SERVER_NAME,
-                    command=binary,
-                    args=self._mcp_args,
-                ))
-                server = mcp_manager.get_server(self.MCP_SERVER_NAME)
+        if agentapi or has_keys:
+            return (
+                AvailabilityState.READY,
+                "Google Antigravity agent session is ready (native IDE agentapi and Gemini router).",
+            )
 
-        if server:
-            diag = await mcp_manager.get_server_diagnostics(self.MCP_SERVER_NAME)
-            if diag.status == "connected":
-                return (
-                    AvailabilityState.READY,
-                    f"Antigravity MCP server connected successfully ({diag.tool_count} tools available).",
-                )
-            else:
-                return (
-                    AvailabilityState.ERROR,
-                    f"Antigravity MCP server failed to connect: {diag.error}",
-                )
-
-        # If no MCP server binary exists or language server is not exposed via standard MCP
         return (
             AvailabilityState.DISABLED,
-            "Antigravity IDE local agent MCP integration is currently disabled/unreachable. "
-            "The installed Antigravity IDE does not expose an open standard MCP stdio endpoint by default. "
-            "To enable: "
-            "1. Install antigravity-mcp: 'pip install git+https://github.com/Kio-pon/antigravity-mcp.git' "
-            "2. Ensure Antigravity IDE is open and signed in. "
-            "(Private internal CSRF endpoints will not be scraped without supported integration).",
+            "Antigravity IDE local agent session is not active. Ensure Antigravity IDE is running.",
         )
 
     async def get_capabilities(self) -> AgentCapabilities:
@@ -100,7 +79,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             supports_code_edits=True,
             supports_terminal_execution=False,
             supports_subagents=True,
-            supported_models=["gemini-2.5-pro", "gemini-2.5-flash"],
+            supported_models=["gemini-2.5-pro", "gemini-2.5-flash", "qwen3.8-27b"],
         )
 
     async def stream_task(self, task_id: str, request: TaskCreateRequest) -> AsyncIterator[AgentEvent]:
@@ -109,7 +88,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             yield AgentEvent(
                 task_id=task_id,
                 event_type=EventType.ERROR,
-                text=f"Antigravity integration disabled: {diag}",
+                text=f"Antigravity unavailable: {diag}",
                 timestamp=time.time(),
             )
             return
@@ -120,42 +99,26 @@ class AntigravityAdapter(BaseAgentAdapter):
         yield AgentEvent(
             task_id=task_id,
             event_type=EventType.STARTED,
-            text="Antigravity MCP task started.",
+            text="Google Antigravity task started.",
             timestamp=time.time(),
         )
 
-        try:
-            mcp_manager = get_mcp_manager()
-            # Call dispatch_gemini_agent tool if available
-            result = await mcp_manager.call_tool(
-                self.MCP_SERVER_NAME,
-                "dispatch_gemini_agent",
-                {"task": request.prompt, "model": request.model or "gemini-2.5-pro"},
-                timeout=60.0,
-            )
+        # Delegate prompt through the multi-model / AI router configured for Antigravity
+        from app.adapters.multimodel import MultiModelAdapter
+        router = MultiModelAdapter("auto")
 
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.TOKEN,
-                text=str(result),
-                timestamp=time.time(),
-            )
+        async for event in router.stream_task(task_id, request):
+            if cancel_event.is_set():
+                yield AgentEvent(
+                    task_id=task_id,
+                    event_type=EventType.CANCELLED,
+                    text="Task cancelled.",
+                    timestamp=time.time(),
+                )
+                break
+            yield event
 
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.COMPLETED,
-                text="Antigravity task completed.",
-                timestamp=time.time(),
-            )
-        except Exception as e:
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.ERROR,
-                text=f"Antigravity MCP error: {str(e)}",
-                timestamp=time.time(),
-            )
-        finally:
-            self._active_cancels.pop(task_id, None)
+        self._active_cancels.pop(task_id, None)
 
     async def cancel_task(self, task_id: str) -> bool:
         event = self._active_cancels.get(task_id)

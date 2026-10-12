@@ -159,10 +159,11 @@ class CodexAdapter(BaseAgentAdapter):
         )
 
         # Build non-interactive command line
-        # Use exec non-interactive mode with workspace scoping
-        cmd = [exe, "exec", "--cwd", str(workspace), request.prompt]
+        # Build non-interactive command line using official Codex CLI exec syntax
+        cmd = [exe, "exec", "-C", str(workspace), "--skip-git-repo-check"]
         if request.model and request.model != "default":
-            cmd.extend(["--model", request.model])
+            cmd.extend(["-m", request.model])
+        cmd.append(request.prompt)
 
         env = dict(os.environ)
         # Ensure we do NOT force an OPENAI_API_KEY if the user relies on their existing ChatGPT subscription
@@ -177,44 +178,49 @@ class CodexAdapter(BaseAgentAdapter):
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
+        def spawn_proc():
+            return subprocess.Popen(
+                cmd,
                 cwd=str(workspace),
                 env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=creationflags,
             )
+
+        try:
+            proc = await asyncio.to_thread(spawn_proc)
             self._active_processes[task_id] = proc
 
             # Stream stdout lines
-            async def read_stream(stream, is_stderr=False):
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
-                    decoded = line.decode("utf-8", errors="replace")
+            while True:
+                line = await asyncio.to_thread(proc.stdout.readline)
+                if not line:
+                    break
+                if cancel_event.is_set():
+                    if os.name == "nt" and proc.pid:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                    else:
+                        proc.kill()
                     yield AgentEvent(
                         task_id=task_id,
-                        event_type=EventType.LOG if is_stderr else EventType.TOKEN,
-                        text=decoded,
+                        event_type=EventType.CANCELLED,
+                        text="Codex execution cancelled.",
                         timestamp=time.time(),
                     )
+                    return
+                yield AgentEvent(
+                    task_id=task_id,
+                    event_type=EventType.TOKEN,
+                    text=line,
+                    timestamp=time.time(),
+                )
 
-            if proc.stdout:
-                async for event in read_stream(proc.stdout, is_stderr=False):
-                    if cancel_event.is_set():
-                        yield AgentEvent(
-                            task_id=task_id,
-                            event_type=EventType.CANCELLED,
-                            text="Codex execution cancelled.",
-                            timestamp=time.time(),
-                        )
-                        return
-                    yield event
-
-            await proc.wait()
+            await asyncio.to_thread(proc.wait)
 
             if cancel_event.is_set():
                 yield AgentEvent(
@@ -231,10 +237,7 @@ class CodexAdapter(BaseAgentAdapter):
                     timestamp=time.time(),
                 )
             else:
-                stderr_output = ""
-                if proc.stderr:
-                    err_bytes = await proc.stderr.read()
-                    stderr_output = err_bytes.decode("utf-8", errors="replace")
+                stderr_output = await asyncio.to_thread(proc.stderr.read)
                 yield AgentEvent(
                     task_id=task_id,
                     event_type=EventType.ERROR,
@@ -246,10 +249,11 @@ class CodexAdapter(BaseAgentAdapter):
             yield AgentEvent(
                 task_id=task_id,
                 event_type=EventType.ERROR,
-                text=f"Process launch error: {str(e)}",
+                text=f"Process launch error: {type(e).__name__}: {str(e)}",
                 timestamp=time.time(),
             )
         finally:
+
             self._active_processes.pop(task_id, None)
             self._active_cancels.pop(task_id, None)
 
