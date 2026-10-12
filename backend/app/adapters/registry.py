@@ -2,6 +2,8 @@ from app.adapters.antigravity import AntigravityAdapter
 from app.adapters.base import BaseAgentAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.copilot import CopilotAdapter
+from app.adapters.custom_provider import CustomProviderAdapter
+from app.core.provider_store import list_providers
 from app.adapters.echo import EchoMockAdapter
 from app.adapters.multimodel import MultiModelAdapter
 from app.adapters.ollama import OllamaAdapter
@@ -20,6 +22,9 @@ class AgentRegistry:
         self.register(AntigravityAdapter())
         self.register(MultiModelAdapter("groq"))
         self.register(MultiModelAdapter("auto"))
+        # User-added OpenAI-compatible endpoints; API keys stay in the OS credential store.
+        for provider in list_providers():
+            self.register(CustomProviderAdapter(provider))
 
         # 2. Register multi-agent orchestrator coordinator
         self.register(OrchestratorAdapter())
@@ -33,13 +38,16 @@ class AgentRegistry:
     def get(self, agent_id: str) -> BaseAgentAdapter | None:
         return self._adapters.get(agent_id)
 
+    def unregister(self, agent_id: str) -> None:
+        self._adapters.pop(agent_id, None)
+
     async def list_agents(self) -> list[AgentInfo]:
         import asyncio
         return await asyncio.gather(*[adapter.get_info() for adapter in self._adapters.values()])
 
     async def get_ready_workers(self) -> list[BaseAgentAdapter]:
         """Returns all currently ready real worker adapters (excluding orchestrator and mock)."""
-        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"]
+        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"] + [wid for wid in self._adapters if wid.startswith("custom-")]
         ready_workers: list[BaseAgentAdapter] = []
         for wid in worker_ids:
             adapter = self._adapters.get(wid)
