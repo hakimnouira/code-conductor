@@ -5,3 +5,24 @@
 @media(max-width:850px){.sidebar{width:66px;padding:20px 9px}.brand{padding:0 5px 25px}.brand>div:last-child,.nav{font-size:0;gap:0;justify-content:center}.nav{height:40px}.nav svg{width:18px;height:18px}.section,.tinylabel,.sideinput,.project,.connection,.settingslink{display:none}.workgrid,.bottom{grid-template-columns:1fr}.welcome h1{font-size:27px}.metrics{gap:8px}.metric{gap:8px}.metricicon{width:31px;height:31px}.metric b{font-size:18px}.metric .capitalize{font-size:13px!important}.safetip{display:none}}
 @media(max-width:560px){.content{padding:18px 12px}.topbar{height:52px;padding:0 13px}.local{display:none}.welcome{align-items:flex-start}.date{display:none}.welcome h1{font-size:24px}.metrics{grid-template-columns:1fr}.metric{padding:10px 12px}.metric>span{display:block}.composer,.agentpanel,.activity,.gitpanel,.logs{padding:14px}.panelhead{gap:8px}.shortcut{display:none}.composerfoot{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-end}.primary,.secondary{padding:9px}.nodestate{font-size:0}.nodestate svg{width:15px;height:15px}.node{gap:9px;padding:10px}.runtests{font-size:0;padding:8px}.runtests svg{width:15px;height:15px}.subtasks{grid-template-columns:1fr}.planbanner{margin:0 12px 12px}footer{flex-direction:column}.logrow{grid-template-columns:58px 7px 1fr}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important}}
+/* Code Conductor permissions, notifications, and provider settings */
+.modal{max-height:calc(100vh - 36px);overflow-y:auto}
+.settings-section{border-top:1px solid #293248;margin-top:20px;padding-top:16px}
+.settings-title{display:flex;align-items:center;gap:8px;color:#d9def0;font:700 12px Manrope,sans-serif;margin-bottom:8px}
+.setting-help{font-size:10px;line-height:1.65;color:#8995ad;margin:7px 0 12px}
+.modal .toggleline{display:flex;align-items:center;gap:9px;margin:10px 0;color:#b9c2d5;font-size:10px}
+.modal .toggleline input{width:14px;height:14px;margin:0;accent-color:#8f80f7}
+.modal label select{display:block;width:100%;margin-top:7px;padding:10px 12px;border-radius:8px;background:#0b1120;color:#e6eaf5;border:1px solid #303a51;font-size:11px}
+.mode-select{margin-left:auto}
+.mode-select select{max-width:180px}
+.god-select{border-color:#8b3d49;background:#321e29;color:#ff9ea6}
+.danger-security{color:#ffb3b8;background:#381f29;border:1px solid #703844}
+.provider-form{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.provider-form label{margin:7px 0}
+.provider-list{margin-top:12px}
+.provider-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid #252e42}
+.provider-row>div{min-width:0;flex:1}
+.provider-row b{display:block;font-size:10px;color:#e4e8f2}
+.provider-row small{display:block;margin-top:4px;color:#8390a8;font-size:9px;overflow-wrap:anywhere}
+.provider-row .secondary{padding:7px 9px}
+@media(max-width:560px){.provider-form{grid-template-columns:1fr}.mode-select{margin-left:0}.mode-select select{max-width:150px}.modal{padding:16px}}
