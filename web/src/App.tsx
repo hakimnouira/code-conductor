@@ -9,7 +9,7 @@ import {
 type Agent = { id: string; name: string; description: string; state: string; diagnostic?: string; capabilities?: { supported_models?: string[] } };
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
-type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown> };
+type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
 type NotificationPrefs = { enabled: boolean; completion: boolean; action: boolean; sound: string };
@@ -184,6 +184,7 @@ export default function App() {
       return [];
     }
   });
+  const resumedTaskIds = useRef<Set<string>>(new Set());
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [taskHistorySearch, setTaskHistorySearch] = useState("");
@@ -600,6 +601,7 @@ export default function App() {
   };
 
   const streamTask = async (created: Task, signal: AbortSignal, taskPrompt: string = "", agentName: string = "") => {
+    resumedTaskIds.current.add(created.task_id);
     latestTaskId.current = created.task_id;
     setTask(created);
 
@@ -622,38 +624,85 @@ export default function App() {
     });
     setSelectedHistoryId(created.task_id);
 
-    const response = await request("/tasks/" + encodeURIComponent(created.task_id) + "/events", { signal });
-    if (!response.body) throw new Error("No event stream returned.");
-    const reader = response.body.getReader(), decoder = new TextDecoder();
-    let buffer = "", taskOutput = "";
-    let taskFailed = false;
-    const collectedEvents: Ev[] = [];
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || "";
-      for (const block of blocks) {
-        const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
-        if (!data || data === "[DONE]") continue;
-        try {
-          const event = JSON.parse(data) as Ev;
-          collectedEvents.push(event);
-          setEvents(old => [...old, event]);
-          if (event.event_type === "token") taskOutput += event.text || "";
-          if (event.event_type === "completed" && !taskOutput && event.text) taskOutput = event.text;
-          if (event.event_type === "error") taskFailed = true;
-          if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
-          if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
-          if (event.event_type === "needs_action" || ((event.event_type === "tool_call" || event.event_type === "log") && /permission|approval|confirm|waiting|blocked|soft-denied/i.test(event.text || ""))) {
-            notify("action", "Code Conductor · Action needed", event.text || "The agent may be waiting for approval.");
+    const previousHistory = taskHistory.find(item => item.id === created.task_id);
+    let lastEventId = Math.max(0, ...(previousHistory?.events || []).map(event => event.event_id || 0));
+    let reconnectAttempts = 0;
+    let streamDone = false;
+    let streamInterrupted = false;
+    while (!streamDone) {
+      try {
+        const response = await request(
+          "/tasks/" + encodeURIComponent(created.task_id) + "/events?after=" + lastEventId,
+          { signal }
+        );
+        if (!response.body) throw new Error("No event stream returned.");
+        const reader = response.body.getReader(), decoder = new TextDecoder();
+        let buffer = "";
+        let receivedDoneSignal = false;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || "";
+          for (const block of blocks) {
+            const idLine = block.split(/\r?\n/).find(line => line.startsWith("id:"));
+            if (idLine) {
+              const parsedId = Number(idLine.slice(3).trim());
+              if (Number.isSafeInteger(parsedId) && parsedId > lastEventId) lastEventId = parsedId;
+            }
+            const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+            if (!data) continue;
+            if (data === "[DONE]") {
+              receivedDoneSignal = true;
+              break;
+            }
+            try {
+              const event = JSON.parse(data) as Ev;
+              const eventIdLine = block.split(/\r?\n/).find(line => line.startsWith("id:"));
+              if (eventIdLine) {
+                const parsedEventId = Number(eventIdLine.slice(3).trim());
+                if (Number.isSafeInteger(parsedEventId)) event.event_id = parsedEventId;
+              }
+              collectedEvents.push(event);
+              setEvents(old => [...old, event]);
+              if (event.event_type === "token") taskOutput += event.text || "";
+              if (event.event_type === "completed" && !taskOutput && event.text) taskOutput = event.text;
+              if (event.event_type === "error") taskFailed = true;
+              if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
+              if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
+              if (event.event_type === "needs_action" || ((event.event_type === "tool_call" || event.event_type === "log") && /permission|approval|confirm|waiting|blocked|soft-denied/i.test(event.text || ""))) {
+                notify("action", "Code Conductor · Action needed", event.text || "The agent may be waiting for approval.");
+              }
+              if (event.event_type === "completed" || event.event_type === "error" || event.event_type === "cancelled") {
+                setTask(old => old ? { ...old, status: event.event_type === "completed" ? "completed" : event.event_type === "error" ? "failed" : "cancelled" } : old);
+              }
+            } catch { /* Ignore malformed SSE payloads; the durable event cursor still advances. */ }
           }
-          if (event.event_type === "completed" || event.event_type === "error" || event.event_type === "cancelled") {
-            setTask(old => old ? { ...old, status: event.event_type === "completed" ? "completed" : event.event_type === "error" ? "failed" : "cancelled" } : old);
-          }
-        } catch { /* Ignore malformed SSE */ }
+          if (receivedDoneSignal) break;
+        }
+        if (receivedDoneSignal) {
+          streamDone = true;
+          try { await reader.cancel(); } catch {}
+          break;
+        }
+        // A dropped stream is not completion. Reconnect from the last durable event ID.
+        if (reconnectAttempts >= 5) {
+          streamInterrupted = true;
+          break;
+        }
+        reconnectAttempts += 1;
+        await new Promise(resolve => setTimeout(resolve, 250 * reconnectAttempts));
+      } catch (e) {
+        if (signal.aborted) throw e;
+        if (reconnectAttempts >= 5) {
+          streamInterrupted = true;
+          break;
+        }
+        reconnectAttempts += 1;
+        await new Promise(resolve => setTimeout(resolve, 250 * reconnectAttempts));
       }
     }
+
 
     // Never infer success from a closed stream. Ask the backend for the authoritative
     // terminal state so a dropped/malformed SSE stream cannot mark failed work as complete.
@@ -670,6 +719,7 @@ export default function App() {
       // Keep the best status inferred from events if the backend snapshot is unavailable.
     }
     taskFailed = finalStatus === "failed" || finalStatus === "cancelled" || finalStatus === "running";
+    if (streamInterrupted) setNotice("The event stream disconnected after several reconnect attempts. Task state was recovered from the backend; reopen the task to replay its event history.");
     setTask(old => old ? { ...old, status: finalStatus } : old);
 
     // Finalize history entry
@@ -678,8 +728,12 @@ export default function App() {
         return {
           ...item,
           status: finalStatus,
-          output: taskOutput,
-          events: [...collectedEvents]
+          output: taskOutput || item.output,
+          events: (() => {
+            const existing = item.events || [];
+            const existingIds = new Set(existing.map(event => event.event_id).filter((id): id is number => typeof id === "number"));
+            return [...existing, ...collectedEvents.filter(event => typeof event.event_id !== "number" || !existingIds.has(event.event_id))];
+          })()
         };
       }
       return item;
@@ -687,6 +741,75 @@ export default function App() {
 
     return { output: taskOutput, failed: taskFailed };
   };
+
+  // Hydrate task summaries from the backend so history survives browser-profile changes.
+  useEffect(() => {
+    if (!health) return;
+    let ignore = false;
+    void request("/tasks?limit=100").then(r => r.json()).then((rows: {
+      task_id: string; status: string; agent_id: string; prompt: string; created_at: number;
+    }[]) => {
+      if (ignore || !Array.isArray(rows)) return;
+      setTaskHistory(old => {
+        const merged = new Map(old.map(item => [item.id, item]));
+        for (const row of rows) {
+          const prior = merged.get(row.task_id);
+          const status: TaskHistoryItem["status"] =
+            row.status === "completed" ? "completed" :
+            row.status === "failed" ? "failed" :
+            row.status === "cancelled" ? "cancelled" : "running";
+          merged.set(row.task_id, {
+            id: row.task_id,
+            timestamp: row.created_at * 1000,
+            prompt: row.prompt || prior?.prompt || "Task",
+            agentId: row.agent_id,
+            agentName: agents.find(a => a.id === row.agent_id)?.name || prior?.agentName || row.agent_id,
+            status,
+            output: prior?.output || "",
+            events: prior?.events || [],
+          });
+        }
+        return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+      });
+    }).catch(() => { /* Backend may be upgrading or temporarily unavailable. */ });
+    return () => { ignore = true; };
+  }, [health?.status, base, token, agents]);
+
+  // Reattach to persisted tasks that were still running when the page was refreshed.
+  useEffect(() => {
+    if (!health || busy) return;
+    const candidate = taskHistory.find(item => item.status === "running" && !resumedTaskIds.current.has(item.id));
+    if (!candidate) return;
+    resumedTaskIds.current.add(candidate.id);
+    void request("/tasks/" + encodeURIComponent(candidate.id)).then(r => r.json()).then(snapshot => {
+      if (snapshot.status === "completed" || snapshot.status === "failed" || snapshot.status === "cancelled") {
+        setTaskHistory(old => old.map(item => item.id === candidate.id ? { ...item, status: snapshot.status } : item));
+        return;
+      }
+      if (busy || abort.current) {
+        resumedTaskIds.current.delete(candidate.id);
+        return;
+      }
+      const controller = new AbortController();
+      abort.current = controller;
+      setBusy(true);
+      setNotice("Resuming task event stream…");
+      void streamTask(
+        { task_id: candidate.id, status: snapshot.status || "running", agent_id: candidate.agentId },
+        controller.signal,
+        candidate.prompt,
+        candidate.agentName
+      ).catch(e => {
+        if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task reconnection failed");
+      }).finally(() => {
+        setBusy(false);
+        abort.current = null;
+        latestTaskId.current = null;
+      });
+    }).catch(() => {
+      resumedTaskIds.current.delete(candidate.id);
+    });
+  }, [health?.status, busy, taskHistory, base, token]);
 
   const dispatch = async (taskPrompt: string, selectedAgent: string, signal: AbortSignal) => {
     let effectiveAgent = selectedAgent;
