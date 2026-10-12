@@ -26,3 +26,5 @@
 .provider-row small{display:block;margin-top:4px;color:#8390a8;font-size:9px;overflow-wrap:anywhere}
 .provider-row .secondary{padding:7px 9px}
 @media(max-width:560px){.provider-form{grid-template-columns:1fr}.mode-select{margin-left:0}.mode-select select{max-width:150px}.modal{padding:16px}}
+
+.modal textarea{display:block;width:100%;margin-top:7px;padding:11px 12px;border-radius:8px;background:#0b1120;color:#e6eaf5;border:1px solid #303a51;outline:none;font-size:11px;resize:vertical}.modal textarea:focus{border-color:#8374f4;box-shadow:0 0 0 3px #8e7cff15}
