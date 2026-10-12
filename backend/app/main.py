@@ -255,20 +255,106 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "text": "GitHub research failed safely; continuing without external references: " + str(research_error)[:240],
                     "timestamp": time.time(), "data": {"phase": "github_research", "status": "error"},
                 }))
-        async for event in adapter.stream_task(record.task_id, record.request):
-            payload = event.model_dump_json()
-            await record.event_queue.put(payload)
-            if event.event_type in (EventType.COMPLETED, EventType.CANCELLED, EventType.ERROR):
+        verification_attempt = 0
+        while True:
+            terminal_event = None
+            async for event in adapter.stream_task(record.task_id, record.request):
+                if event.event_type == EventType.COMPLETED:
+                    # Delay success until requested verification has completed.
+                    terminal_event = event
+                    continue
+                payload = event.model_dump_json()
+                await record.event_queue.put(payload)
+                if event.event_type in (EventType.CANCELLED, EventType.ERROR):
+                    terminal_event_seen = True
+                    if record.status != TaskStatus.CANCELLED:
+                        if event.event_type == EventType.CANCELLED:
+                            record.status = TaskStatus.CANCELLED
+                        else:
+                            record.status = TaskStatus.FAILED
+                            record.error = event.text or "Agent reported an execution error."
+                    record.completed_at = time.time()
+                    break
+
+            if record.status in (TaskStatus.CANCELLED, TaskStatus.FAILED):
+                break
+            if terminal_event is None:
+                break
+
+            if not record.request.auto_verify:
+                await record.event_queue.put(terminal_event.model_dump_json())
                 terminal_event_seen = True
-                if record.status != TaskStatus.CANCELLED:
-                    if event.event_type == EventType.COMPLETED:
-                        record.status = TaskStatus.COMPLETED
-                    elif event.event_type == EventType.CANCELLED:
-                        record.status = TaskStatus.CANCELLED
-                    else:
-                        record.status = TaskStatus.FAILED
-                        record.error = event.text or "Agent reported an execution error."
+                record.status = TaskStatus.COMPLETED
                 record.completed_at = time.time()
+                break
+
+            runner = SafeTestRunner(record.request.workspace_path)
+            command_key = runner.discover_runner()
+            if command_key is None:
+                await record.event_queue.put(json.dumps({
+                    "task_id": record.task_id, "event_type": "log",
+                    "text": "Verification skipped: no supported test command was detected. Enable a test script or configure tests, then rerun with Auto Verify.",
+                    "timestamp": time.time(),
+                    "data": {"phase": "verification", "status": "skipped"},
+                }))
+                await record.event_queue.put(terminal_event.model_dump_json())
+                terminal_event_seen = True
+                record.status = TaskStatus.COMPLETED
+                record.completed_at = time.time()
+                break
+
+            verification_attempt += 1
+            result = await runner.run_tests(command_key=command_key, timeout_seconds=120)
+            await record.event_queue.put(json.dumps({
+                "task_id": record.task_id, "event_type": "log",
+                "text": f"Verification attempt {verification_attempt}/{record.request.verification_max_attempts}: {command_key} {'passed' if result.passed else 'failed'} (exit {result.exit_code}).",
+                "timestamp": time.time(),
+                "data": {
+                    "phase": "verification",
+                    "status": "passed" if result.passed else "failed",
+                    "attempt": verification_attempt,
+                    "max_attempts": record.request.verification_max_attempts,
+                    "command": result.command,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout": result.stdout[-12000:],
+                    "stderr": result.stderr[-12000:],
+                },
+            }))
+            if result.passed:
+                await record.event_queue.put(terminal_event.model_dump_json())
+                terminal_event_seen = True
+                record.status = TaskStatus.COMPLETED
+                record.completed_at = time.time()
+                break
+
+            if verification_attempt >= record.request.verification_max_attempts:
+                record.status = TaskStatus.FAILED
+                record.error = f"Verification failed after {verification_attempt} attempt(s): {command_key} exited {result.exit_code}."
+                record.completed_at = time.time()
+                await record.event_queue.put(json.dumps({
+                    "task_id": record.task_id, "event_type": "error",
+                    "text": record.error,
+                    "timestamp": record.completed_at,
+                    "data": {"phase": "verification", "command": result.command, "exit_code": result.exit_code},
+                }))
+                terminal_event_seen = True
+                break
+
+            # Feed bounded diagnostics back to the same agent for a repair attempt.
+            diagnostics = (result.stdout + "\n" + result.stderr)[-12000:]
+            record.request.prompt += (
+                "\n\nAUTOMATED VERIFICATION FAILED. Fix the underlying issue, do not hide or "
+                "delete tests. Then summarize the repair.\n"
+                f"Command: {result.command}\nExit code: {result.exit_code}\n"
+                f"Diagnostics (truncated):\n{diagnostics}"
+            )
+            await record.event_queue.put(json.dumps({
+                "task_id": record.task_id, "event_type": "log",
+                "text": "Sending verification diagnostics to the agent for a repair attempt.",
+                "timestamp": time.time(),
+                "data": {"phase": "verification", "status": "repair_requested", "attempt": verification_attempt},
+            }))
     except asyncio.CancelledError:
         record.status = TaskStatus.CANCELLED
         record.completed_at = time.time()
@@ -454,6 +540,13 @@ async def restore_git_checkpoint(req: CheckpointRequest, _: str = Depends(requir
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Checkpoint identifier required")
     guard = _get_git_guard(req.workspace_path)
     return await guard.restore_checkpoint(req.name, force=req.force)
+
+@app.get("/workspace/test/discover")
+async def discover_tests(workspace_path: str | None = None, _: str = Depends(require_bearer_token)):
+    """Report a supported test runner detected from workspace metadata."""
+    runner = _get_test_runner(workspace_path)
+    return {"workspace_path": str(runner.workspace_root), "command_key": runner.discover_runner()}
+
 
 @app.post("/workspace/test/run", response_model=TestRunResponse)
 async def run_tests(req: TestRunRequest, _: str = Depends(require_bearer_token)):
