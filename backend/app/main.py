@@ -59,6 +59,8 @@ from pathlib import Path
 from app.repository_import import router as repository_import_router
 from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
+from app.browser_session import router as browser_session_router
+from app.guided_workflow import router as guided_workflow_router
 
 
 
@@ -93,6 +95,8 @@ app = FastAPI(
 
 app.include_router(repository_import_router)
 app.include_router(antigravity_history_router)
+app.include_router(browser_session_router)
+app.include_router(guided_workflow_router)
 
 # Strictly restrict CORS to local origin
 app.add_middleware(
