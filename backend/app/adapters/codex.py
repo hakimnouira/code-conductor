@@ -86,6 +86,16 @@ class CodexAdapter(BaseAgentAdapter):
 
         return False
 
+    def has_api_key(self) -> bool:
+        from app.core.config import get_unified_api_config
+        cfg = get_unified_api_config()
+        return bool(
+            os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("CODEX_API_KEY")
+            or cfg.get("openai", {}).get("api_key")
+            or cfg.get("codex", {}).get("api_key")
+        )
+
     async def check_availability(self) -> tuple[AvailabilityState, str]:
         exe = self.find_executable()
         if not exe:
@@ -95,16 +105,20 @@ class CodexAdapter(BaseAgentAdapter):
                 "Install it on Windows with: powershell -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
             )
 
-        if not self.has_chatgpt_auth():
+        has_auth = self.has_chatgpt_auth()
+        has_key = self.has_api_key()
+
+        if not has_auth and not has_key:
             return (
                 AvailabilityState.UNAUTHENTICATED,
-                f"Codex CLI found at '{exe}', but no active ChatGPT login detected in ~/.codex. "
-                "Please run 'codex login' in your terminal to authenticate your existing ChatGPT subscription.",
+                f"Codex CLI found at '{exe}', but no active login detected in ~/.codex. "
+                "Simply add OPENAI_API_KEY=... to your .env file, or run 'codex login' to link your ChatGPT subscription.",
             )
 
+        mode_str = "using authenticated ChatGPT subscription" if has_auth else "using OPENAI_API_KEY from .env"
         return (
             AvailabilityState.READY,
-            f"Codex CLI is ready at '{exe}' using authenticated ChatGPT subscription (no API key required).",
+            f"Codex CLI is ready at '{exe}' {mode_str}.",
         )
 
     async def get_capabilities(self) -> AgentCapabilities:

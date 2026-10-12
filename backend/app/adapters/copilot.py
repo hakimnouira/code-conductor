@@ -141,7 +141,7 @@ class CopilotAdapter(BaseAgentAdapter):
                     return (
                         AvailabilityState.UNAUTHENTICATED,
                         f"GitHub Copilot runtime is active, but not signed in ({msg}). "
-                        "Please authenticate with GitHub CLI ('gh auth login') or set GITHUB_TOKEN to reuse your subscription.",
+                        "Add GITHUB_TOKEN=... or COPILOT_TOKEN=... to your .env file, or run 'gh auth login' to reuse your subscription.",
                     )
         except Exception as e:
             err_str = str(e)
@@ -149,7 +149,7 @@ class CopilotAdapter(BaseAgentAdapter):
                 return (
                     AvailabilityState.UNAUTHENTICATED,
                     "GitHub Copilot runtime is available, but no active authenticated user session was detected. "
-                    "Run 'gh auth login' or sign into GitHub CLI/Desktop to link your existing Copilot subscription.",
+                    "Simply add GITHUB_TOKEN=... or COPILOT_TOKEN=... to your .env file, or run 'gh auth login'.",
                 )
             return (
                 AvailabilityState.ERROR,

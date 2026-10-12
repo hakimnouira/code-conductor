@@ -22,12 +22,8 @@ CONFIG_PATH = Path.home() / ".gemini" / "config" / "api_keys.json"
 
 
 def load_api_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    from app.core.config import get_unified_api_config
+    return get_unified_api_config()
 
 
 class MultiModelAdapter(BaseAgentAdapter):
