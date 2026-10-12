@@ -233,3 +233,12 @@ The web dashboard can notify on completion and failure/possible action-needed ev
 In **Connections & settings**, enter a provider ID, display name, base URL, model ID, and one or more API keys (one key per line). The connector tries keys in order if a request fails. Remote endpoints must use HTTPS; HTTP is allowed only for loopback local inference servers such as LM Studio. API keys are stored via the operating system credential store using `keyring`; provider metadata contains no secret values.
 
 The generic connector supports OpenAI-compatible `/chat/completions` endpoints for text responses only. It does **not** provide file editing, shell tools, or subscription sign-in. For coding-agent capabilities, use a provider's official CLI/SDK and its supported authentication flow. Do not paste passwords, cookies, OAuth refresh tokens, or subscription session data into the API-key field.
+
+
+## Chat-first workspace and GitHub repository analysis
+
+The standalone web command center uses a chat-first workspace with a persistent agent rail, live task responses, a reviewable plan panel, and contextual project status. Larger prompts can be decomposed into visible steps before execution; planned steps run sequentially with recent results passed forward, and execution stops when a step reports an error.
+
+Use **GitHub repo** in the composer to shallow-clone a public repository into the selected workspace parent. The importer accepts only HTTPS `github.com` repository URLs, validates the destination folder, and never runs project code, installs dependencies, executes build scripts, or invokes repository hooks. After cloning, the composer is prefilled with a reverse-engineering prompt that asks the agent to map architecture, entry points, data flow, tests, and risks with file references.
+
+The repository importer requires Git to be installed and available on `PATH`. Private repositories and non-GitHub hosts are not supported by this initial implementation. Review untrusted repository contents before asking an agent to modify them, and keep permission mode set to **Safe**.
