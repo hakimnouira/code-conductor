@@ -109,12 +109,17 @@ const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making 
 const SAMPLE_GUIDED_PROMPT = "Build a beautiful project management dashboard";
 const label = (value: string) => value.replace(/_/g, " ");
 const clock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const DEFAULT_TOKEN = "5e542c42b89db11fc7a10a2e19fa6e0929fd09d8d5a4c204a5414ead6c42a6be";
+const DEFAULT_TOKEN = import.meta.env.VITE_AI_HUB_TOKEN || "";
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("cc_theme") as "dark" | "light") || "dark");
   const [base, setBase] = useState(sessionStorage.getItem("cc_api") || API);
-  const [token, setToken] = useState(sessionStorage.getItem("cc_token") || localStorage.getItem("cc_token") || DEFAULT_TOKEN);
+  const [token, setToken] = useState(() => {
+    const saved = sessionStorage.getItem("cc_token") || localStorage.getItem("cc_token") || DEFAULT_TOKEN;
+    // Migrate older builds that persisted the bearer token, then stop storing it durably.
+    try { localStorage.removeItem("cc_token"); } catch {}
+    return saved;
+  });
   const [workspace, setWorkspace] = useState(() => localStorage.getItem("cc_workspace") || "");
   const [health, setHealth] = useState<Health | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -347,7 +352,7 @@ export default function App() {
       setWorkspace(current => current || localStorage.getItem("cc_workspace") || h.workspace || "");
       sessionStorage.setItem("cc_api", base);
       sessionStorage.setItem("cc_token", token.trim());
-      localStorage.setItem("cc_token", token.trim());
+      localStorage.removeItem("cc_token");
       setNotice("Connected to your local coding workspace.");
       void fetchBrowserStatus();
     } catch (e) {
@@ -2426,7 +2431,7 @@ export default function App() {
             </div>
 
             <div className="modal-actions bottom-actions">
-              <button className="outline-button" onClick={() => { setToken(""); sessionStorage.removeItem("cc_token"); setHealth(null); setAgents([]); }}>Clear token</button>
+              <button className="outline-button" onClick={() => { setToken(""); sessionStorage.removeItem("cc_token"); localStorage.removeItem("cc_token"); setHealth(null); setAgents([]); }}>Clear token</button>
               <button className="primary-button" onClick={() => { setSettings(false); sessionStorage.setItem("cc_api", base); sessionStorage.setItem("cc_token", token.trim()); void connect(); }}>Save & connect <ArrowUpRight size={14}/></button>
             </div>
           </section>
