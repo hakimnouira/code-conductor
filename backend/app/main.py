@@ -121,6 +121,8 @@ async def list_agents(_: str = Depends(require_bearer_token)):
 
 @app.post("/tasks", response_model=TaskResponse)
 async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
+    if request.permission_mode == "god" and not request.god_mode_confirmed:
+        raise HTTPException(status_code=400, detail="God Mode requires explicit confirmation in the task request.")
     registry = get_agent_registry()
     adapter = await registry.resolve_agent(request.agent_id, request.prompt)
     if not adapter:
