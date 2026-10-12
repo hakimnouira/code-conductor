@@ -44,6 +44,8 @@ from app.safety.workspace import (
     WorkspaceSecurityManager,
     PathTraversalError,
     SensitiveFileBlockedError,
+    WorkspaceValidationError,
+    validate_workspace_path,
 )
 from app.safety.git_guard import GitGuard
 from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
@@ -117,6 +119,19 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
+        )
+
+    # Validate workspace path security containment
+    try:
+        validated_ws = validate_workspace_path(
+            request.workspace_path,
+            default_root=get_settings().workspace_root,
+        )
+        request.workspace_path = str(validated_ws)
+    except WorkspaceValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid workspace path: {str(e)}",
         )
 
     task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -206,18 +221,30 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
 # Workspace Security, Git Guard, and Test Runner (Milestone 7)
 # ---------------------------------------------------------
 
-def _get_sec_manager() -> WorkspaceSecurityManager:
-    return WorkspaceSecurityManager(get_settings().workspace_root)
+def _resolve_validated_ws(workspace_path: str | None = None) -> Path:
+    try:
+        return validate_workspace_path(
+            workspace_path,
+            default_root=get_settings().workspace_root,
+        )
+    except WorkspaceValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid workspace path: {str(e)}",
+        )
 
-def _get_git_guard() -> GitGuard:
-    return GitGuard(get_settings().workspace_root)
+def _get_sec_manager(ws: str | None = None) -> WorkspaceSecurityManager:
+    return WorkspaceSecurityManager(_resolve_validated_ws(ws))
 
-def _get_test_runner() -> SafeTestRunner:
-    return SafeTestRunner(get_settings().workspace_root)
+def _get_git_guard(ws: str | None = None) -> GitGuard:
+    return GitGuard(_resolve_validated_ws(ws))
+
+def _get_test_runner(ws: str | None = None) -> SafeTestRunner:
+    return SafeTestRunner(_resolve_validated_ws(ws))
 
 @app.post("/workspace/file/read", response_model=FileReadResponse)
 async def read_workspace_file(req: FileReadRequest, _: str = Depends(require_bearer_token)):
-    mgr = _get_sec_manager()
+    mgr = _get_sec_manager(req.workspace_path)
     try:
         content = mgr.read_file(req.path)
         return FileReadResponse(
@@ -234,7 +261,7 @@ async def read_workspace_file(req: FileReadRequest, _: str = Depends(require_bea
 
 @app.post("/workspace/file/write", response_model=FileWriteResponse)
 async def write_workspace_file(req: FileWriteRequest, _: str = Depends(require_bearer_token)):
-    mgr = _get_sec_manager()
+    mgr = _get_sec_manager(req.workspace_path)
     try:
         bytes_written, diff = mgr.write_file(req.path, req.content, atomic=req.atomic)
         return FileWriteResponse(path=req.path, bytes_written=bytes_written, diff=diff)
@@ -244,8 +271,8 @@ async def write_workspace_file(req: FileWriteRequest, _: str = Depends(require_b
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @app.get("/workspace/files", response_model=SafeFileListResponse)
-async def list_workspace_files(subpath: str = "", _: str = Depends(require_bearer_token)):
-    mgr = _get_sec_manager()
+async def list_workspace_files(subpath: str = "", workspace_path: str | None = None, _: str = Depends(require_bearer_token)):
+    mgr = _get_sec_manager(workspace_path)
     try:
         files = mgr.list_safe_files(subpath=subpath)
         return SafeFileListResponse(root=str(mgr.workspace_root), files=files, total_count=len(files))
@@ -253,30 +280,30 @@ async def list_workspace_files(subpath: str = "", _: str = Depends(require_beare
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 @app.get("/workspace/git/status", response_model=GitStatusResponse)
-async def get_git_status(_: str = Depends(require_bearer_token)):
-    guard = _get_git_guard()
+async def get_git_status(workspace_path: str | None = None, _: str = Depends(require_bearer_token)):
+    guard = _get_git_guard(workspace_path)
     return await guard.get_status()
 
 @app.post("/workspace/git/diff", response_model=GitDiffResponse)
 async def get_git_diff(req: GitDiffRequest, _: str = Depends(require_bearer_token)):
-    guard = _get_git_guard()
+    guard = _get_git_guard(req.workspace_path)
     return await guard.get_diff(file_path=req.file_path, staged=req.staged)
 
 @app.post("/workspace/git/checkpoint", response_model=CheckpointResponse)
 async def create_git_checkpoint(req: CheckpointRequest, _: str = Depends(require_bearer_token)):
-    guard = _get_git_guard()
+    guard = _get_git_guard(req.workspace_path)
     return await guard.create_checkpoint(req.name)
 
 @app.post("/workspace/git/restore", response_model=CheckpointResponse)
 async def restore_git_checkpoint(req: CheckpointRequest, _: str = Depends(require_bearer_token)):
     if not req.name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Checkpoint identifier required")
-    guard = _get_git_guard()
-    return await guard.restore_checkpoint(req.name)
+    guard = _get_git_guard(req.workspace_path)
+    return await guard.restore_checkpoint(req.name, force=req.force)
 
 @app.post("/workspace/test/run", response_model=TestRunResponse)
 async def run_tests(req: TestRunRequest, _: str = Depends(require_bearer_token)):
-    runner = _get_test_runner()
+    runner = _get_test_runner(req.workspace_path)
     try:
         return await runner.run_tests(
             command_key=req.command_key,
@@ -292,9 +319,10 @@ async def run_tests(req: TestRunRequest, _: str = Depends(require_bearer_token))
 
 @app.post("/orchestrator/plan", response_model=ExecutionPlan)
 async def generate_orchestration_plan(req: TaskCreateRequest, _: str = Depends(require_bearer_token)):
-    ws = Path(req.workspace_path or get_settings().workspace_root).resolve()
+    ws = _resolve_validated_ws(req.workspace_path)
     planner = PlanDecomposer(ws)
     return planner.decompose(req.prompt)
+
 
 @app.get("/orchestrator/history", response_model=list[OrchestrationAuditRecord])
 async def list_orchestration_history(limit: int = 50, _: str = Depends(require_bearer_token)):

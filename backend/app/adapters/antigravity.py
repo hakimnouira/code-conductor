@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -58,27 +59,39 @@ class AntigravityAdapter(BaseAgentAdapter):
     def _probe_connection(self, agentapi_path: str) -> tuple[bool, str]:
         """Probes whether agentapi is connected to an active IDE project session."""
         try:
+            cmd_help = ["cmd.exe", "/c", agentapi_path, "--help"] if sys.platform == "win32" else [agentapi_path, "--help"]
             proc = subprocess.run(
-                [agentapi_path, "--help"],
+                cmd_help,
                 capture_output=True,
                 text=True,
-                timeout=4,
+                timeout=5,
             )
             if proc.returncode != 0:
                 return False, f"agentapi CLI returned code {proc.returncode}."
 
-            # Verify if project environment is configured
+            cmd_probe = (
+                ["cmd.exe", "/c", agentapi_path, "get-conversation-metadata", "__probe__"]
+                if sys.platform == "win32"
+                else [agentapi_path, "get-conversation-metadata", "__probe__"]
+            )
             test_proc = subprocess.run(
-                [agentapi_path, "get-conversation-metadata", "__probe__"],
+                cmd_probe,
                 capture_output=True,
                 text=True,
-                timeout=4,
+                timeout=5,
             )
             out = (test_proc.stdout + test_proc.stderr).lower()
-            if "project_id is required" in out or "rpc error" in out:
+            if "project_id is required" in out:
                 return False, "IDE project environment not initialized (open workspace in Antigravity IDE)."
+            if "unavailable" in out or "connection refused" in out:
+                return False, "Antigravity IDE local daemon is not reachable."
+            if "trajectory not found" in out:
+                return True, "Antigravity IDE local RPC daemon connected and ready."
 
-            return True, "Connected to active Antigravity IDE session."
+            if test_proc.returncode == 0:
+                return True, "Connected to active Antigravity IDE session."
+
+            return False, f"Antigravity session verification returned: {out[:120].strip()}"
         except Exception as e:
             return False, f"Agent probe error: {str(e)}"
 
@@ -142,28 +155,30 @@ class AntigravityAdapter(BaseAgentAdapter):
             timestamp=time.time(),
         )
 
-        cmd = [agentapi, "new-conversation", request.prompt]
+        ws_path = Path(request.workspace_path or os.getcwd()).resolve()
+
+        raw_cmd = [agentapi, "new-conversation"]
         if request.model and request.model in ["flash_lite", "flash", "pro"]:
-            cmd = [agentapi, "new-conversation", f"--model={request.model}", request.prompt]
+            raw_cmd.append(f"--model={request.model}")
+        raw_cmd.append(request.prompt)
+
+        cmd = ["cmd.exe", "/c"] + raw_cmd if sys.platform == "win32" else raw_cmd
 
         try:
-            proc = await asyncio.to_thread(
-                lambda: subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(ws_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
+            # Stream stdout asynchronously without blocking indefinitely
             while True:
-                line = await asyncio.to_thread(proc.stdout.readline)
-                if not line:
-                    break
                 if cancel_event.is_set():
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
                     yield AgentEvent(
                         task_id=task_id,
                         event_type=EventType.CANCELLED,
@@ -171,6 +186,19 @@ class AntigravityAdapter(BaseAgentAdapter):
                         timestamp=time.time(),
                     )
                     return
+
+                try:
+                    assert proc.stdout is not None
+                    line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    if proc.returncode is not None:
+                        break
+                    continue
+
+                if not line_bytes:
+                    break
+
+                line = line_bytes.decode("utf-8", errors="replace")
                 yield AgentEvent(
                     task_id=task_id,
                     event_type=EventType.TOKEN,
@@ -178,7 +206,13 @@ class AntigravityAdapter(BaseAgentAdapter):
                     timestamp=time.time(),
                 )
 
-            await asyncio.to_thread(proc.wait)
+            # Capture remaining output with timeout
+            try:
+                stdout_rem, stderr_rem = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                stdout_rem, stderr_rem = b"", b"Antigravity process timed out."
+
             if proc.returncode == 0:
                 yield AgentEvent(
                     task_id=task_id,
@@ -187,11 +221,11 @@ class AntigravityAdapter(BaseAgentAdapter):
                     timestamp=time.time(),
                 )
             else:
-                stderr_text = await asyncio.to_thread(proc.stderr.read)
+                err_str = stderr_rem.decode("utf-8", errors="replace").strip()
                 yield AgentEvent(
                     task_id=task_id,
                     event_type=EventType.ERROR,
-                    text=f"Antigravity error: {stderr_text.strip()}",
+                    text=f"Antigravity error: {err_str or f'Exit code {proc.returncode}'}",
                     timestamp=time.time(),
                 )
         except Exception as e:
@@ -203,6 +237,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             )
         finally:
             self._active_cancels.pop(task_id, None)
+
 
     async def cancel_task(self, task_id: str) -> bool:
         event = self._active_cancels.get(task_id)

@@ -85,6 +85,7 @@ class HealthResponse(BaseModel):
 # Safety & Workspace Models (Milestone 7)
 class FileReadRequest(BaseModel):
     path: str
+    workspace_path: str | None = None
 
 class FileReadResponse(BaseModel):
     path: str
@@ -95,6 +96,7 @@ class FileWriteRequest(BaseModel):
     path: str
     content: str
     atomic: bool = True
+    workspace_path: str | None = None
 
 class FileWriteResponse(BaseModel):
     path: str
@@ -118,6 +120,7 @@ class GitStatusResponse(BaseModel):
 class GitDiffRequest(BaseModel):
     file_path: str | None = None
     staged: bool = False
+    workspace_path: str | None = None
 
 class GitDiffResponse(BaseModel):
     diff: str
@@ -126,6 +129,8 @@ class GitDiffResponse(BaseModel):
 
 class CheckpointRequest(BaseModel):
     name: str | None = None
+    force: bool = False
+    workspace_path: str | None = None
 
 class CheckpointResponse(BaseModel):
     checkpoint_id: str
@@ -136,6 +141,8 @@ class TestRunRequest(BaseModel):
     command_key: str = "pytest"
     extra_args: list[str] = Field(default_factory=list)
     timeout_seconds: int = 30
+    workspace_path: str | None = None
+
 
 class TestRunResponse(BaseModel):
     command: str

@@ -10,6 +10,11 @@ class SafetyError(Exception):
     pass
 
 
+class WorkspaceValidationError(SafetyError):
+    """Raised when a workspace path is invalid, non-existent, or escapes allowed boundaries."""
+    pass
+
+
 class PathTraversalError(SafetyError):
     """Raised when an operation attempts to escape the workspace root."""
     pass
@@ -18,6 +23,75 @@ class PathTraversalError(SafetyError):
 class SensitiveFileBlockedError(SafetyError):
     """Raised when an operation accesses a protected or sensitive file."""
     pass
+
+
+FORBIDDEN_SYSTEM_ROOTS = [
+    Path(os.environ.get("SystemRoot", "C:\\Windows")).resolve(),
+    Path(os.environ.get("ProgramFiles", "C:\\Program Files")).resolve(),
+    Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")).resolve(),
+    Path("/etc").resolve(),
+    Path("/usr").resolve(),
+    Path("/bin").resolve(),
+    Path("/sbin").resolve(),
+]
+
+
+
+def validate_workspace_path(
+    path_str: str | Path | None,
+    default_root: str | Path | None = None,
+    allowed_roots: list[str | Path] | None = None,
+) -> Path:
+    """
+    Validates that a workspace path:
+    1. Is non-empty, falling back to default_root if not provided.
+    2. Resolves to a canonical existing directory.
+    3. Does not point to critical OS system directories or root drives.
+    4. Lies within allowed roots if allowed_roots is specified.
+    """
+    target = path_str or default_root
+    if not target:
+        raise WorkspaceValidationError("No workspace path specified and no default workspace is configured.")
+
+    try:
+        resolved = Path(target).resolve()
+    except Exception as e:
+        raise WorkspaceValidationError(f"Invalid workspace path '{target}': {str(e)}")
+
+    if not resolved.exists():
+        raise WorkspaceValidationError(f"Workspace path does not exist: '{resolved}'")
+    if not resolved.is_dir():
+        raise WorkspaceValidationError(f"Workspace path is not a directory: '{resolved}'")
+
+    # Reject filesystem root drives (e.g. C:\, D:\, /)
+    if resolved == resolved.parent or str(resolved).rstrip("\\/") in ("C:", "D:", "E:", "F:", ""):
+        raise WorkspaceValidationError(f"Root drive '{resolved}' cannot be used as an isolated workspace.")
+
+    # Reject critical system directories
+    for sys_root in FORBIDDEN_SYSTEM_ROOTS:
+        try:
+            if resolved == sys_root or resolved.is_relative_to(sys_root):
+                raise WorkspaceValidationError(f"Forbidden system directory '{resolved}' cannot be used as a workspace.")
+        except AttributeError:
+            if str(resolved).lower().startswith(str(sys_root).lower()):
+                raise WorkspaceValidationError(f"Forbidden system directory '{resolved}' cannot be used as a workspace.")
+
+    # If allowed_roots are configured, enforce boundary containment
+    if allowed_roots:
+        resolved_allowed = [Path(r).resolve() for r in allowed_roots]
+        is_allowed = any(
+            resolved == ar
+            or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(ar))
+            or str(resolved).lower().startswith(str(ar).lower())
+            for ar in resolved_allowed
+        )
+        if not is_allowed:
+            raise WorkspaceValidationError(
+                f"Workspace '{resolved}' is not within configured allowed workspace roots: {[str(r) for r in resolved_allowed]}"
+            )
+
+    return resolved
+
 
 
 DEFAULT_BLOCKED_PATTERNS = [

@@ -17,8 +17,8 @@ from pathlib import Path
 class CopilotPermissionPolicy:
     """
     Least-privilege permission policy for autonomous Copilot sessions:
-    - Read operations (inspecting code/files): Approved once.
-    - Write operations (code edits): Allowed only if path is within workspace boundaries.
+    - Read operations (inspecting code/files): Approved once if within workspace.
+    - Write operations (code edits): Allowed only if verifiable target path is within workspace boundaries.
     - Shell/Terminal commands: Rejected by default to prevent arbitrary code execution.
     - Network URLs, Mcp tools, Hooks, Environment/Extension access: Rejected by default.
     """
@@ -35,31 +35,60 @@ class CopilotPermissionPolicy:
             return PermissionNoResult()
 
         req_type_name = type(request).__name__
+        kind = getattr(request, "kind", "")
 
-        # 1. Read operations: safe to approve
-        if "Read" in req_type_name:
-            return PermissionDecisionApproveOnce()
-
-        # 2. Write operations: strictly validate workspace boundaries
-        if "Write" in req_type_name:
-            target_path = getattr(request, "path", None) or getattr(request, "file_path", None)
+        # 1. Read operations: verify path containment if path is provided
+        if "Read" in req_type_name or kind == "read":
+            target_path = getattr(request, "resolved_path", None) or getattr(request, "path", None)
             if target_path and self.workspace_root:
                 try:
                     resolved = Path(target_path).resolve()
-                    if not resolved.is_relative_to(self.workspace_root):
+                    is_contained = (
+                        resolved == self.workspace_root
+                        or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(self.workspace_root))
+                        or str(resolved).lower().startswith(str(self.workspace_root).lower())
+                    )
+                    if not is_contained:
                         return PermissionDecisionReject()
                 except Exception:
                     return PermissionDecisionReject()
             return PermissionDecisionApproveOnce()
 
+        # 2. Write operations: strictly require verifiable target path within workspace
+        if "Write" in req_type_name or kind == "write":
+            target_path = (
+                getattr(request, "resolved_path", None)
+                or getattr(request, "path", None)
+                or getattr(request, "file_path", None)
+            )
+            # Reject write requests without a verifiable target path
+            if not target_path or not self.workspace_root:
+                return PermissionDecisionReject()
+
+            try:
+                # Resolve symbolic links and confirm workspace containment
+                resolved = Path(target_path).resolve()
+                is_contained = (
+                    resolved == self.workspace_root
+                    or (hasattr(resolved, "is_relative_to") and resolved.is_relative_to(self.workspace_root))
+                    or str(resolved).lower().startswith(str(self.workspace_root).lower())
+                )
+                if not is_contained:
+                    return PermissionDecisionReject()
+            except Exception:
+                return PermissionDecisionReject()
+
+            return PermissionDecisionApproveOnce()
+
         # 3. Shell / Terminal commands: rejected by default under least privilege
-        if "Shell" in req_type_name or "Command" in req_type_name:
+        if "Shell" in req_type_name or kind == "shell" or "Command" in req_type_name:
             if self.allow_terminal:
                 return PermissionDecisionApproveOnce()
             return PermissionDecisionReject()
 
-        # 4. URLs, Hooks, MCP, Environment/Extension access: rejected
+        # 4. Network URLs, MCP tools, Hooks, Memory, Environment/Extension access: rejected by default
         return PermissionDecisionReject()
+
 
 
 class CopilotAdapter(BaseAgentAdapter):
@@ -189,8 +218,21 @@ class CopilotAdapter(BaseAgentAdapter):
         if token:
             client_kwargs = {"github_token": token, "use_logged_in_user": False}
 
-        ws_path = Path(request.workspace_path or os.getcwd()).resolve()
+        try:
+            from app.safety.workspace import validate_workspace_path
+            from app.core.config import get_settings
+            ws_path = validate_workspace_path(request.workspace_path, default_root=get_settings().workspace_root)
+        except Exception as e:
+            yield AgentEvent(
+                task_id=task_id,
+                event_type=EventType.ERROR,
+                text=f"Invalid workspace path: {str(e)}",
+                timestamp=time.time(),
+            )
+            return
+
         policy = CopilotPermissionPolicy(workspace_root=ws_path, allow_terminal=False)
+
 
         try:
             async with CopilotClient(**client_kwargs) as client:

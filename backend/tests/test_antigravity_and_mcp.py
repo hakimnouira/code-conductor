@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -69,6 +70,12 @@ async def test_mcp_client_tool_discovery_and_call():
             '    """Echo input message."""\n'
             '    return f"echo: {message}"\n'
             '\n'
+            '@app.tool()\n'
+            'async def slow_op(seconds: float) -> str:\n'
+            '    """Simulate long running tool call."""\n'
+            '    await asyncio.sleep(seconds)\n'
+            '    return "completed"\n'
+            '\n'
             'if __name__ == "__main__":\n'
             '    app.run(transport="stdio")\n',
             encoding="utf-8"
@@ -95,7 +102,6 @@ async def test_mcp_client_tool_discovery_and_call():
 
         # 3. Tool invocation
         result = await manager.call_tool("test-server", "add_numbers", {"a": 15, "b": 27})
-        # The result content will contain 42
         res_str = str(result)
         assert "42" in res_str
 
@@ -114,3 +120,41 @@ async def test_mcp_client_tool_discovery_and_call():
 
         with pytest.raises(PermissionError):
             await manager.call_tool("restricted-server", "add_numbers", {"a": 1, "b": 2})
+
+        # 5. Tool timeout enforcement
+        with pytest.raises(asyncio.TimeoutError):
+            await manager.call_tool("test-server", "slow_op", {"seconds": 1.0}, timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_antigravity_cancellation(monkeypatch):
+    adapter = AntigravityAdapter()
+    async def mock_check():
+        return (AvailabilityState.READY, "Mock ready")
+    monkeypatch.setattr(adapter, "check_availability", mock_check)
+
+
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create a mock batch script that sleeps
+        mock_bat = Path(tmp_dir) / "mock_agentapi.bat"
+        mock_bat.write_text("@echo off\r\nping -n 5 127.0.0.1 >nul\r\n", encoding="utf-8")
+        monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: str(mock_bat))
+
+        req = TaskCreateRequest(prompt="Long analysis", agent_id="antigravity", workspace_path=tmp_dir)
+
+        events = []
+        async def run_and_collect():
+            async for ev in adapter.stream_task("ag-cancel-task", req):
+                events.append(ev)
+                if ev.event_type == EventType.STARTED:
+                    # Cancel immediately after start
+                    await asyncio.sleep(0.05)
+                    await adapter.cancel_task("ag-cancel-task")
+
+        await asyncio.wait_for(run_and_collect(), timeout=4.0)
+
+        event_types = [e.event_type for e in events]
+        assert EventType.STARTED in event_types
+        assert EventType.CANCELLED in event_types
+

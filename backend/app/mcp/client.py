@@ -124,11 +124,18 @@ class MCPClientManager:
             raise PermissionError(f"Tool '{tool_name}' is not in the allowlist for server '{name}'.")
 
         params = self._get_server_params(config)
-        async with stdio_client(params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await asyncio.wait_for(session.initialize(), timeout=timeout)
-                result = await asyncio.wait_for(session.call_tool(tool_name, arguments), timeout=timeout)
-                return result
+        try:
+            async with stdio_client(params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=timeout)
+                    result = await asyncio.wait_for(session.call_tool(tool_name, arguments), timeout=timeout)
+                    return result
+        except BaseException as e:
+            if isinstance(e, (asyncio.TimeoutError, TimeoutError)) or "TimeoutError" in type(e).__name__ or "TimeoutError" in repr(e):
+                raise asyncio.TimeoutError(f"MCP tool call '{tool_name}' timed out after {timeout}s.") from None
+            raise
+
+
 
 _mcp_manager: MCPClientManager | None = None
 

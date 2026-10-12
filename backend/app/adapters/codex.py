@@ -137,16 +137,20 @@ class CodexAdapter(BaseAgentAdapter):
             )
             return
 
-        # Scope strictly to the requested workspace
-        workspace = Path(request.workspace_path or os.getcwd()).resolve()
-        if not workspace.exists():
+        # Scope strictly to the validated workspace
+        try:
+            from app.safety.workspace import validate_workspace_path
+            from app.core.config import get_settings
+            workspace = validate_workspace_path(request.workspace_path, default_root=get_settings().workspace_root)
+        except Exception as e:
             yield AgentEvent(
                 task_id=task_id,
                 event_type=EventType.ERROR,
-                text=f"Workspace path does not exist: {workspace}",
+                text=f"Invalid workspace path: {str(e)}",
                 timestamp=time.time(),
             )
             return
+
 
         cancel_event = asyncio.Event()
         self._active_cancels[task_id] = cancel_event
