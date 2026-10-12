@@ -622,38 +622,79 @@ export default function App() {
     });
     setSelectedHistoryId(created.task_id);
 
-    const response = await request("/tasks/" + encodeURIComponent(created.task_id) + "/events", { signal });
-    if (!response.body) throw new Error("No event stream returned.");
-    const reader = response.body.getReader(), decoder = new TextDecoder();
-    let buffer = "", taskOutput = "";
-    let taskFailed = false;
-    const collectedEvents: Ev[] = [];
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || "";
-      for (const block of blocks) {
-        const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
-        if (!data || data === "[DONE]") continue;
-        try {
-          const event = JSON.parse(data) as Ev;
-          collectedEvents.push(event);
-          setEvents(old => [...old, event]);
-          if (event.event_type === "token") taskOutput += event.text || "";
-          if (event.event_type === "completed" && !taskOutput && event.text) taskOutput = event.text;
-          if (event.event_type === "error") taskFailed = true;
-          if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
-          if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
-          if (event.event_type === "needs_action" || ((event.event_type === "tool_call" || event.event_type === "log") && /permission|approval|confirm|waiting|blocked|soft-denied/i.test(event.text || ""))) {
-            notify("action", "Code Conductor · Action needed", event.text || "The agent may be waiting for approval.");
+    let lastEventId = 0;
+    let reconnectAttempts = 0;
+    let streamDone = false;
+    let streamInterrupted = false;
+    while (!streamDone) {
+      try {
+        const response = await request(
+          "/tasks/" + encodeURIComponent(created.task_id) + "/events?after=" + lastEventId,
+          { signal }
+        );
+        if (!response.body) throw new Error("No event stream returned.");
+        const reader = response.body.getReader(), decoder = new TextDecoder();
+        let buffer = "";
+        let receivedDoneSignal = false;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || "";
+          for (const block of blocks) {
+            const idLine = block.split(/\r?\n/).find(line => line.startsWith("id:"));
+            if (idLine) {
+              const parsedId = Number(idLine.slice(3).trim());
+              if (Number.isSafeInteger(parsedId) && parsedId > lastEventId) lastEventId = parsedId;
+            }
+            const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+            if (!data) continue;
+            if (data === "[DONE]") {
+              receivedDoneSignal = true;
+              break;
+            }
+            try {
+              const event = JSON.parse(data) as Ev;
+              collectedEvents.push(event);
+              setEvents(old => [...old, event]);
+              if (event.event_type === "token") taskOutput += event.text || "";
+              if (event.event_type === "completed" && !taskOutput && event.text) taskOutput = event.text;
+              if (event.event_type === "error") taskFailed = true;
+              if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
+              if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
+              if (event.event_type === "needs_action" || ((event.event_type === "tool_call" || event.event_type === "log") && /permission|approval|confirm|waiting|blocked|soft-denied/i.test(event.text || ""))) {
+                notify("action", "Code Conductor · Action needed", event.text || "The agent may be waiting for approval.");
+              }
+              if (event.event_type === "completed" || event.event_type === "error" || event.event_type === "cancelled") {
+                setTask(old => old ? { ...old, status: event.event_type === "completed" ? "completed" : event.event_type === "error" ? "failed" : "cancelled" } : old);
+              }
+            } catch { /* Ignore malformed SSE payloads; the durable event cursor still advances. */ }
           }
-          if (event.event_type === "completed" || event.event_type === "error" || event.event_type === "cancelled") {
-            setTask(old => old ? { ...old, status: event.event_type === "completed" ? "completed" : event.event_type === "error" ? "failed" : "cancelled" } : old);
-          }
-        } catch { /* Ignore malformed SSE */ }
+          if (receivedDoneSignal) break;
+        }
+        if (receivedDoneSignal) {
+          streamDone = true;
+          try { await reader.cancel(); } catch {}
+          break;
+        }
+        // A dropped stream is not completion. Reconnect from the last durable event ID.
+        if (reconnectAttempts >= 5) {
+          streamInterrupted = true;
+          break;
+        }
+        reconnectAttempts += 1;
+        await new Promise(resolve => setTimeout(resolve, 250 * reconnectAttempts));
+      } catch (e) {
+        if (signal.aborted) throw e;
+        if (reconnectAttempts >= 5) {
+          streamInterrupted = true;
+          break;
+        }
+        reconnectAttempts += 1;
+        await new Promise(resolve => setTimeout(resolve, 250 * reconnectAttempts));
       }
     }
+
 
     // Never infer success from a closed stream. Ask the backend for the authoritative
     // terminal state so a dropped/malformed SSE stream cannot mark failed work as complete.
@@ -670,6 +711,7 @@ export default function App() {
       // Keep the best status inferred from events if the backend snapshot is unavailable.
     }
     taskFailed = finalStatus === "failed" || finalStatus === "cancelled" || finalStatus === "running";
+    if (streamInterrupted) setNotice("The event stream disconnected after several reconnect attempts. Task state was recovered from the backend; reopen the task to replay its event history.");
     setTask(old => old ? { ...old, status: finalStatus } : old);
 
     // Finalize history entry
