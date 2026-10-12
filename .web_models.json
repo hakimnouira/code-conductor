@@ -1,0 +1,57 @@
+[
+  {
+    "id": "web-chatgpt",
+    "name": "ChatGPT Web",
+    "url": "https://chatgpt.com",
+    "input_selector": "#prompt-textarea, textarea, div[contenteditable='true']",
+    "send_selector": "button[data-testid='send-button'], button[aria-label*='Send']",
+    "response_selector": "div[data-message-author-role='assistant'], div.markdown",
+    "description": "ChatGPT web chat using your logged-in ChatGPT Plus/Free account via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-claude",
+    "name": "Claude Web",
+    "url": "https://claude.ai/new",
+    "input_selector": "div[contenteditable='true'].ProseMirror, fieldset div[contenteditable='true'], textarea",
+    "send_selector": "button[aria-label*='Send']",
+    "response_selector": ".font-claude-message, div.prose",
+    "description": "Claude web chat using your logged-in Anthropic account via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-deepseek",
+    "name": "DeepSeek Web",
+    "url": "https://chat.deepseek.com",
+    "input_selector": "textarea#chat-input, textarea",
+    "send_selector": "div[role='button']:has(svg), button[aria-label*='Send']",
+    "response_selector": ".ds-markdown, .chat-message",
+    "description": "DeepSeek chat using your logged-in DeepSeek account via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-arena",
+    "name": "LMSYS Chatbot Arena",
+    "url": "https://lmarena.ai",
+    "input_selector": "textarea, input[type='text']",
+    "send_selector": "button",
+    "response_selector": ".message-content, .chatbot-message",
+    "description": "LMSYS Chatbot Arena direct web testing via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-manus",
+    "name": "Manus Web",
+    "url": "https://manus.im",
+    "input_selector": "textarea, input[type='text'], div[contenteditable='true']",
+    "send_selector": "button",
+    "response_selector": ".message, .response",
+    "description": "Manus Web AI workspace via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  }
+]

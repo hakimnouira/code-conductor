@@ -62,6 +62,18 @@ type BrowserTab = {
   url: string;
   type: string;
 };
+type WebModel = {
+  id: string;
+  name: string;
+  url: string;
+  input_selector?: string;
+  send_selector?: string;
+  response_selector?: string;
+  description: string;
+  is_preset: boolean;
+  state?: string;
+  diagnostic?: string;
+};
 
 const API = "http://127.0.0.1:8765";
 const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making changes. Do not execute project code or install dependencies. First map the architecture, entry points, major modules, data flow, external services, configuration, tests, and build system. Identify the most important files and explain how the pieces work together. Then report risks, missing documentation, likely failure points, and the best next steps. Cite concrete file paths and symbols for every important claim. Start with a concise executive summary, then a component map, request/data flow, test strategy, and prioritized findings.";
@@ -138,6 +150,23 @@ export default function App() {
   const [browserNavUrl, setBrowserNavUrl] = useState("https://google.com");
   const [browserScreenshot, setBrowserScreenshot] = useState<string | null>(null);
   const [browserBusy, setBrowserBusy] = useState(false);
+  const [webModels, setWebModels] = useState<WebModel[]>([]);
+  const [webModelDraft, setWebModelDraft] = useState({
+    id: "",
+    name: "",
+    url: "https://chatgpt.com",
+    input_selector: "",
+    send_selector: "",
+    response_selector: "",
+    description: "",
+  });
+  const [testModelId, setTestModelId] = useState("web-chatgpt");
+  const [testModelPrompt, setTestModelPrompt] = useState("Hello! Explain quantum computing in 1 sentence.");
+  const [testModelResult, setTestModelResult] = useState("");
+  const [testModelBusy, setTestModelBusy] = useState(false);
+  const [cloakLaunching, setCloakLaunching] = useState(false);
+  const [browserTabActive, setBrowserTabActive] = useState<"models" | "tabs">("models");
+  const [customModelFormOpen, setCustomModelFormOpen] = useState(false);
 
   const abort = useRef<AbortController | null>(null);
   const latestTaskId = useRef<string | null>(null);
@@ -623,6 +652,7 @@ export default function App() {
   const getAgentBadge = (id: string) => {
     const lower = id.toLowerCase();
     if (lower === "auto") return { text: "Auto", className: "tag-auto" };
+    if (lower.startsWith("web-") || lower.includes("cloak")) return { text: "Web API", className: "tag-web" };
     if (lower.includes("groq") || lower.includes("fast")) return { text: "Fast", className: "tag-fast" };
     if (lower.includes("apmix") || lower.includes("free") || lower.includes("tokenharbor")) return { text: "Free", className: "tag-free" };
     if (lower.includes("codecraft") || lower.includes("openai") || lower.includes("paid")) return { text: "Pro", className: "tag-paid" };
@@ -630,6 +660,126 @@ export default function App() {
     if (lower.includes("router")) return { text: "Dual", className: "tag-auto" };
     if (lower.includes("mock")) return { text: "Test", className: "" };
     return { text: "Ready", className: "" };
+  };
+
+  const fetchWebModels = async () => {
+    try {
+      const models = await request("/browser/models").then(r => r.json()) as WebModel[];
+      setWebModels(models);
+    } catch {
+      setWebModels([]);
+    }
+  };
+
+  const launchCloakBrowser = async (openUrl = "https://chatgpt.com") => {
+    setCloakLaunching(true);
+    setNotice("🚀 Launching CloakBrowser with persistent user profile...");
+    try {
+      await request("/browser/launch?url=" + encodeURIComponent(openUrl), { method: "POST" });
+      await new Promise(r => setTimeout(r, 2200));
+      await Promise.all([fetchBrowserStatus(), fetchWebModels(), fetchBrowserTabs()]);
+      setNotice("✨ CloakBrowser connected! Log into your account and cookies stay saved permanently.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to launch CloakBrowser");
+    } finally {
+      setCloakLaunching(false);
+    }
+  };
+
+  const openWebModelInCloak = async (model: WebModel) => {
+    setBrowserBusy(true);
+    try {
+      await request("/browser/models/" + encodeURIComponent(model.id) + "/open", { method: "POST" });
+      setNotice(`Opened ${model.name} in CloakBrowser. Log into your account!`);
+      await Promise.all([fetchBrowserStatus(), fetchBrowserTabs(), fetchWebModels()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to open model tab in browser");
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+
+  const saveCustomWebModel = async () => {
+    if (!webModelDraft.name.trim() || !webModelDraft.url.trim()) return;
+    setBrowserBusy(true);
+    try {
+      await request("/browser/models?open_now=true", {
+        method: "POST",
+        body: JSON.stringify(webModelDraft),
+      });
+      setNotice(`✨ Web Model '${webModelDraft.name}' registered & opened in CloakBrowser!`);
+      setWebModelDraft({ id: "", name: "", url: "https://chatgpt.com", input_selector: "", send_selector: "", response_selector: "", description: "" });
+      setCustomModelFormOpen(false);
+      await Promise.all([fetchWebModels(), request("/agents").then(r => r.json()).then(setAgents)]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to register web model");
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+
+  const deleteCustomWebModel = async (modelId: string) => {
+    if (!window.confirm("Delete this web model from Code Conductor?")) return;
+    try {
+      await request("/browser/models/" + encodeURIComponent(modelId), { method: "DELETE" });
+      await Promise.all([fetchWebModels(), request("/agents").then(r => r.json()).then(setAgents)]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete web model");
+    }
+  };
+
+  const testWebModelStream = async () => {
+    if (!testModelPrompt.trim() || testModelBusy) return;
+    setTestModelBusy(true);
+    setTestModelResult("");
+    try {
+      const res = await fetch((base || API) + "/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token.trim(),
+        },
+        body: JSON.stringify({
+          model: testModelId,
+          messages: [{ role: "user", content: testModelPrompt.trim() }],
+          stream: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Request failed" }));
+        throw new Error(err.detail || "API test failed");
+      }
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder("utf-8");
+      if (!reader) throw new Error("No readable response stream");
+
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === "data: [DONE]") continue;
+          if (trimmed.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              const chunk = data.choices?.[0]?.delta?.content || "";
+              setTestModelResult(prev => prev + chunk);
+            } catch { /* skip */ }
+          }
+        }
+      }
+    } catch (e) {
+      setTestModelResult(prev => prev + "\n[Error: " + (e instanceof Error ? e.message : "API test error") + "]");
+    } finally {
+      setTestModelBusy(false);
+    }
   };
 
   const shutdownSystem = async () => {
@@ -687,8 +837,8 @@ export default function App() {
           <button className="rail-action" onClick={() => void runGuidedWorkflow()}>
             <Sparkles size={16}/> 4-Phase Guided Flow
           </button>
-          <button className="rail-action" onClick={() => { setBrowserModalOpen(true); void fetchBrowserStatus(); }}>
-            <Globe size={16}/> Browser Session {browserStatus?.connected && <small>({browserStatus.tab_count})</small>}
+          <button className="rail-action" onClick={() => { setBrowserModalOpen(true); void fetchBrowserStatus(); void fetchWebModels(); }}>
+            <Globe size={16}/> CloakBrowser & Web APIs {browserStatus?.connected && <small>({browserStatus.tab_count})</small>}
           </button>
           <button className="rail-action" onClick={() => { setHistoryOpen(true); void fetchHistory(); }}>
             <History size={16}/> Antigravity Chats
@@ -724,8 +874,8 @@ export default function App() {
             <button className="icon-button" title={"Toggle theme (current: " + theme + ")"} onClick={toggleTheme}>
               {theme === "dark" ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
-            <button className="status-chip" title="Active Browser Session" onClick={() => { setBrowserModalOpen(true); void fetchBrowserStatus(); }}>
-              <Globe size={13}/> {browserStatus?.connected ? "Browser (" + browserStatus.tab_count + " tabs)" : "Browser Offline"}
+            <button className="status-chip" title="CloakBrowser & Web Models Control Center" onClick={() => { setBrowserModalOpen(true); void fetchBrowserStatus(); void fetchWebModels(); }}>
+              <Globe size={13}/> {browserStatus?.connected ? "CloakBrowser (" + browserStatus.tab_count + " tabs)" : "CloakBrowser Offline"}
             </button>
             <span className={"status-chip " + (health ? "connected" : "")}><span/> {health ? "Connected" : "Offline"}</span>
             <button className="icon-button" title="Guided 4-Phase Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={16}/></button>
@@ -1253,80 +1403,315 @@ export default function App() {
         </div>
       )}
 
-      {/* Browser Session Control Center Modal */}
+      {/* CloakBrowser & Web Models Control Center Modal */}
       {browserModalOpen && (
         <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setBrowserModalOpen(false); }}>
           <section className="browser-modal" role="dialog" aria-modal="true">
-            <div className="browser-head">
+            <div className="browser-modal-head">
               <div>
-                <span>LIVE AUTOMATION & DEBUGGING</span>
-                <h2>Browser Session Control Center</h2>
-                <p>Attach to the active browser session via DevTools Protocol (CDP), inspect tabs, navigate, and capture screens.</p>
+                <span>CLOAKBROWSER & WEB APIS</span>
+                <h2>Web Models & CloakBrowser Control Center</h2>
+                <p>Turn authenticated web AI chats (ChatGPT, Claude, DeepSeek, LMSYS Arena, Manus) into standard OpenAI-compatible streaming APIs. All credentials and logins stay saved permanently in your local profile.</p>
               </div>
               <button className="icon-button" onClick={() => setBrowserModalOpen(false)}><X size={17}/></button>
             </div>
 
-            {/* Browser Target Config Bar */}
-            <div className="browser-toolbar">
-              <Globe size={16} style={{ color: "var(--violet)" }}/>
-              <span style={{ fontSize: "10px", fontWeight: 700 }}>Target Endpoint:</span>
-              <input
-                value={browserEndpointDraft}
-                onChange={e => setBrowserEndpointDraft(e.target.value)}
-                placeholder="http://127.0.0.1:9222 or custom CDP URL"
-              />
-              <button className="outline-button" disabled={browserBusy} onClick={() => void updateBrowserEndpoint()}>
-                {browserBusy ? <LoaderCircle className="spin" size={13}/> : "Connect / Change"}
-              </button>
-              <button className="outline-button" onClick={() => void fetchBrowserTabs()} title="Refresh tabs"><RefreshCw size={13}/></button>
-            </div>
+            <div className="browser-modal-body">
+              {/* CloakBrowser Status & 1-Click Launch Banner */}
+              <div className="cloak-status-banner">
+                <div className="cloak-status-info">
+                  <div className={"cloak-status-dot " + (browserStatus?.connected ? "active" : "")}/>
+                  <div>
+                    <div className="cloak-status-title">
+                      {browserStatus?.connected
+                        ? `CloakBrowser Connected (${browserStatus.tab_count} open tabs · Port 9222)`
+                        : "CloakBrowser Offline (Not Connected)"}
+                    </div>
+                    <div className="cloak-status-desc">
+                      Persistent User Data: <code>D:\work\code-conductor\.cloak_profile</code> (Sessions & logins stay saved)
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button
+                    className="launch-cloak-btn"
+                    disabled={cloakLaunching}
+                    onClick={() => void launchCloakBrowser()}
+                  >
+                    {cloakLaunching ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>}
+                    <span>{browserStatus?.connected ? "Re-Open CloakBrowser" : "🚀 Launch CloakBrowser"}</span>
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={() => { void fetchBrowserStatus(); void fetchWebModels(); void fetchBrowserTabs(); }}
+                    title="Refresh status and tabs"
+                  >
+                    <RefreshCw size={14}/>
+                  </button>
+                </div>
+              </div>
 
-            {/* Open Tabs Selector */}
-            <div className="browser-tabs-row">
-              {browserTabs.map(tab => (
-                <div
-                  key={tab.id}
-                  className={"b-tab " + (selectedTabId === tab.id ? "active" : "")}
-                  onClick={() => void activateTab(tab.id)}
+              {/* View Switcher Tabs */}
+              <div style={{ display: "flex", gap: "8px", borderBottom: "1px solid var(--line)", paddingBottom: "8px" }}>
+                <button
+                  className={"subtle-button " + (browserTabActive === "models" ? "active" : "")}
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "12px",
+                    color: browserTabActive === "models" ? "var(--violet)" : "var(--muted)",
+                    borderBottom: browserTabActive === "models" ? "2px solid var(--violet)" : "none",
+                    borderRadius: 0,
+                    padding: "4px 10px",
+                  }}
+                  onClick={() => { setBrowserTabActive("models"); void fetchWebModels(); }}
                 >
-                  <Eye size={12}/>
-                  <span>{tab.title ? (tab.title.length > 25 ? tab.title.slice(0, 25) + "…" : tab.title) : "Tab " + tab.id}</span>
-                </div>
-              ))}
-              {!browserTabs.length && (
-                <span style={{ fontSize: "10px", color: "var(--muted)", padding: "4px 8px" }}>
-                  {browserStatus?.connected ? "No open web pages found" : "Browser disconnected. Check that Chrome is running with --remote-debugging-port=9222."}
-                </span>
-              )}
-            </div>
+                  <Bot size={14}/> Web Models as APIs ({webModels.length})
+                </button>
+                <button
+                  className={"subtle-button " + (browserTabActive === "tabs" ? "active" : "")}
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "12px",
+                    color: browserTabActive === "tabs" ? "var(--violet)" : "var(--muted)",
+                    borderBottom: browserTabActive === "tabs" ? "2px solid var(--violet)" : "none",
+                    borderRadius: 0,
+                    padding: "4px 10px",
+                  }}
+                  onClick={() => { setBrowserTabActive("tabs"); void fetchBrowserTabs(); }}
+                >
+                  <Globe size={14}/> Live Browser Tabs & Screen ({browserTabs.length})
+                </button>
+              </div>
 
-            {/* Navigation & Action Bar */}
-            <div className="browser-toolbar" style={{ marginTop: 0 }}>
-              <input
-                value={browserNavUrl}
-                onChange={e => setBrowserNavUrl(e.target.value)}
-                placeholder="Enter URL to navigate (e.g. https://google.com)"
-                onKeyDown={e => { if (e.key === "Enter") void navigateActiveTab(); }}
-              />
-              <button className="primary-button" disabled={browserBusy || !browserNavUrl} onClick={() => void navigateActiveTab()}>
-                Navigate
-              </button>
-              <button className="outline-button" disabled={browserBusy} onClick={() => void captureScreenshot()}>
-                <Camera size={13}/> Capture Screen
-              </button>
-            </div>
+              {browserTabActive === "models" ? (
+                <>
+                  {/* Web Models Grid */}
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-heading)" }}>
+                        CONFIGURED WEB AI PLATFORMS (READY TO USE AS APIS)
+                      </span>
+                      <button
+                        className="outline-button"
+                        style={{ fontSize: "11px", padding: "4px 10px" }}
+                        onClick={() => setCustomModelFormOpen(v => !v)}
+                      >
+                        <Plus size={13}/> {customModelFormOpen ? "Close Form" : "Add Custom Web Model"}
+                      </button>
+                    </div>
 
-            <div className="browser-content">
-              {browserScreenshot ? (
-                <div style={{ textAlign: "center" }}>
-                  <img src={browserScreenshot} alt="Browser screenshot" className="screenshot-preview"/>
-                </div>
+                    <div className="web-models-grid">
+                      {webModels.map(m => (
+                        <div className="web-model-card" key={m.id}>
+                          <div className="web-model-card-head">
+                            <div>
+                              <div className="web-model-title">{m.name}</div>
+                              <div className="web-model-url">{m.url}</div>
+                            </div>
+                            <span className={"web-model-state-badge " + (m.state === "ready" ? "ready" : "")}>
+                              {m.state === "ready" ? "Ready" : "On-Demand"}
+                            </span>
+                          </div>
+                          <p className="web-model-desc">{m.description}</p>
+                          <div className="web-model-actions">
+                            <button
+                              className="web-login-btn"
+                              title="Open tab in CloakBrowser and sign into your account"
+                              onClick={() => void openWebModelInCloak(m)}
+                            >
+                              <ExternalLink size={12}/> Open & Log In
+                            </button>
+                            <button
+                              className="web-test-btn"
+                              title="Test this Web Model API with streaming response"
+                              onClick={() => { setTestModelId(m.id); void testWebModelStream(); }}
+                            >
+                              ⚡ Test API
+                            </button>
+                            {!m.is_preset && (
+                              <button
+                                className="icon-button"
+                                title="Remove model"
+                                onClick={() => void deleteCustomWebModel(m.id)}
+                              >
+                                <Trash2 size={13}/>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Add Custom Web Model Form */}
+                  {customModelFormOpen && (
+                    <div className="add-web-model-box">
+                      <div className="add-web-model-head">
+                        <Plus size={15}/> Add Any Custom Web AI Model (e.g. Perplexity, Mistral, Grok)
+                      </div>
+                      <div className="add-web-model-grid">
+                        <label className="settings-field">
+                          Display Name
+                          <input
+                            value={webModelDraft.name}
+                            onChange={e => setWebModelDraft({ ...webModelDraft, name: e.target.value })}
+                            placeholder="e.g. Perplexity Web"
+                          />
+                        </label>
+                        <label className="settings-field">
+                          Web Chat URL
+                          <input
+                            value={webModelDraft.url}
+                            onChange={e => setWebModelDraft({ ...webModelDraft, url: e.target.value })}
+                            placeholder="https://www.perplexity.ai"
+                          />
+                        </label>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                        <button className="subtle-button" onClick={() => setCustomModelFormOpen(false)}>Cancel</button>
+                        <button
+                          className="primary-button"
+                          disabled={browserBusy || !webModelDraft.name.trim() || !webModelDraft.url.trim()}
+                          onClick={() => void saveCustomWebModel()}
+                        >
+                          Save & Open in CloakBrowser for Login
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Live Web Model API Tester Playground */}
+                  <div className="test-playground-box">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-heading)", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <Terminal size={14} style={{ color: "var(--violet)" }}/> LIVE WEB MODEL API TESTER & STREAM PREVIEW
+                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)" }}>Target Model:</span>
+                        <select
+                          value={testModelId}
+                          onChange={e => setTestModelId(e.target.value)}
+                          style={{
+                            fontSize: "11px",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                            background: "var(--panel)",
+                            border: "1px solid var(--line)",
+                            color: "var(--text)",
+                          }}
+                        >
+                          {webModels.map(m => (
+                            <option key={m.id} value={m.id}>{m.name} ({m.id})</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <input
+                        value={testModelPrompt}
+                        onChange={e => setTestModelPrompt(e.target.value)}
+                        placeholder="Type a test prompt to send through CloakBrowser..."
+                        style={{ flex: 1 }}
+                        onKeyDown={e => { if (e.key === "Enter") void testWebModelStream(); }}
+                      />
+                      <button
+                        className="primary-button"
+                        disabled={testModelBusy || !testModelPrompt.trim()}
+                        onClick={() => void testWebModelStream()}
+                      >
+                        {testModelBusy ? <LoaderCircle className="spin" size={13}/> : <Send size={13}/>}
+                        <span>{testModelBusy ? "Streaming from Browser…" : "Send Test"}</span>
+                      </button>
+                    </div>
+                    {testModelResult && (
+                      <div className="test-playground-result">
+                        {testModelResult}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* OpenAI Standard API Access Info */}
+                  <div className="api-info-panel">
+                    <div className="api-info-head">
+                      <div className="api-info-title">
+                        <KeyRound size={14}/> STANDARD OPENAI-COMPATIBLE API ENDPOINT
+                      </div>
+                      <span style={{ fontSize: "10px", color: "var(--muted)" }}>Works with curl, Python openai SDK, VSCode extensions, & Cline</span>
+                    </div>
+                    <div className="api-code-snippet">
+                      curl http://127.0.0.1:8765/v1/chat/completions \<br/>
+                      &nbsp;&nbsp;-H "Authorization: Bearer {token}" \<br/>
+                      &nbsp;&nbsp;-H "Content-Type: application/json" \<br/>
+                      &nbsp;&nbsp;-d '&#123;"model": "{testModelId}", "messages": [&#123;"role": "user", "content": "Hello!"&#125;], "stream": true&#125;'
+                    </div>
+                  </div>
+                </>
               ) : (
-                <div className="history-placeholder">
-                  <Globe size={32} style={{ opacity: 0.4 }}/>
-                  <span>Active Browser: {browserStatus?.browser || "Not connected"}</span>
-                  <small>Click "Capture Screen" to view what the browser is currently rendering.</small>
-                </div>
+                <>
+                  {/* Browser Target Config Bar */}
+                  <div className="browser-toolbar">
+                    <Globe size={16} style={{ color: "var(--violet)" }}/>
+                    <span style={{ fontSize: "10px", fontWeight: 700 }}>CDP Endpoint:</span>
+                    <input
+                      value={browserEndpointDraft}
+                      onChange={e => setBrowserEndpointDraft(e.target.value)}
+                      placeholder="http://127.0.0.1:9222"
+                    />
+                    <button className="outline-button" disabled={browserBusy} onClick={() => void updateBrowserEndpoint()}>
+                      {browserBusy ? <LoaderCircle className="spin" size={13}/> : "Connect / Change"}
+                    </button>
+                    <button className="outline-button" onClick={() => void fetchBrowserTabs()} title="Refresh tabs"><RefreshCw size={13}/></button>
+                  </div>
+
+                  {/* Open Tabs Selector */}
+                  <div className="browser-tabs-row">
+                    {browserTabs.map(tab => (
+                      <div
+                        key={tab.id}
+                        className={"b-tab " + (selectedTabId === tab.id ? "active" : "")}
+                        onClick={() => void activateTab(tab.id)}
+                      >
+                        <Eye size={12}/>
+                        <span>{tab.title ? (tab.title.length > 25 ? tab.title.slice(0, 25) + "…" : tab.title) : "Tab " + tab.id}</span>
+                      </div>
+                    ))}
+                    {!browserTabs.length && (
+                      <span style={{ fontSize: "10px", color: "var(--muted)", padding: "4px 8px" }}>
+                        {browserStatus?.connected ? "No open web pages found" : "Browser disconnected. Click 'Launch CloakBrowser' above."}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Navigation & Action Bar */}
+                  <div className="browser-toolbar" style={{ marginTop: 0 }}>
+                    <input
+                      value={browserNavUrl}
+                      onChange={e => setBrowserNavUrl(e.target.value)}
+                      placeholder="Enter URL to navigate (e.g. https://google.com)"
+                      onKeyDown={e => { if (e.key === "Enter") void navigateActiveTab(); }}
+                    />
+                    <button className="primary-button" disabled={browserBusy || !browserNavUrl} onClick={() => void navigateActiveTab()}>
+                      Navigate
+                    </button>
+                    <button className="outline-button" disabled={browserBusy} onClick={() => void captureScreenshot()}>
+                      <Camera size={13}/> Capture Screen
+                    </button>
+                  </div>
+
+                  <div className="browser-content">
+                    {browserScreenshot ? (
+                      <div style={{ textAlign: "center" }}>
+                        <img src={browserScreenshot} alt="Browser screenshot" className="screenshot-preview"/>
+                      </div>
+                    ) : (
+                      <div className="history-placeholder">
+                        <Globe size={32} style={{ opacity: 0.4 }}/>
+                        <span>Active Browser: {browserStatus?.browser || "Not connected"}</span>
+                        <small>Click "Capture Screen" to view what CloakBrowser is currently rendering.</small>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
 

@@ -30,6 +30,15 @@ class AgentRegistry:
         for provider in list_providers():
             self.register(CustomProviderAdapter(provider))
 
+        # Register Web Model adapters (CloakBrowser)
+        try:
+            from app.adapters.web_model import WebBrowserModelAdapter
+            from app.web_models_store import load_web_models
+            for wm in load_web_models():
+                self.register(WebBrowserModelAdapter(wm))
+        except Exception:
+            pass
+
         # 2. Register multi-agent orchestrator coordinator
         self.register(OrchestratorAdapter())
 
@@ -44,6 +53,16 @@ class AgentRegistry:
 
     def unregister(self, agent_id: str) -> None:
         self._adapters.pop(agent_id, None)
+
+    def reload_web_models(self) -> None:
+        """Reloads all web models into the agent registry."""
+        try:
+            from app.adapters.web_model import WebBrowserModelAdapter
+            from app.web_models_store import load_web_models
+            for wm in load_web_models():
+                self.register(WebBrowserModelAdapter(wm))
+        except Exception:
+            pass
 
     async def list_agents(self) -> list[AgentInfo]:
         import asyncio

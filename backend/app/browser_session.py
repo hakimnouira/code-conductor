@@ -13,7 +13,7 @@ import os
 import urllib.parse
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.core.security import require_bearer_token
@@ -340,3 +340,152 @@ async def capture_browser_screenshot(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Screenshot capture failed: {exc}",
         )
+
+
+@router.post("/launch")
+async def launch_browser_daemon(
+    url: str = Query("https://google.com"),
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Launch CloakBrowser with persistent user data directory and remote debugging enabled."""
+    from app.browser.cloak_launcher import launch_cloakbrowser
+    try:
+        res = await launch_cloakbrowser(open_url=url)
+        return res
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to launch CloakBrowser: {exc}",
+        )
+
+
+@router.get("/models")
+async def list_configured_web_models(
+    _: str = Depends(require_bearer_token),
+) -> list[dict[str, Any]]:
+    """List all configured web AI models and their live CloakBrowser tab availability."""
+    from app.web_models_store import load_web_models
+    from app.adapters.web_model import WebBrowserModelAdapter
+    models = load_web_models()
+    results = []
+    for m in models:
+        adapter = WebBrowserModelAdapter(m)
+        state, diag = await adapter.check_availability()
+        results.append({
+            "id": m.id,
+            "name": m.name,
+            "url": m.url,
+            "input_selector": m.input_selector,
+            "send_selector": m.send_selector,
+            "response_selector": m.response_selector,
+            "description": m.description,
+            "is_preset": m.is_preset,
+            "state": state.value,
+            "diagnostic": diag,
+        })
+    return results
+
+
+@router.post("/models")
+async def add_or_update_web_model_endpoint(
+    payload: dict[str, Any],
+    req: Request = None,
+    open_now: bool = Query(True),
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Add a new web model or update an existing one. Automatically opens in CloakBrowser for login."""
+    from app.web_models_store import WebModelConfig, save_web_model
+    from app.adapters.web_model import WebBrowserModelAdapter
+    try:
+        model_id = payload.get("id") or f"web-{payload.get('name', 'custom').lower().replace(' ', '-')}"
+        cfg = WebModelConfig(
+            id=model_id,
+            name=payload.get("name", "Custom Web Model"),
+            url=payload.get("url", "https://chatgpt.com"),
+            input_selector=payload.get("input_selector") or None,
+            send_selector=payload.get("send_selector") or None,
+            response_selector=payload.get("response_selector") or None,
+            description=payload.get("description") or f"Web AI chat at {payload.get('url')} via CloakBrowser",
+            is_preset=payload.get("is_preset", False),
+        )
+        save_web_model(cfg)
+
+        # Update registry if running inside FastAPI app
+        try:
+            from app.main import app as main_app
+            if hasattr(main_app.state, "agent_registry"):
+                main_app.state.agent_registry.register(WebBrowserModelAdapter(cfg))
+        except Exception:
+            pass
+
+        # If requested, open in CloakBrowser so user can immediately log in
+        opened_tab = None
+        if open_now:
+            try:
+                from app.browser.cloak_launcher import is_cdp_connected, launch_cloakbrowser
+                if not await is_cdp_connected():
+                    await launch_cloakbrowser(open_url=cfg.url)
+                else:
+                    adapter = WebBrowserModelAdapter(cfg)
+                    opened_tab = await adapter._get_or_open_tab()
+            except Exception as exc:
+                logger.warning(f"Could not automatically open tab: {exc}")
+
+        return {
+            "success": True,
+            "model": cfg.model_dump(),
+            "opened_tab": bool(opened_tab),
+            "message": f"Web model '{cfg.name}' registered. Tab opened in CloakBrowser for login.",
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to add web model: {exc}",
+        )
+
+
+@router.delete("/models/{model_id}")
+async def delete_web_model_endpoint(
+    model_id: str,
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Remove a configured web model."""
+    from app.web_models_store import delete_web_model
+    delete_web_model(model_id)
+    try:
+        from app.main import app as main_app
+        if hasattr(main_app.state, "agent_registry"):
+            main_app.state.agent_registry.unregister(model_id)
+    except Exception:
+        pass
+    return {"success": True, "deleted_id": model_id}
+
+
+@router.post("/models/{model_id}/open")
+async def open_model_in_browser(
+    model_id: str,
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Opens or focuses the tab for this web model in CloakBrowser so the user can log in."""
+    from app.web_models_store import load_web_models
+    from app.adapters.web_model import WebBrowserModelAdapter
+    from app.browser.cloak_launcher import is_cdp_connected, launch_cloakbrowser
+
+    models = {m.id: m for m in load_web_models()}
+    if model_id not in models:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Web model not found.")
+
+    target_model = models[model_id]
+    if not await is_cdp_connected():
+        return await launch_cloakbrowser(open_url=target_model.url)
+
+    adapter = WebBrowserModelAdapter(target_model)
+    tab = await adapter._get_or_open_tab()
+    return {
+        "success": True,
+        "model_id": model_id,
+        "tab_id": tab.get("id"),
+        "url": tab.get("url"),
+        "message": f"Opened {target_model.name} in CloakBrowser for authentication.",
+    }
+

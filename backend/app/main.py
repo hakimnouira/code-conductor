@@ -61,6 +61,7 @@ from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
 from app.browser_session import router as browser_session_router
 from app.guided_workflow import router as guided_workflow_router
+from app.api.openai_compat import router as openai_compat_router
 
 
 
@@ -97,6 +98,7 @@ app.include_router(repository_import_router)
 app.include_router(antigravity_history_router)
 app.include_router(browser_session_router)
 app.include_router(guided_workflow_router)
+app.include_router(openai_compat_router)
 
 # Strictly restrict CORS to local origin
 app.add_middleware(
