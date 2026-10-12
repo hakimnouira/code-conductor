@@ -25,10 +25,32 @@
     "id": "web-deepseek",
     "name": "DeepSeek Web",
     "url": "https://chat.deepseek.com",
-    "input_selector": "textarea#chat-input, textarea, [contenteditable='true']",
-    "send_selector": "div[role='button']:has(svg), button[aria-label*='Send' i]",
-    "response_selector": ".ds-markdown, .chat-message",
+    "input_selector": "textarea[placeholder*='DeepSeek' i], textarea.ds-scroll-area, textarea",
+    "send_selector": "div.ds-button--circle:not(.ds-button--disabled), div[role='button'].ds-button--primary:not(.ds-button--disabled), div.ds-button--circle",
+    "response_selector": ".ds-markdown, div.ds-markdown, div.markdown",
     "description": "DeepSeek chat using your logged-in DeepSeek account via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-manus",
+    "name": "Manus Web",
+    "url": "https://manus.im/app",
+    "input_selector": "div.tiptap.ProseMirror, div.ProseMirror[contenteditable='true'], [contenteditable='true'], textarea",
+    "send_selector": "button[class*='accent-send-button'], button:has(svg)",
+    "response_selector": "[class*='message'], [class*='response'], .markdown, .prose",
+    "description": "Manus Web AI workspace via CloakBrowser",
+    "is_preset": true,
+    "created_at": 1791825340.2558494
+  },
+  {
+    "id": "web-muse",
+    "name": "Muse AI Web",
+    "url": "https://muse.ai/",
+    "input_selector": "textarea[placeholder='Message'], textarea, [contenteditable='true']",
+    "send_selector": "button[aria-label*='Send' i], button:has(svg)",
+    "response_selector": ".hatch-chat-groupable-bubble, .prose, [class*='hatch-chat-']",
+    "description": "Muse AI chat using your logged-in Muse account via CloakBrowser",
     "is_preset": true,
     "created_at": 1791825340.2558494
   },
@@ -40,17 +62,6 @@
     "send_selector": "button",
     "response_selector": ".message-content, .chatbot-message",
     "description": "LMSYS Chatbot Arena direct web testing via CloakBrowser",
-    "is_preset": true,
-    "created_at": 1791825340.2558494
-  },
-  {
-    "id": "web-manus",
-    "name": "Manus Web",
-    "url": "https://manus.im",
-    "input_selector": "textarea, input[type='text'], div[contenteditable='true']",
-    "send_selector": "button",
-    "response_selector": ".message, .response",
-    "description": "Manus Web AI workspace via CloakBrowser",
     "is_preset": true,
     "created_at": 1791825340.2558494
   }

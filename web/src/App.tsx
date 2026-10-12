@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown,
   CircleAlert, Code2, Command, Copy, ExternalLink, Eye, FolderGit2, Github,
-  Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Send,
+  Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Search, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
 } from "lucide-react";
 
@@ -158,6 +158,7 @@ export default function App() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [taskHistorySearch, setTaskHistorySearch] = useState("");
+  const [sidebarHistoryQuery, setSidebarHistoryQuery] = useState("");
   const [copiedAnswer, setCopiedAnswer] = useState(false);
 
   useEffect(() => {
@@ -916,7 +917,6 @@ export default function App() {
     setHealth(null);
   };
 
-  const ready = agents.filter(a => a.state === "ready").length;
   const activeAgent = agents.find(a => a.id === (task?.agent_id || agent));
   const activeAgentDisplay = agent === "auto" ? "Auto agent" : (agents.find(a => a.id === agent)?.name || agent);
   const runningLabel = activeStep >= 0 && plan ? "Step " + (activeStep + 1) + " of " + plan.subtasks.length : "Working";
@@ -942,58 +942,70 @@ export default function App() {
           <button className="icon-button" title="Import GitHub repository" onClick={() => setRepoOpen(v => !v)}><Github size={15}/></button>
         </div>
 
-        <div className="rail-label">AGENTS <span>{ready}/{agents.length || 0}</span></div>
-        <div className="rail-agents">
-          {agents.slice(0, 7).map(a => (
-            <button key={a.id} className={"rail-agent " + (agent === a.id ? "selected" : "")} onClick={() => setAgent(a.id)}>
-              <span className={"agent-dot " + (a.state === "ready" ? "ready" : "")}/>
-              <span>{a.name}</span>
-              <small>{a.state === "ready" ? "Ready" : label(a.state)}</small>
-            </button>
-          ))}
-          {!agents.length && (
-            <button className="rail-agent muted-agent" onClick={() => setSettings(true)}>
-              <span className="agent-dot"/><span>Connect an agent</span><small>Setup</small>
-            </button>
-          )}
-        </div>
-
-        {/* TASK & CHAT HISTORY SECTION */}
-        <div className="rail-label">
-          <span>TASK HISTORY</span>
-          {taskHistory.length > 0 && (
-            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-              <small>{taskHistory.length}</small>
-              <button className="rail-history-clear" onClick={clearAllHistory} title="Clear all history">
-                <Trash2 size={11}/>
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="rail-history-list">
-          {taskHistory.slice(0, 15).map(item => (
-            <div
-              key={item.id}
-              className={"rail-history-item " + (selectedHistoryId === item.id ? "active" : "")}
-              onClick={() => loadHistoryItem(item)}
-              title={item.prompt}
-            >
-              <div className="rail-history-top">
-                <span className={"history-dot " + item.status}/>
-                <span className="rail-history-agent">{item.agentName}</span>
-                <span className="rail-history-time">{formatTimeAgo(item.timestamp)}</span>
-                <button className="rail-history-del" onClick={(e) => deleteHistoryItem(e, item.id)} title="Delete item">
-                  <X size={10}/>
+        {/* TASK & CHAT HISTORY SECTION (PRIMARY SIDEBAR SPACE) */}
+        <div className="rail-history-section">
+          <div className="rail-label rail-history-header">
+            <span>CHATS & TASKS</span>
+            {taskHistory.length > 0 && (
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <span className="history-count-pill">{taskHistory.length}</span>
+                <button className="rail-history-clear" onClick={clearAllHistory} title="Clear all history">
+                  <Trash2 size={12}/>
                 </button>
               </div>
-              <div className="rail-history-prompt">{item.prompt}</div>
-            </div>
-          ))}
-          {taskHistory.length === 0 && (
-            <div className="rail-history-empty">
-              No tasks yet. Your chats & tasks will appear here!
+            )}
+          </div>
+
+          {taskHistory.length > 2 && (
+            <div className="rail-history-search-wrap">
+              <Search size={12} className="search-icon" />
+              <input
+                type="text"
+                className="rail-history-search-input"
+                placeholder="Search chats…"
+                value={sidebarHistoryQuery}
+                onChange={e => setSidebarHistoryQuery(e.target.value)}
+              />
+              {sidebarHistoryQuery && (
+                <button className="search-clear-btn" onClick={() => setSidebarHistoryQuery("")} title="Clear search">
+                  <X size={11} />
+                </button>
+              )}
             </div>
           )}
+
+          <div className="rail-history-list">
+            {taskHistory
+              .filter(item => {
+                if (!sidebarHistoryQuery.trim()) return true;
+                const q = sidebarHistoryQuery.toLowerCase();
+                return item.prompt.toLowerCase().includes(q) || item.agentName.toLowerCase().includes(q);
+              })
+              .map(item => (
+                <div
+                  key={item.id}
+                  className={"rail-history-item " + (selectedHistoryId === item.id ? "active" : "")}
+                  onClick={() => loadHistoryItem(item)}
+                  title={item.prompt}
+                >
+                  <div className="rail-history-top">
+                    <span className={"history-dot " + item.status}/>
+                    <span className="rail-history-agent">{item.agentName}</span>
+                    <span className="rail-history-time">{formatTimeAgo(item.timestamp)}</span>
+                    <button className="rail-history-del" onClick={(e) => deleteHistoryItem(e, item.id)} title="Delete item">
+                      <Trash2 size={11}/>
+                    </button>
+                  </div>
+                  <div className="rail-history-prompt">{item.prompt}</div>
+                </div>
+              ))}
+            {taskHistory.length === 0 && (
+              <div className="rail-history-empty">
+                <History size={18} style={{ margin: "0 auto 6px", opacity: 0.5, display: "block" }} />
+                <span>No chats yet. Tasks will appear here!</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="rail-bottom">

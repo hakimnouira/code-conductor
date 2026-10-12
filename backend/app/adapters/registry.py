@@ -66,6 +66,7 @@ class AgentRegistry:
 
     async def list_agents(self) -> list[AgentInfo]:
         import asyncio
+        self.reload_web_models()
         return await asyncio.gather(*[adapter.get_info() for adapter in self._adapters.values()])
 
     async def get_ready_workers(self) -> list[BaseAgentAdapter]:

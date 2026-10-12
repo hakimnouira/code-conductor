@@ -31,6 +31,26 @@ from app.web_models_store import WebModelConfig
 logger = logging.getLogger(__name__)
 
 CDP_BASE_URL = "http://127.0.0.1:9222"
+_CDP_TABS_CACHE: dict[str, Any] = {"ts": 0.0, "connected": False, "tabs": []}
+
+
+async def _get_cached_cdp_status(cdp_base: str = CDP_BASE_URL) -> tuple[bool, list[dict[str, Any]]]:
+    now = time.time()
+    if (now - _CDP_TABS_CACHE["ts"]) < 3.0:
+        return _CDP_TABS_CACHE["connected"], _CDP_TABS_CACHE["tabs"]
+    connected = await is_cdp_connected(timeout=0.6)
+    tabs: list[dict[str, Any]] = []
+    if connected:
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                res = await client.get(f"{cdp_base}/json/list")
+                tabs = res.json()
+        except Exception:
+            pass
+    _CDP_TABS_CACHE["ts"] = now
+    _CDP_TABS_CACHE["connected"] = connected
+    _CDP_TABS_CACHE["tabs"] = tabs
+    return connected, tabs
 
 
 class WebBrowserModelAdapter(BaseAgentAdapter):
@@ -61,7 +81,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
         )
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
-        connected = await is_cdp_connected(timeout=1.5)
+        connected, tabs = await _get_cached_cdp_status(self.cdp_base)
         if not connected:
             return (
                 AvailabilityState.MISSING_CLI,
@@ -69,26 +89,17 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             )
 
         # Check if tab is open
-        try:
-            domain = urlparse(self.config.url).netloc
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                res = await client.get(f"{self.cdp_base}/json/list")
-                tabs = res.json()
-                matching = [t for t in tabs if domain.lower() in t.get("url", "").lower()]
-                if matching:
-                    return (
-                        AvailabilityState.READY,
-                        f"{self.config.name} tab is active and ready in CloakBrowser.",
-                    )
-                return (
-                    AvailabilityState.READY,
-                    f"CloakBrowser connected. Tab for {self.config.name} will open automatically on demand.",
-                )
-        except Exception as exc:
+        domain = urlparse(self.config.url).netloc
+        matching = [t for t in tabs if domain.lower() in t.get("url", "").lower()]
+        if matching:
             return (
-                AvailabilityState.DEGRADED,
-                f"CloakBrowser connected but failed to query active tabs: {exc}",
+                AvailabilityState.READY,
+                f"{self.config.name} tab is active and ready in CloakBrowser.",
             )
+        return (
+            AvailabilityState.READY,
+            f"CloakBrowser connected. Tab for {self.config.name} will open automatically on demand.",
+        )
 
     async def _get_or_open_tab(self) -> dict:
         """Finds an existing tab for the model's domain, or opens a new one."""
@@ -172,7 +183,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 "params": {
                     "expression": expression,
                     "returnByValue": True,
-                    "awaitPromise": True,
+                    "awaitPromise": False,
                 },
             }))
             start_t = asyncio.get_event_loop().time()
@@ -184,8 +195,17 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     raw = await asyncio.wait_for(ws.recv(), timeout=rem)
                     msg = json.loads(raw)
                     if msg.get("id") == req_id:
-                        return msg.get("result", {}).get("result", {}).get("value") or {}
-                except Exception:
+                        res = msg.get("result", {})
+                        if "exceptionDetails" in res:
+                            logger.warning(f"CDP JS exception: {res.get('exceptionDetails')}")
+                            return {"success": False, "error": str(res.get("exceptionDetails"))}
+                        val = res.get("result", {}).get("value")
+                        if val is not None:
+                            return val if isinstance(val, dict) else {"value": val}
+                        return {}
+                except asyncio.TimeoutError:
+                    return {}
+                except Exception as exc:
                     return {}
 
         prompt_json = json.dumps(request.prompt)
@@ -206,79 +226,84 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
         """
 
         injection_script = f"""
-        (async function() {{
-            const promptText = {prompt_json};
-            const inputSelector = {input_sel};
-            const sendSelector = {send_sel};
+        (function() {{
+            try {{
+                const promptText = {prompt_json};
+                const inputSelector = {input_sel};
+                const sendSelector = {send_sel};
 
-            // 1. Locate input element
-            let inputEl = null;
-            if (inputSelector) {{
-                inputEl = document.querySelector(inputSelector);
-            }}
-            if (!inputEl) {{
-                inputEl = document.querySelector(
-                    '#prompt-textarea, div.ProseMirror[contenteditable="true"], textarea[placeholder*="message" i], textarea[placeholder*="ask" i], textarea, div[contenteditable="true"], div[role="textbox"]'
-                );
-            }}
+                // 1. Locate input element
+                let inputEl = null;
+                if (inputSelector) {{
+                    inputEl = document.querySelector(inputSelector);
+                }}
+                if (!inputEl) {{
+                    inputEl = document.querySelector(
+                        '#prompt-textarea, div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"], textarea[placeholder*="message" i], textarea[placeholder*="ask" i], textarea, div[contenteditable="true"], div[role="textbox"]'
+                    );
+                }}
 
-            if (!inputEl) {{
-                return {{ success: false, error: "Prompt input field not found. Please log in to your account in the CloakBrowser window." }};
-            }}
+                if (!inputEl) {{
+                    return {{ success: false, error: "Prompt input field not found. Please log in to your account in the CloakBrowser window." }};
+                }}
 
-            // 2. Insert text
-            inputEl.focus();
-            if (inputEl.tagName === "TEXTAREA" || inputEl.tagName === "INPUT") {{
-                inputEl.value = promptText;
-                inputEl.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                inputEl.dispatchEvent(new Event("change", {{ bubbles: true }}));
-            }} else if (inputEl.isContentEditable) {{
-                try {{
-                    inputEl.dispatchEvent(new InputEvent("beforeinput", {{
-                        bubbles: true,
-                        cancelable: true,
-                        inputType: "insertText",
-                        data: promptText
-                    }}));
-                }} catch(e) {{}}
-                document.execCommand("selectAll", false, null);
-                document.execCommand("insertText", false, promptText);
-                inputEl.dispatchEvent(new InputEvent("input", {{ bubbles: true }}));
-                inputEl.dispatchEvent(new KeyboardEvent("keyup", {{ key: "e", bubbles: true }}));
-            }}
+                // 2. Insert text
+                inputEl.focus();
+                if (inputEl.tagName === "TEXTAREA" || inputEl.tagName === "INPUT") {{
+                    try {{
+                        document.execCommand("selectAll", false, null);
+                        document.execCommand("insertText", false, promptText);
+                    }} catch(e) {{}}
+                    inputEl.value = promptText;
+                    inputEl.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                    inputEl.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                }} else if (inputEl.isContentEditable || inputEl.classList.contains("ProseMirror")) {{
+                    try {{
+                        inputEl.dispatchEvent(new InputEvent("beforeinput", {{
+                            bubbles: true,
+                            cancelable: true,
+                            inputType: "insertText",
+                            data: promptText
+                        }}));
+                    }} catch(e) {{}}
+                    document.execCommand("selectAll", false, null);
+                    document.execCommand("insertText", false, promptText);
+                    inputEl.dispatchEvent(new InputEvent("input", {{ bubbles: true }}));
+                    inputEl.dispatchEvent(new KeyboardEvent("keyup", {{ key: "e", bubbles: true }}));
+                }}
 
-            // Let ProseMirror update internal state
-            await new Promise(r => setTimeout(r, 250));
-
-            // 3. Trigger submit
-            let sent = false;
-            if (sendSelector) {{
-                const btn = document.querySelector(sendSelector);
-                if (btn && !btn.disabled) {{
-                    btn.click();
+                // 3. Trigger submit
+                let sent = false;
+                if (sendSelector) {{
+                    const btn = document.querySelector(sendSelector);
+                    if (btn && !btn.disabled && (!btn.className || !btn.className.includes("disabled"))) {{
+                        btn.click();
+                        sent = true;
+                    }}
+                }}
+                if (!sent) {{
+                    const sendBtn = document.querySelector(
+                        'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[class*="accent-send-button"], div.ds-button--circle:not(.ds-button--disabled), div[role="button"].ds-button--primary:not(.ds-button--disabled), button[aria-label*="Send" i], button[aria-label*="Submit" i]'
+                    );
+                    if (sendBtn && !sendBtn.disabled && (!sendBtn.className || !sendBtn.className.includes("disabled"))) {{
+                        sendBtn.click();
+                        sent = true;
+                    }}
+                }}
+                if (!sent) {{
+                    inputEl.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }}));
                     sent = true;
                 }}
-            }}
-            if (!sent) {{
-                const sendBtn = document.querySelector(
-                    'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[aria-label*="Send" i], button[aria-label*="Submit" i]'
-                );
-                if (sendBtn && !sendBtn.disabled) {{
-                    sendBtn.click();
-                    sent = true;
-                }}
-            }}
-            if (!sent) {{
-                inputEl.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }}));
-                sent = true;
-            }}
 
-            return {{ success: true, sent: sent }};
+                return {{ success: true, sent: sent }};
+            }} catch (err) {{
+                return {{ success: false, error: err.toString() }};
+            }}
         }})()
         """
 
         try:
-            async with websockets.connect(ws_url, close_timeout=5.0) as ws:
+            async with websockets.connect(ws_url, close_timeout=5.0, max_size=50*1024*1024) as ws:
                 req_id = 1
                 
                 # Baseline measurement
@@ -354,10 +379,10 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                         }}
                     }}
 
-                    // Method 3: Claude (.font-claude-message), DeepSeek, Arena, Manus, and standard selectors
+                    // Method 3: Claude (.font-claude-message), DeepSeek, Arena, Manus, Muse, and standard selectors
                     if (!text) {{
                         const elements = Array.from(document.querySelectorAll(
-                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
+                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .hatch-chat-groupable-bubble, [class*="hatch-chat-"], .chat-message'
                         ));
                         if (elements.length > {base_els}) {{
                             const latest = elements[elements.length - 1];
@@ -368,7 +393,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     // Fallback if message count didn't increment but text exists in last element
                     if (!text && is_generating) {{
                         const elements = Array.from(document.querySelectorAll(
-                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
+                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .hatch-chat-groupable-bubble, [class*="hatch-chat-"], .chat-message'
                         ));
                         if (elements.length > 0) {{
                             const latest = elements[elements.length - 1];

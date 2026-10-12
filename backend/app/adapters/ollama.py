@@ -42,7 +42,7 @@ class OllamaAdapter(BaseAgentAdapter):
 
     async def _probe_ollama(self) -> tuple[bool, list[str]]:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=0.3, read=0.5, write=0.5, pool=0.3)) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
                 if res.status_code == 200:
                     data = res.json()
@@ -54,7 +54,7 @@ class OllamaAdapter(BaseAgentAdapter):
 
     async def _probe_lm_studio(self) -> tuple[bool, list[str]]:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=0.3, read=0.5, write=0.5, pool=0.3)) as client:
                 res = await client.get(f"{self.lm_studio_url}/models")
                 if res.status_code == 200:
                     data = res.json()
