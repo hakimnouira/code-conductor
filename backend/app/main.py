@@ -255,6 +255,19 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "text": "GitHub research failed safely; continuing without external references: " + str(research_error)[:240],
                     "timestamp": time.time(), "data": {"phase": "github_research", "status": "error"},
                 }))
+        project_rules = _load_project_rules(record.request.workspace_path)
+        if project_rules:
+            record.request.prompt += (
+                "\\n\\nPROJECT-SPECIFIC INSTRUCTIONS (from .code-conductor/rules.md):\\n"
+                + project_rules
+            )
+            await record.event_queue.put(json.dumps({
+                "task_id": record.task_id, "event_type": "log",
+                "text": "Loaded workspace-specific project rules from .code-conductor/rules.md.",
+                "timestamp": time.time(),
+                "data": {"phase": "project_context", "status": "loaded", "characters": len(project_rules)},
+            }))
+
         verification_attempt = 0
         while True:
             terminal_event = None
@@ -460,6 +473,69 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
 # ---------------------------------------------------------
 # Workspace Security, Git Guard, and Test Runner (Milestone 7)
 # ---------------------------------------------------------
+
+def _project_rules_path(workspace_root: Path) -> Path:
+    """Resolve workspace-local agent instructions without allowing symlink escape."""
+    root = workspace_root.resolve()
+    rules_path = root / ".code-conductor" / "rules.md"
+    resolved = rules_path.resolve()
+    if not resolved.is_relative_to(root):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project rules path escapes workspace.")
+    return resolved
+
+
+def _load_project_rules(workspace_root: str | Path) -> str:
+    try:
+        path = _project_rules_path(Path(workspace_root))
+        if not path.is_file() or path.is_symlink():
+            return ""
+        # Keep prompt injection bounded and avoid reading unbounded files into agent context.
+        with path.open("r", encoding="utf-8") as handle:
+            return handle.read(20_001)[:20_000].strip()
+    except (OSError, UnicodeError, HTTPException):
+        return ""
+
+
+@app.get("/workspace/rules")
+async def get_project_rules(workspace_path: str | None = None, _: str = Depends(require_bearer_token)):
+    root = _resolve_validated_ws(workspace_path)
+    path = _project_rules_path(root)
+    content = _load_project_rules(root)
+    return {"workspace_path": str(root), "path": str(path), "content": content, "exists": path.is_file()}
+
+
+class ProjectRulesRequest(BaseModel):
+    content: str
+    workspace_path: str | None = None
+
+
+@app.put("/workspace/rules")
+async def save_project_rules(req: ProjectRulesRequest, _: str = Depends(require_bearer_token)):
+    root = _resolve_validated_ws(req.workspace_path)
+    if len(req.content) > 20_000:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Project rules are limited to 20,000 characters.")
+    path = _project_rules_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Re-check containment after directory creation to defend against unexpected symlink changes.
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project rules path escapes workspace.")
+    temp_path = path.with_suffix(".md.tmp")
+    temp_path.write_text(req.content, encoding="utf-8")
+    temp_path.replace(path)
+    return {"success": True, "workspace_path": str(root), "path": str(path), "characters": len(req.content)}
+
+
+@app.delete("/workspace/rules")
+async def delete_project_rules(workspace_path: str | None = None, _: str = Depends(require_bearer_token)):
+    root = _resolve_validated_ws(workspace_path)
+    path = _project_rules_path(root)
+    try:
+        path.unlink()
+        return {"success": True, "deleted": True}
+    except FileNotFoundError:
+        return {"success": True, "deleted": False}
+
 
 def _resolve_validated_ws(workspace_path: str | None = None) -> Path:
     try:
