@@ -143,6 +143,9 @@ export default function App() {
   const [repo, setRepo] = useState<RepoResult | null>(null);
   const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
   const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
+  const [projectRulesOpen, setProjectRulesOpen] = useState(false);
+  const [projectRulesText, setProjectRulesText] = useState("");
+  const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>((localStorage.getItem("cc_permission_mode") as PermissionMode) || "safe");
   const [notifications, setNotifications] = useState<NotificationPrefs>(() => {
     try { return { enabled: false, completion: true, action: true, sound: "chime", ...JSON.parse(localStorage.getItem("cc_notifications") || "{}") }; }
@@ -522,6 +525,52 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Could not build task plan");
       return null;
     } finally { setPlanning(false); }
+  };
+
+  const openProjectRules = async () => {
+    setProjectRulesOpen(true);
+    setProjectRulesBusy(true);
+    setError("");
+    try {
+      const query = workspace ? "?workspace_path=" + encodeURIComponent(workspace) : "";
+      const data = await request("/workspace/rules" + query).then(r => r.json()) as { content?: string };
+      setProjectRulesText(data.content || "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load project rules");
+    } finally {
+      setProjectRulesBusy(false);
+    }
+  };
+
+  const saveProjectRules = async () => {
+    setProjectRulesBusy(true);
+    try {
+      await request("/workspace/rules", {
+        method: "PUT",
+        body: JSON.stringify({ content: projectRulesText, workspace_path: workspace || undefined })
+      });
+      setNotice("Project rules saved. New tasks will include these instructions.");
+      setProjectRulesOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save project rules");
+    } finally {
+      setProjectRulesBusy(false);
+    }
+  };
+
+  const deleteProjectRules = async () => {
+    setProjectRulesBusy(true);
+    try {
+      const query = workspace ? "?workspace_path=" + encodeURIComponent(workspace) : "";
+      await request("/workspace/rules" + query, { method: "DELETE" });
+      setProjectRulesText("");
+      setNotice("Project rules removed for this workspace.");
+      setProjectRulesOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not remove project rules");
+    } finally {
+      setProjectRulesBusy(false);
+    }
   };
 
   const streamTask = async (created: Task, signal: AbortSignal, taskPrompt: string = "", agentName: string = "") => {
@@ -1571,6 +1620,7 @@ export default function App() {
                       )}
                     </div>
                     <button className="tool-pill active" title="Run 4-Phase Guided Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={14}/> Guided Flow</button>
+                    <button className="tool-pill" title="Edit workspace-specific AI instructions" onClick={() => void openProjectRules()}><Edit3 size={14}/> Project Rules</button>
                     <button className={"tool-pill " + (githubResearchEnabled ? "research-enabled" : "")} title="Automatically research public GitHub projects" onClick={() => { const next = !githubResearchEnabled; setGithubResearchEnabled(next); localStorage.setItem("cc_github_research", String(next)); }}><Github size={14}/> Research {githubResearchEnabled ? "ON" : "OFF"}</button>
                     <button className={"tool-pill " + (autoVerifyEnabled ? "research-enabled" : "")} title="Run detected project tests after the agent finishes and ask it to repair failures (up to 2 attempts)" onClick={() => { const next = !autoVerifyEnabled; setAutoVerifyEnabled(next); localStorage.setItem("cc_auto_verify", String(next)); }}><CheckCircle2 size={14}/> Verify {autoVerifyEnabled ? "ON" : "OFF"}</button>
                     <button className="tool-pill" onClick={() => void makePlan()} disabled={!prompt.trim() || planning}><Workflow size={14}/>{planning ? "Planning…" : "Plan task"}</button>
@@ -2537,6 +2587,48 @@ export default function App() {
                   <p>Submit your first prompt or ask a web model to start building your history!</p>
                 </div>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Workspace-specific agent rules editor */}
+      {projectRulesOpen && (
+        <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setProjectRulesOpen(false); }}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="project-rules-title">
+            <div className="settings-modal-head">
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div className="brand-symbol"><Edit3 size={20}/></div>
+                <div>
+                  <h2 id="project-rules-title">Project Rules</h2>
+                  <p>Instructions automatically supplied to agents for this workspace.</p>
+                </div>
+              </div>
+              <button className="icon-button" onClick={() => setProjectRulesOpen(false)}><X size={17}/></button>
+            </div>
+            <div className="workspace-modal-body">
+              <div className="workspace-input-section">
+                <label className="field-label">
+                  <b>Workspace: {workspace || "Default workspace"}</b>
+                  <span>Saved to .code-conductor/rules.md. Maximum 20,000 characters. Do not include secrets.</span>
+                </label>
+                <textarea
+                  className="workspace-custom-input"
+                  style={{ width: "100%", minHeight: "280px", resize: "vertical", fontFamily: "monospace", lineHeight: 1.5 }}
+                  value={projectRulesText}
+                  onChange={e => setProjectRulesText(e.target.value.slice(0, 20000))}
+                  placeholder={"Example:\n- Keep changes small and tested.\n- Use the project's existing conventions.\n- Run the relevant test suite before declaring success.\n- Do not change public APIs without updating documentation."}
+                  disabled={projectRulesBusy}
+                />
+                <span style={{ color: "var(--muted)", fontSize: "11px" }}>{projectRulesText.length.toLocaleString()} / 20,000 characters</span>
+              </div>
+            </div>
+            <div className="modal-actions bottom-actions">
+              <button className="outline-button" onClick={() => void deleteProjectRules()} disabled={projectRulesBusy}>Remove Rules</button>
+              <button className="outline-button" onClick={() => setProjectRulesOpen(false)} disabled={projectRulesBusy}>Cancel</button>
+              <button className="primary-button" onClick={() => void saveProjectRules()} disabled={projectRulesBusy || projectRulesText.length > 20000}>
+                {projectRulesBusy ? <LoaderCircle size={14}/> : <Check size={14}/>} Save Rules
+              </button>
             </div>
           </section>
         </div>
