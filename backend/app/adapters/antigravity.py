@@ -170,6 +170,8 @@ class AntigravityAdapter(BaseAgentAdapter):
             return_code = await proc.wait()
             stderr_bytes = await stderr_task if stderr_task else b""
             stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            if stderr_text and any(word in stderr_text.lower() for word in ("permission", "approval", "soft-denied", "ask to allow")):
+                yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=("Antigravity permission notice: " + stderr_text[:1200]), timestamp=time.time())
             if final_status == "SUCCESS" and return_code == 0:
                 yield AgentEvent(task_id=task_id, event_type=EventType.COMPLETED, text="Antigravity task completed successfully.", timestamp=time.time(), data={"status": final_status})
             else:
