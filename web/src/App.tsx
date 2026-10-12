@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowDown, ArrowUpRight, Bell, Bot, Check, CheckCircle2, ChevronDown,
-  CircleAlert, Clock3, Code2, Command, FileCode2, FolderGit2, GitBranch, Github,
-  History, KeyRound, LoaderCircle, Menu, MessageSquare, Plus, RefreshCw, Send,
+  Activity, ArrowUpRight, Bell, Bot, Check, CheckCircle2, ChevronDown,
+  CircleAlert, Code2, Command, FolderGit2, Github,
+  History, KeyRound, LoaderCircle, Plus, RefreshCw, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Terminal, Trash2, Workflow, X
 } from "lucide-react";
 
@@ -28,6 +28,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agent, setAgent] = useState("auto");
   const [prompt, setPrompt] = useState("");
+  const [conversationPrompt, setConversationPrompt] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -150,6 +151,7 @@ export default function App() {
     if (!response.body) throw new Error("No event stream returned.");
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = "", taskOutput = "";
+    let taskFailed = false;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -162,6 +164,7 @@ export default function App() {
           const event = JSON.parse(data) as Ev;
           setEvents(old => [...old, event]);
           if (event.event_type === "token") taskOutput += event.text || "";
+          if (event.event_type === "error") taskFailed = true;
           if (event.event_type === "completed") notify("completion", "Code Conductor · Task finished", "The agent completed a task step.");
           if (event.event_type === "error") notify("action", "Code Conductor · Action needed", event.text || "The task needs attention.");
           if (event.event_type === "needs_action" || ((event.event_type === "tool_call" || event.event_type === "log") && /permission|approval|confirm|waiting|blocked|soft-denied/i.test(event.text || ""))) {
@@ -173,7 +176,7 @@ export default function App() {
         } catch { /* Ignore malformed SSE frames. */ }
       }
     }
-    return taskOutput;
+    return { output: taskOutput, failed: taskFailed };
   };
 
   const dispatch = async (taskPrompt: string, selectedAgent: string, signal: AbortSignal) => {
@@ -194,6 +197,7 @@ export default function App() {
     if (permissionMode === "god" && !window.confirm("GOD MODE WARNING\n\nThis can approve tool actions and run commands broadly. Continue only with a trusted prompt and reviewed workspace.")) return;
     setError(""); setNotice(""); setBusy(true); setEvents([]); setTask(null); setActiveStep(-1);
     const originalPrompt = prompt.trim();
+    setConversationPrompt(originalPrompt);
     const controller = new AbortController(); abort.current = controller;
     try {
       let selectedPlan = plan;
@@ -220,9 +224,9 @@ export default function App() {
             context ? "RECENT RESULTS FROM EARLIER STEPS:\n" + context : "",
             "Work only on this step, inspect the existing code before editing, respect repository conventions, and report changed files and verification performed. Do not claim tests passed unless you ran them."
           ].filter(Boolean).join("\n\n");
-          const output = await dispatch(stepPrompt, stepAgent, controller.signal);
-          outputs.push("Step " + (i + 1) + " — " + step.title + ":\n" + output.slice(-3500));
-          if (task?.status === "failed") break;
+          const result = await dispatch(stepPrompt, stepAgent, controller.signal);
+          outputs.push("Step " + (i + 1) + " — " + step.title + ":\n" + result.output.slice(-3500));
+          if (result.failed) { setNotice("Plan paused because step " + (i + 1) + " failed. Fix the error, then review the workspace before continuing."); break; }
         }
         if (!controller.signal.aborted) {
           setNotice("Plan execution finished. Review the response and run tests before accepting changes.");
@@ -288,12 +292,11 @@ export default function App() {
 
   const ready = agents.filter(a => a.state === "ready").length;
   const activeAgent = agents.find(a => a.id === (task?.agent_id || agent));
-  const responseText = events.filter(e => e.event_type === "token" || e.event_type === "log" || e.event_type === "tool_result" || e.event_type === "error").map(e => e.text || "").join("");
   const runningLabel = activeStep >= 0 && plan ? "Step " + (activeStep + 1) + " of " + plan.subtasks.length : "Working";
   return <div className="app-shell">
     <aside className="rail">
       <div className="brand-lockup"><div className="brand-symbol"><Sparkles size={20}/></div><div><strong>conductor</strong><span>AI workspace</span></div></div>
-      <button className="new-chat" onClick={() => { if (busy) return; setPrompt(""); setEvents([]); setPlan(null); setTask(null); setRepo(null); setNotice(""); setError(""); }}><Plus size={16}/> New task <span>⌘ K</span></button>
+      <button className="new-chat" onClick={() => { if (busy) return; setPrompt(""); setConversationPrompt(""); setEvents([]); setPlan(null); setTask(null); setRepo(null); setNotice(""); setError(""); }}><Plus size={16}/> New task <span>⌘ K</span></button>
       <div className="rail-label">WORKSPACE</div>
       <div className="workspace-mini"><div className="folder-glyph"><FolderGit2 size={17}/></div><div className="workspace-name"><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "No project open"}</b><span>{repo?.repository_name || (health ? "Local workspace" : "Connect backend")}</span></div><button className="icon-button" title="Import GitHub repository" onClick={() => setRepoOpen(v => !v)}><Github size={15}/></button></div>
       <div className="rail-label">AGENTS <span>{ready}/{agents.length || 0}</span></div>
@@ -327,8 +330,8 @@ export default function App() {
                 <button onClick={() => setPrompt("Review this project for security, reliability, and maintainability issues. Prioritize findings by severity and cite exact files and symbols.")}><span className="starter-icon green"><ShieldCheck size={17}/></span><b>Review the project</b><small>Prioritized engineering findings</small><ArrowUpRight size={14}/></button>
               </div>
             </div> : <div className="thread">
-              {task?.prompt && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>{clock()}</span></div><p>{task.prompt}</p></div></div>}
-              {!task && prompt && plan && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>Plan request</span></div><p>{prompt}</p></div></div>}
+              {conversationPrompt && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>{clock()}</span></div><p>{conversationPrompt}</p></div></div>}
+              {!task && conversationPrompt && plan && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>Plan request</span></div><p>{conversationPrompt}</p></div></div>}
               {plan && <div className="plan-card"><div className="plan-card-head"><div className="plan-icon"><Workflow size={18}/></div><div><b>Execution plan</b><span>{plan.subtasks.length} steps · {plan.parallel_batches.length} dependency batches</span></div><span className="review-badge">REVIEW BEFORE RUN</span></div><p>{plan.goal}</p><div className="plan-step-list">{plan.subtasks.map((step, i) => <div className={"plan-step " + (activeStep === i ? "current" : activeStep > i ? "finished" : "")} key={step.id}><div className="step-number">{activeStep > i ? <Check size={14}/> : String(i + 1).padStart(2, "0")}</div><div className="step-main"><b>{step.title}</b><span>{step.target_files.join(", ") || "Inspect repository"}{step.dependencies.length ? " · depends on " + step.dependencies.join(", ") : ""}</span></div><small>{step.assigned_agent || agent}</small></div>)}</div><div className="plan-card-foot"><span><ShieldCheck size={14}/> Plan is visible before execution</span><button className="subtle-button" onClick={() => setPlan(null)}>Dismiss</button></div></div>}
               {(task || events.length > 0) && <div className="message assistant-message"><div className="message-avatar assistant-avatar"><Sparkles size={16}/></div><div className="message-content"><div className="message-meta"><b>Conductor</b><span>{busy ? runningLabel : task?.status === "failed" ? "Stopped with an error" : task?.status === "completed" ? "Finished" : "Response"}</span><span className="agent-label">{activeAgent?.name || task?.agent_id || agent}</span></div>
                 {busy && !events.length && <div className="thinking-row"><span className="thinking-dots"><i/><i/><i/></span><span>{runningLabel} · waiting for the agent response</span></div>}
