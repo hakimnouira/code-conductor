@@ -8,7 +8,7 @@ type Log={id:number;time:string;kind:string;text:string};
 type Plan={plan_id:string;goal:string;subtasks:{id:string;title:string;assigned_agent:string;target_files:string[];dependencies:string[]}[];parallel_batches:string[][]};
 const API="http://127.0.0.1:8765";
 const clock=()=>new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-const label=(s:string)=>s.replaceAll("_"," ");
+const label=(s:string)=>s.replace(/_/g," ");
 const badge=(s:string)=>s==="ready"?"ready":"offline";
 export default function App(){
  const [base,setBase]=useState(sessionStorage.getItem("cc_api")||API),[token,setToken]=useState(sessionStorage.getItem("cc_token")||""),[workspace,setWorkspace]=useState("");
