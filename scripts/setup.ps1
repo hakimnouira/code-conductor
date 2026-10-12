@@ -163,8 +163,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Extension compiled successfully." -ForegroundColor Green
 
-Write-Host "Extension compiled successfully." -ForegroundColor Green
-
 # 5. Web dashboard dependencies (required by Start_CodeConductor.bat)
 Write-Host "`n[5/5] Setting up web dashboard dependencies..." -ForegroundColor Yellow
 $WebDir = Join-Path $WorkspaceRoot "web"
