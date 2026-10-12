@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.adapters.base import BaseAgentAdapter
-from app.core.provider_store import get_key
+from app.core.provider_store import get_keys
 from app.models.schemas import AgentCapabilities, AgentEvent, AvailabilityState, EventType, TaskCreateRequest
 
 
@@ -34,7 +34,7 @@ class CustomProviderAdapter(BaseAgentAdapter):
         return f"OpenAI-compatible endpoint · {self.config['model']}"
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
-        if not get_key(self.config["id"]):
+        if not get_keys(self.config["id"]):
             return AvailabilityState.UNAUTHENTICATED, "API key is missing from the OS credential store."
         return AvailabilityState.READY, "Configured endpoint; connectivity is checked when a task runs."
 
@@ -48,8 +48,8 @@ class CustomProviderAdapter(BaseAgentAdapter):
         )
 
     def _query(self, prompt: str) -> str:
-        key = get_key(self.config["id"])
-        if not key:
+        keys = get_keys(self.config["id"])
+        if not keys:
             raise RuntimeError("API key is not available in the OS credential store.")
         base = self.config["base_url"].rstrip("/")
         url = base if base.endswith("/chat/completions") else base + "/chat/completions"
@@ -61,19 +61,24 @@ class CustomProviderAdapter(BaseAgentAdapter):
             ],
             "stream": False,
         }).encode("utf-8")
-        req = Request(url, data=payload, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}, method="POST")
-        try:
-            with urlopen(req, timeout=90) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"Provider HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError) as exc:
-            raise RuntimeError(f"Provider connection failed: {exc}") from exc
-        try:
-            return body["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("Endpoint response was not a compatible chat-completions response.") from exc
+        errors = []
+        for index, key in enumerate(keys, start=1):
+            req = Request(url, data=payload, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}, method="POST")
+            try:
+                with urlopen(req, timeout=90) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                try:
+                    return body["choices"][0]["message"]["content"] or ""
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise RuntimeError("Endpoint response was not a compatible chat-completions response.") from exc
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:220]
+                errors.append(f"key {index}: HTTP {exc.code} {detail}")
+            except (URLError, TimeoutError) as exc:
+                errors.append(f"key {index}: connection failed ({exc})")
+            except Exception as exc:
+                errors.append(f"key {index}: {exc}")
+        raise RuntimeError("All configured API keys failed: " + "; ".join(errors[-4:]))
 
     async def stream_task(self, task_id: str, request: TaskCreateRequest) -> AsyncIterator[AgentEvent]:
         cancel = asyncio.Event()
