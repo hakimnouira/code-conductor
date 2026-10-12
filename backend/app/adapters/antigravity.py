@@ -44,7 +44,20 @@ class AntigravityAdapter(BaseAgentAdapter):
             located = shutil.which(self._configured_executable)
             if located:
                 return located
-        return shutil.which("agy") or shutil.which("agy.exe")
+        found = shutil.which("agy") or shutil.which("agy.cmd") or shutil.which("agy.exe")
+        if found:
+            return found
+        # Check workspace scripts and environment
+        candidates = [
+            Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "agy.cmd",
+            Path(__file__).resolve().parents[2] / "scripts" / "agy.cmd",
+            Path(r"D:\work\code-conductor\.venv\Scripts\agy.cmd"),
+            Path(r"D:\work\code-conductor\scripts\agy.cmd"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
         executable = self.find_cli()
