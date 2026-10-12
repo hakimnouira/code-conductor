@@ -9,7 +9,7 @@ $WorkspaceRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $WorkspaceRoot
 
 # 1. Discover Python (3.11+)
-Write-Host "`n[1/4] Checking Python 3.11+ prerequisite..." -ForegroundColor Yellow
+Write-Host "`n[1/5] Checking Python 3.11+ prerequisite..." -ForegroundColor Yellow
 
 # Check PATH for uv first
 $UvCmd = Get-Command uv -ErrorAction SilentlyContinue
@@ -92,7 +92,7 @@ try {
 }
 
 # 2. Virtual Environment Setup
-Write-Host "`n[2/4] Setting up Python virtual environment..." -ForegroundColor Yellow
+Write-Host "`n[2/5] Setting up Python virtual environment..." -ForegroundColor Yellow
 $VenvDir = Join-Path $WorkspaceRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -112,7 +112,7 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 # 3. Install backend dependencies
-Write-Host "`n[3/4] Installing backend dependencies..." -ForegroundColor Yellow
+Write-Host "`n[3/5] Installing backend dependencies..." -ForegroundColor Yellow
 $ReqFile = Join-Path $WorkspaceRoot "backend\requirements.txt"
 if (-not (Test-Path $ReqFile)) {
     Write-Host "`n[ERROR] requirements.txt not found at $ReqFile." -ForegroundColor Red
