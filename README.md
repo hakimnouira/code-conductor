@@ -91,7 +91,7 @@ In a separate terminal, test health:
 - [x] **Milestone 3**: Codex CLI integration using existing ChatGPT subscription login.
 - [x] **Milestone 4**: GitHub Copilot SDK integration using existing subscription.
 - [x] **Milestone 5**: Antigravity MCP integration experiment.
-- [ ] **Milestone 6**: Ollama integration and agent registry.
+- [x] **Milestone 6**: Ollama integration and agent registry.
 - [ ] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
 - [ ] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
 - [ ] **Milestone 9**: Packaging, Windows integration tests, and documentation.
