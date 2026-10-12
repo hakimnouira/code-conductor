@@ -48,11 +48,10 @@ class AntigravityAdapter(BaseAgentAdapter):
         if found:
             return found
         # Check workspace scripts and environment
+        repo_root = Path(__file__).resolve().parents[3]
         candidates = [
-            Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "agy.cmd",
-            Path(__file__).resolve().parents[2] / "scripts" / "agy.cmd",
-            Path(r"D:\work\code-conductor\.venv\Scripts\agy.cmd"),
-            Path(r"D:\work\code-conductor\scripts\agy.cmd"),
+            repo_root / ".venv" / "Scripts" / "agy.cmd",
+            repo_root / "scripts" / "agy.cmd",
         ]
         for c in candidates:
             if c.exists():

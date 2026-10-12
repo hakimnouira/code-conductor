@@ -13,7 +13,15 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-STORE_PATH = Path(r"D:\work\code-conductor\.web_models.json")
+def _default_store_path() -> Path:
+    """Resolve the web-model store relative to this checkout, with an optional override."""
+    override = os.environ.get("CODE_CONDUCTOR_WEB_MODELS_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[2] / ".web_models.json"
+
+
+STORE_PATH = _default_store_path()
 
 
 class WebModelConfig(BaseModel):

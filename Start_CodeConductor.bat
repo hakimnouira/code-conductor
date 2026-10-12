@@ -4,10 +4,11 @@ echo ========================================================
 echo       Starting Code Conductor AI Engineering Studio
 echo ========================================================
 
-cd /d "D:\work\code-conductor"
+set "PROJECT_DIR=%~dp0"
+cd /d "%PROJECT_DIR%"
 
 echo [*] Starting Backend server on http://127.0.0.1:8765...
-start /b "" "D:\work\code-conductor\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+start /b "" "%PROJECT_DIR%.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 timeout /t 2 /nobreak >nul
 
@@ -28,8 +29,10 @@ start /b "" cmd.exe /c "npm --prefix web run dev"
 
 timeout /t 2 /nobreak >nul
 
-set "CLOAK_EXE=D:\Downloads\cloakbrowser-windows-x64\chrome.exe"
-set "CLOAK_PROFILE=D:\work\code-conductor\.cloak_profile"
+set "CLOAK_EXE=%CODE_CONDUCTOR_CLOAK_EXE%"
+if not defined CLOAK_EXE set "CLOAK_EXE=%USERPROFILE%\Downloads\cloakbrowser-windows-x64\chrome.exe"
+if not exist "%CLOAK_EXE%" set "CLOAK_EXE=D:\Downloads\cloakbrowser-windows-x64\chrome.exe"
+set "CLOAK_PROFILE=%PROJECT_DIR%.cloak_profile"
 
 if exist "%CLOAK_EXE%" (
     echo [*] Opening in CloakBrowser with stealth session and port 9222...
