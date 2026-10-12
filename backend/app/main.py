@@ -606,3 +606,19 @@ async def auto_detect_provider(req: SmartProviderDetectRequest, _: str = Depends
             "tier": "free" if req.is_free else "paid"
         }
     }
+
+
+@app.post("/system/shutdown")
+async def system_shutdown(_: str = Depends(require_bearer_token)):
+    """Cleanly shut down the backend process."""
+    import asyncio
+    import os
+    import signal
+
+    async def _do_exit():
+        await asyncio.sleep(0.5)
+        # On Windows, kill current process cleanly
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    asyncio.create_task(_do_exit())
+    return {"shutdown": True, "message": "Code Conductor backend is shutting down"}

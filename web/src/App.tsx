@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown,
   CircleAlert, Code2, Command, ExternalLink, Eye, FolderGit2, Github,
-  Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, RefreshCw, Send,
+  Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
 } from "lucide-react";
 
@@ -632,6 +632,15 @@ export default function App() {
     return { text: "Ready", className: "" };
   };
 
+  const shutdownSystem = async () => {
+    if (!window.confirm("Turn off Code Conductor and shut down servers?")) return;
+    try {
+      await request("/system/shutdown", { method: "POST" });
+    } catch { /* Server process exiting */ }
+    setNotice("🛑 Code Conductor servers have been safely shut down. You can close this tab.");
+    setHealth(null);
+  };
+
   const ready = agents.filter(a => a.state === "ready").length;
   const activeAgent = agents.find(a => a.id === (task?.agent_id || agent));
   const activeAgentDisplay = agent === "auto" ? "Auto agent" : (agents.find(a => a.id === agent)?.name || agent);
@@ -694,6 +703,9 @@ export default function App() {
           <button className="rail-action highlight-action" onClick={() => setSmartAddOpen(true)}>
             <KeyRound size={16}/> + Add AI Provider
           </button>
+          <button className="rail-action shutdown-action" title="Shut down servers and turn off" onClick={() => void shutdownSystem()}>
+            <Power size={16}/> Turn Off Conductor
+          </button>
           <button className="rail-action" onClick={() => setSettings(true)}><Settings2 size={16}/> Settings</button>
         </div>
       </aside>
@@ -720,6 +732,9 @@ export default function App() {
             <button className="icon-button" title="Antigravity Chat History" onClick={() => { setHistoryOpen(true); void fetchHistory(); }}><History size={16}/></button>
             <button className="icon-button" title="Toggle task context" onClick={() => setContextOpen(v => !v)}><Activity size={16}/></button>
             <button className="icon-button" title="Settings" onClick={() => setSettings(true)}><Settings2 size={16}/></button>
+            <button className="icon-button shutdown-btn" title="Turn Off / Shut Down Conductor" onClick={() => void shutdownSystem()}>
+              <Power size={16}/>
+            </button>
           </div>
         </header>
 

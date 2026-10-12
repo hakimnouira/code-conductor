@@ -21,3 +21,6 @@ api_keys.json
 *.log
 *.zip
 scratch/
+build/
+*.spec
+*.exe
