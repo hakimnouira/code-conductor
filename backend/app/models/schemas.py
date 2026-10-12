@@ -54,6 +54,7 @@ class TaskCreateRequest(BaseModel):
     github_research: bool = True
     auto_verify: bool = False
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
+    browser_verify_url: str | None = None
 
 class TaskResponse(BaseModel):
     task_id: str

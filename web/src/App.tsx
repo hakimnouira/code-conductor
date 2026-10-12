@@ -143,6 +143,7 @@ export default function App() {
   const [repo, setRepo] = useState<RepoResult | null>(null);
   const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
   const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
+  const [browserVerifyUrl, setBrowserVerifyUrl] = useState(() => localStorage.getItem("cc_browser_verify_url") || "");
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
@@ -700,7 +701,8 @@ export default function App() {
         prompt: taskPrompt, agent_id: effectiveAgent, workspace_path: workspace || undefined,
         stream: true, auto_approve: false, permission_mode: permissionMode,
         god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled,
-        auto_verify: autoVerifyEnabled, verification_max_attempts: 2
+        auto_verify: autoVerifyEnabled, verification_max_attempts: 2,
+        browser_verify_url: browserVerifyUrl.trim() || undefined
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal, taskPrompt, agentName);
@@ -1469,6 +1471,20 @@ export default function App() {
                   placeholder="Ask Conductor to explore, plan, debug, or build something… (Press Enter to send, Shift+Enter for newline)"
                   rows={3}
                 />
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "8px 0", maxWidth: "520px" }}>
+                  <Globe size={15} />
+                  <input
+                    type="url"
+                    aria-label="Optional browser verification URL"
+                    value={browserVerifyUrl}
+                    onChange={e => {
+                      setBrowserVerifyUrl(e.target.value);
+                      localStorage.setItem("cc_browser_verify_url", e.target.value);
+                    }}
+                    placeholder="Optional app URL to smoke-check (http://localhost:3000)"
+                    style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
+                  />
+                </div>
                 <div className="composer-bottom">
                   <div className="composer-tools">
                     {/* Custom Animated Agent Dropdown */}

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import sys
 import time
@@ -59,7 +60,7 @@ from pathlib import Path
 from app.repository_import import router as repository_import_router
 from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
-from app.browser_session import router as browser_session_router
+from app.browser_session import BrowserVerifyPayload, router as browser_session_router, verify_browser_page
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
@@ -298,6 +299,104 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
         workspace_path=str(validated_ws),
     )
 
+async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
+    """Run an opt-in browser smoke-check and persist its screenshot as a workspace artifact."""
+    target_url = record.request.browser_verify_url
+    if not target_url:
+        return True, ""
+
+    try:
+        result = await verify_browser_page(
+            BrowserVerifyPayload(url=target_url, wait_seconds=2),
+            None,
+        )
+        screenshot_uri = result.pop("screenshot", None)
+        artifact_relative = None
+        if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
+            root = Path(record.request.workspace_path).resolve()
+            artifact_dir = root / ".code-conductor" / "artifacts" / record.task_id
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            resolved_dir = artifact_dir.resolve()
+            if not resolved_dir.is_relative_to(root):
+                raise ValueError("Browser artifact directory escapes the selected workspace.")
+            image_path = resolved_dir / "browser-verification.png"
+            if not image_path.resolve().is_relative_to(root):
+                raise ValueError("Browser screenshot path escapes the selected workspace.")
+            image_bytes = base64.b64decode(screenshot_uri.split(",", 1)[1], validate=True)
+            image_path.write_bytes(image_bytes)
+            artifact_relative = str(image_path.relative_to(root)).replace("\\", "/")
+
+        result["screenshot_artifact"] = artifact_relative
+        success = bool(result.get("success"))
+        diagnostic = json.dumps({
+            "url": result.get("url", target_url),
+            "title": result.get("title", ""),
+            "checks": result.get("checks", {}),
+            "error_markers": result.get("error_markers", []),
+            "body_text_excerpt": result.get("body_text_excerpt", "")[-3000:],
+            "screenshot_artifact": artifact_relative,
+        }, ensure_ascii=False)
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "log",
+            "text": "Browser verification " + ("passed." if success else "failed."),
+            "timestamp": time.time(),
+            "data": {
+                "phase": "browser_verification",
+                "status": "passed" if success else "failed",
+                "result": json.loads(diagnostic),
+            },
+        }))
+        return success, diagnostic
+    except Exception as exc:
+        diagnostic = f"Browser verification could not complete: {str(exc)[:500]}"
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "log",
+            "text": diagnostic,
+            "timestamp": time.time(),
+            "data": {"phase": "browser_verification", "status": "error"},
+        }))
+        return False, diagnostic
+
+
+async def _browser_verification_gate(record: TaskRecord, attempts: int) -> tuple[str, int]:
+    """Return passed/retry/failed and use bounded agent repair attempts for browser failures."""
+    if not record.request.browser_verify_url:
+        return "passed", attempts
+    success, diagnostic = await _verify_browser_for_task(record)
+    if success:
+        return "passed", attempts
+
+    attempts += 1
+    if attempts < record.request.verification_max_attempts:
+        record.request.prompt += (
+            "\n\nBROWSER VERIFICATION FAILED. Fix the visible application issue; do not "
+            "remove checks or hide errors. Then summarize the repair.\n"
+            + diagnostic[-5000:]
+        )
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "log",
+            "text": "Sending browser verification findings to the agent for a repair attempt.",
+            "timestamp": time.time(),
+            "data": {"phase": "browser_verification", "status": "repair_requested", "attempt": attempts},
+        }))
+        return "retry", attempts
+
+    record.status = TaskStatus.FAILED
+    record.error = f"Browser verification failed after {attempts} attempt(s)."
+    record.completed_at = time.time()
+    await record.event_queue.put(json.dumps({
+        "task_id": record.task_id,
+        "event_type": "error",
+        "text": record.error + " " + diagnostic[-1000:],
+        "timestamp": record.completed_at,
+        "data": {"phase": "browser_verification", "status": "failed", "attempts": attempts},
+    }))
+    return "failed", attempts
+
+
 async def _run_task_pipeline(record: TaskRecord, adapter):
     # Status is authoritative: a provider stream must never resurrect a cancelled
     # task or leave a task permanently RUNNING when it closes without a terminal event.
@@ -365,6 +464,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             }))
 
         verification_attempt = 0
+        browser_verification_attempts = 0
         while True:
             terminal_event = None
             async for event in adapter.stream_task(record.task_id, record.request):
@@ -391,6 +491,14 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 break
 
             if not record.request.auto_verify:
+                browser_action, browser_verification_attempts = await _browser_verification_gate(
+                    record, browser_verification_attempts
+                )
+                if browser_action == "retry":
+                    continue
+                if browser_action == "failed":
+                    terminal_event_seen = True
+                    break
                 await record.event_queue.put(terminal_event.model_dump_json())
                 terminal_event_seen = True
                 record.status = TaskStatus.COMPLETED
@@ -406,6 +514,14 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "timestamp": time.time(),
                     "data": {"phase": "verification", "status": "skipped"},
                 }))
+                browser_action, browser_verification_attempts = await _browser_verification_gate(
+                    record, browser_verification_attempts
+                )
+                if browser_action == "retry":
+                    continue
+                if browser_action == "failed":
+                    terminal_event_seen = True
+                    break
                 await record.event_queue.put(terminal_event.model_dump_json())
                 terminal_event_seen = True
                 record.status = TaskStatus.COMPLETED
@@ -435,6 +551,14 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 },
             }))
             if result.passed:
+                browser_action, browser_verification_attempts = await _browser_verification_gate(
+                    record, browser_verification_attempts
+                )
+                if browser_action == "retry":
+                    continue
+                if browser_action == "failed":
+                    terminal_event_seen = True
+                    break
                 await record.event_queue.put(terminal_event.model_dump_json())
                 terminal_event_seen = True
                 record.status = TaskStatus.COMPLETED
