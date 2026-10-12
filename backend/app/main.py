@@ -203,7 +203,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                         "timestamp": time.time(),
                         "data": {"phase": "github_research", "status": status_text, "query": research.get("query"), "repositories": repos, "cache_hit": research.get("cache_hit", False)},
                     }
-                    record.request.prompt = record.request.prompt + "\\n\\n" + research.get("injected_context", "")
+                    record.request.prompt = record.request.prompt + "\n\n" + research.get("injected_context", "")
                 elif status_text == "skipped":
                     research_event = {
                         "task_id": record.task_id, "event_type": "log",

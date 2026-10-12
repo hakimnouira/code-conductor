@@ -88,21 +88,21 @@ def build_search_query(prompt: str, stack: list[str] | None = None) -> str:
     text = prompt.lower()
     stack = stack or []
     if re.search(r"\b(ui|ux|design|dashboard|landing page|component|frontend|styling|responsive)\b", text):
-        terms = ["dashboard", "admin", "UI", "template"]
+        terms = ["dashboard OR admin OR template"]
     elif re.search(r"\b(auth|login|authentication|oauth|permission|rbac)\b", text):
-        terms = ["authentication", "authorization", "starter"]
+        terms = ["authentication OR authorization OR OAuth"]
     elif re.search(r"\b(search|semantic|vector|rag|retrieval|embedding)\b", text):
-        terms = ["semantic search", "RAG", "retrieval"]
+        terms = ["semantic-search OR RAG OR retrieval"]
     elif re.search(r"\b(api|backend|endpoint|microservice|fastapi|django)\b", text):
-        terms = ["API", "backend", "example"]
+        terms = ["API OR backend OR starter"]
     elif re.search(r"\b(test|testing|pytest|coverage|ci)\b", text):
-        terms = ["testing", "example", "starter"]
+        terms = ["testing OR pytest OR starter"]
     else:
         words = re.findall(r"[a-z][a-z0-9+#.-]{2,}", text)
         stop = {"the", "and", "for", "with", "this", "that", "from", "into", "make", "want", "please", "project", "task"}
-        terms = list(dict.fromkeys(word for word in words if word not in stop))[:5] or ["software", "starter", "example"]
-    stack_terms = [s for s in stack if s in {"React", "TypeScript", "Next.js", "Vue", "Tailwind CSS", "FastAPI", "Django", "Flask"}]
-    query = " ".join(terms + stack_terms[:2])
+        terms = [" OR ".join(list(dict.fromkeys(word for word in words if word not in stop))[:3] or ["software", "starter"])]
+    language = "language:TypeScript" if "TypeScript" in stack or "React" in stack or "Next.js" in stack or "Vue" in stack else ("language:Python" if any(s in stack for s in ("FastAPI", "Django", "Flask")) else "")
+    query = " ".join(terms + ([language] if language else []))
     return f"{query} stars:>20 archived:false"
 
 
