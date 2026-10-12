@@ -579,12 +579,29 @@ export default function App() {
       }
     }
 
+    // Never infer success from a closed stream. Ask the backend for the authoritative
+    // terminal state so a dropped/malformed SSE stream cannot mark failed work as complete.
+    let finalStatus: TaskHistoryItem["status"] = taskFailed ? "failed" : "completed";
+    try {
+      const snapshot = await request("/tasks/" + encodeURIComponent(created.task_id)).then(r => r.json()) as {
+        status?: string;
+      };
+      if (snapshot.status === "completed" || snapshot.status === "failed" ||
+          snapshot.status === "cancelled" || snapshot.status === "running") {
+        finalStatus = snapshot.status;
+      }
+    } catch {
+      // Keep the best status inferred from events if the backend snapshot is unavailable.
+    }
+    taskFailed = finalStatus === "failed" || finalStatus === "cancelled" || finalStatus === "running";
+    setTask(old => old ? { ...old, status: finalStatus } : old);
+
     // Finalize history entry
     setTaskHistory(old => old.map(item => {
       if (item.id === created.task_id) {
         return {
           ...item,
-          status: taskFailed ? "failed" : "completed",
+          status: finalStatus,
           output: taskOutput,
           events: [...collectedEvents]
         };
