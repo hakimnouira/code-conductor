@@ -142,6 +142,7 @@ export default function App() {
   const [repoBusy, setRepoBusy] = useState(false);
   const [repo, setRepo] = useState<RepoResult | null>(null);
   const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
+  const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>((localStorage.getItem("cc_permission_mode") as PermissionMode) || "safe");
   const [notifications, setNotifications] = useState<NotificationPrefs>(() => {
     try { return { enabled: false, completion: true, action: true, sound: "chime", ...JSON.parse(localStorage.getItem("cc_notifications") || "{}") }; }
@@ -624,7 +625,8 @@ export default function App() {
       body: JSON.stringify({
         prompt: taskPrompt, agent_id: effectiveAgent, workspace_path: workspace || undefined,
         stream: true, auto_approve: false, permission_mode: permissionMode,
-        god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled
+        god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled,
+        auto_verify: autoVerifyEnabled, verification_max_attempts: 2
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal, taskPrompt, agentName);
@@ -1570,6 +1572,7 @@ export default function App() {
                     </div>
                     <button className="tool-pill active" title="Run 4-Phase Guided Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={14}/> Guided Flow</button>
                     <button className={"tool-pill " + (githubResearchEnabled ? "research-enabled" : "")} title="Automatically research public GitHub projects" onClick={() => { const next = !githubResearchEnabled; setGithubResearchEnabled(next); localStorage.setItem("cc_github_research", String(next)); }}><Github size={14}/> Research {githubResearchEnabled ? "ON" : "OFF"}</button>
+                    <button className={"tool-pill " + (autoVerifyEnabled ? "research-enabled" : "")} title="Run detected project tests after the agent finishes and ask it to repair failures (up to 2 attempts)" onClick={() => { const next = !autoVerifyEnabled; setAutoVerifyEnabled(next); localStorage.setItem("cc_auto_verify", String(next)); }}><CheckCircle2 size={14}/> Verify {autoVerifyEnabled ? "ON" : "OFF"}</button>
                     <button className="tool-pill" onClick={() => void makePlan()} disabled={!prompt.trim() || planning}><Workflow size={14}/>{planning ? "Planning…" : "Plan task"}</button>
                   </div>
                   <div className="composer-submit">
