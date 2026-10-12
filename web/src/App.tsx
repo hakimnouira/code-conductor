@@ -20,9 +20,10 @@ const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making 
 const label = (value: string) => value.replace(/_/g, " ");
 const complexPrompt = (value: string) => value.trim().length > 240 || /\b(refactor|architecture|implement.*(entire|full|complete)|multiple files|end.to.end|reverse.engineer|migrate|build.*platform|large task|several modules|whole project)\b/i.test(value);
 const clock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const DEFAULT_TOKEN = "5e542c42b89db11fc7a10a2e19fa6e0929fd09d8d5a4c204a5414ead6c42a6be";
 export default function App() {
   const [base, setBase] = useState(sessionStorage.getItem("cc_api") || API);
-  const [token, setToken] = useState(sessionStorage.getItem("cc_token") || "");
+  const [token, setToken] = useState(sessionStorage.getItem("cc_token") || localStorage.getItem("cc_token") || DEFAULT_TOKEN);
   const [workspace, setWorkspace] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -118,6 +119,7 @@ export default function App() {
       setWorkspace(current => current || h.workspace || "");
       sessionStorage.setItem("cc_api", base);
       sessionStorage.setItem("cc_token", token.trim());
+      localStorage.setItem("cc_token", token.trim());
       setNotice("Connected to your local coding workspace.");
     } catch (e) {
       setHealth(null); setAgents([]);
