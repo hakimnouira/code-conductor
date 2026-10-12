@@ -97,7 +97,7 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("cc_theme") as "dark" | "light") || "dark");
   const [base, setBase] = useState(sessionStorage.getItem("cc_api") || API);
   const [token, setToken] = useState(sessionStorage.getItem("cc_token") || localStorage.getItem("cc_token") || DEFAULT_TOKEN);
-  const [workspace, setWorkspace] = useState("");
+  const [workspace, setWorkspace] = useState(() => localStorage.getItem("cc_workspace") || "");
   const [health, setHealth] = useState<Health | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agent, setAgent] = useState("auto");
@@ -287,7 +287,7 @@ export default function App() {
         request("/providers").then(r => r.json()).catch(() => [])
       ]);
       setHealth(h); setAgents(a); setProviders(p);
-      setWorkspace(current => current || h.workspace || "");
+      setWorkspace(current => current || localStorage.getItem("cc_workspace") || h.workspace || "");
       sessionStorage.setItem("cc_api", base);
       sessionStorage.setItem("cc_token", token.trim());
       localStorage.setItem("cc_token", token.trim());
@@ -933,13 +933,13 @@ export default function App() {
         </button>
 
         <div className="rail-label">WORKSPACE</div>
-        <div className="workspace-mini">
+        <div className="workspace-mini" onClick={() => setContextOpen(true)} style={{ cursor: "pointer" }} title="Click to configure workspace directory">
           <div className="folder-glyph"><FolderGit2 size={17}/></div>
           <div className="workspace-name">
             <b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "No project open"}</b>
             <span>{repo?.repository_name || (health ? "Local workspace" : "Connect backend")}</span>
           </div>
-          <button className="icon-button" title="Import GitHub repository" onClick={() => setRepoOpen(v => !v)}><Github size={15}/></button>
+          <button className="icon-button" title="Import GitHub repository" onClick={(e) => { e.stopPropagation(); setRepoOpen(v => !v); }}><Github size={15}/></button>
         </div>
 
         {/* TASK & CHAT HISTORY SECTION (PRIMARY SIDEBAR SPACE) */}
@@ -1037,7 +1037,7 @@ export default function App() {
 
       <main className="chat-shell">
         <header className="topbar">
-          <div className="top-project">
+          <div className="top-project" onClick={() => setContextOpen(v => !v)} style={{ cursor: "pointer" }} title="Click to open workspace context panel">
             <div className="top-project-icon"><Code2 size={16}/></div>
             <div><span>PROJECT</span><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "New workspace"}</b></div>
             <ChevronDown size={14}/>
@@ -1421,7 +1421,62 @@ export default function App() {
               <section className="context-section">
                 <div className="context-section-title"><FolderGit2 size={15}/> Current project</div>
                 <div className="context-project"><div className="context-project-icon"><Code2 size={17}/></div><div><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "No project selected"}</b><span>{repo?.repository_url || "Local folder"}</span></div></div>
-                <label className="field-label">Workspace path<input value={workspace} onChange={e => setWorkspace(e.target.value)} placeholder="C:\Projects\my-app"/></label>
+                <label className="field-label">
+                  Workspace path
+                  <input
+                    value={workspace}
+                    onChange={e => {
+                      setWorkspace(e.target.value);
+                      localStorage.setItem("cc_workspace", e.target.value);
+                    }}
+                    placeholder="C:\Users\hakim\Desktop"
+                  />
+                </label>
+                <div className="workspace-presets">
+                  <span className="preset-label">Quick Locations:</span>
+                  <div className="preset-chips">
+                    <button
+                      type="button"
+                      className={"preset-chip " + (workspace === "C:\\Users\\hakim\\Desktop" ? "active" : "")}
+                      onClick={() => { setWorkspace("C:\\Users\\hakim\\Desktop"); localStorage.setItem("cc_workspace", "C:\\Users\\hakim\\Desktop"); }}
+                      title="Access entire Desktop"
+                    >
+                      🖥️ Desktop
+                    </button>
+                    <button
+                      type="button"
+                      className={"preset-chip " + (workspace === "C:\\Users\\hakim\\Desktop\\vs extention" ? "active" : "")}
+                      onClick={() => { setWorkspace("C:\\Users\\hakim\\Desktop\\vs extention"); localStorage.setItem("cc_workspace", "C:\\Users\\hakim\\Desktop\\vs extention"); }}
+                      title="Access VS Extension project"
+                    >
+                      ⚡ VS Extension
+                    </button>
+                    <button
+                      type="button"
+                      className={"preset-chip " + (workspace === "D:\\work\\code-conductor" ? "active" : "")}
+                      onClick={() => { setWorkspace("D:\\work\\code-conductor"); localStorage.setItem("cc_workspace", "D:\\work\\code-conductor"); }}
+                      title="Access Code Conductor repository"
+                    >
+                      📁 Conductor (D:)
+                    </button>
+                    <button
+                      type="button"
+                      className={"preset-chip " + (workspace === "C:\\" ? "active" : "")}
+                      onClick={() => { setWorkspace("C:\\"); localStorage.setItem("cc_workspace", "C:\\"); }}
+                      title="Access whole C: drive"
+                    >
+                      💽 Drive C:\
+                    </button>
+                    <button
+                      type="button"
+                      className={"preset-chip " + (workspace === "D:\\" ? "active" : "")}
+                      onClick={() => { setWorkspace("D:\\"); localStorage.setItem("cc_workspace", "D:\\"); }}
+                      title="Access whole D: drive"
+                    >
+                      💽 Drive D:\
+                    </button>
+                  </div>
+                </div>
                 <button className="outline-button full-button" onClick={() => setRepoOpen(v => !v)}><Github size={14}/> Import GitHub repository</button>
               </section>
               <section className="context-section">

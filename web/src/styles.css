@@ -1636,4 +1636,52 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   margin-top: 4px;
 }
 
+/* ========================================================
+   WORKSPACE PRESETS & QUICK LOCATIONS
+   ======================================================== */
+.workspace-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 12px;
+}
+.preset-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--muted);
+}
+.preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.preset-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.preset-chip:hover {
+  background: var(--hover);
+  border-color: var(--violet);
+  color: var(--violet);
+}
+.preset-chip.active {
+  background: var(--violet-bg);
+  border-color: var(--violet);
+  color: var(--violet);
+  font-weight: 700;
+}
+
+
 

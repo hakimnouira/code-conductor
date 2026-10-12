@@ -272,12 +272,29 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     inputEl.dispatchEvent(new KeyboardEvent("keyup", {{ key: "e", bubbles: true }}));
                 }}
 
+                function clickElement(el) {{
+                    if (!el) return;
+                    try {{
+                        const rect = el.getBoundingClientRect();
+                        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
+                            el.dispatchEvent(new MouseEvent(evt, {{
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                clientX: rect.x + rect.width / 2,
+                                clientY: rect.y + rect.height / 2
+                            }}));
+                        }});
+                    }} catch(e) {{}}
+                    try {{ el.click(); }} catch(e) {{}}
+                }}
+
                 // 3. Trigger submit
                 let sent = false;
                 if (sendSelector) {{
                     const btn = document.querySelector(sendSelector);
                     if (btn && !btn.disabled && (!btn.className || !btn.className.includes("disabled"))) {{
-                        btn.click();
+                        clickElement(btn);
                         sent = true;
                     }}
                 }}
@@ -286,7 +303,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                         'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[class*="accent-send-button"], div.ds-button--circle:not(.ds-button--disabled), div[role="button"].ds-button--primary:not(.ds-button--disabled), button[aria-label*="Send" i], button[aria-label*="Submit" i]'
                     );
                     if (sendBtn && !sendBtn.disabled && (!sendBtn.className || !sendBtn.className.includes("disabled"))) {{
-                        sendBtn.click();
+                        clickElement(sendBtn);
                         sent = true;
                     }}
                 }}
@@ -339,16 +356,27 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     const respSelector = {resp_sel};
                     let text = "";
 
-                    // Stop button indicator
+                    // Stop / Thinking indicators
                     const stopBtn = document.querySelector(
                         'button[aria-label*="Stop" i], button[data-testid*="stop" i], button:has(svg[aria-label*="Stop" i])'
-                    );
-                    const is_generating = Boolean(stopBtn);
+                    ) || Array.from(document.querySelectorAll('button')).find(b => (b.innerText || '').includes('Stop'));
+                    const bodyText = document.body ? document.body.innerText : '';
+                    const hasThinking = bodyText.includes('Manus is thinking') || bodyText.includes('Working');
+                    const is_generating = Boolean(stopBtn) || hasThinking;
+
+                    // Helper to check if element is valid assistant response
+                    function isValidResponseEl(el) {{
+                        if (!el) return false;
+                        if (el.classList.contains("chat-message-body") || el.classList.contains("chat-selection-ask-root") || el.classList.contains("z-tooltip") || el.classList.contains("pointer-events-none")) return false;
+                        const t = (el.innerText || "").trim();
+                        if (!t || t === "Stop" || t === "ChatGPT said:" || t === "Working") return false;
+                        return true;
+                    }}
 
                     // Method 1: Custom configured selector
                     if (respSelector) {{
-                        const customEls = Array.from(document.querySelectorAll(respSelector));
-                        if (customEls.length > {base_custom}) {{
+                        const customEls = Array.from(document.querySelectorAll(respSelector)).filter(isValidResponseEl);
+                        if (customEls.length > 0) {{
                             const latest = customEls[customEls.length - 1];
                             if (latest.tagName === "H4" && latest.parentElement) {{
                                 let rep = "";
@@ -361,12 +389,11 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                             }}
                         }}
                     }}
-                    if (text === "ChatGPT said:") text = "";
 
                     // Method 2: ChatGPT latest UI (h4 with data-conversation-role="assistant")
                     if (!text) {{
                         const h4List = Array.from(document.querySelectorAll('h4[data-conversation-role="assistant"]'));
-                        if (h4List.length > {base_h4}) {{
+                        if (h4List.length > 0) {{
                             const lastH4 = h4List[h4List.length - 1];
                             const parent = lastH4.parentElement;
                             let reply = "";
@@ -383,18 +410,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                     if (!text) {{
                         const elements = Array.from(document.querySelectorAll(
                             '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .hatch-chat-groupable-bubble, [class*="hatch-chat-"], .chat-message'
-                        ));
-                        if (elements.length > {base_els}) {{
-                            const latest = elements[elements.length - 1];
-                            text = (latest.innerText || latest.textContent || "").trim();
-                        }}
-                    }}
-
-                    // Fallback if message count didn't increment but text exists in last element
-                    if (!text && is_generating) {{
-                        const elements = Array.from(document.querySelectorAll(
-                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .hatch-chat-groupable-bubble, [class*="hatch-chat-"], .chat-message'
-                        ));
+                        )).filter(isValidResponseEl);
                         if (elements.length > 0) {{
                             const latest = elements[elements.length - 1];
                             text = (latest.innerText || latest.textContent || "").trim();
@@ -408,7 +424,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 last_seen_length = 0
                 full_text = ""
                 still_count = 0
-                max_polls = 140
+                max_polls = 180
 
                 for _ in range(max_polls):
                     if not self._active_tasks.get(task_id, True):

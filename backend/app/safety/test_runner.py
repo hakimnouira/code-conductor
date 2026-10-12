@@ -32,12 +32,19 @@ class SafeTestRunner:
     def get_allowed_runners(self) -> dict[str, list[str]]:
         py_exe = sys.executable
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+        npx_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
+        node_cmd = "node.exe" if sys.platform == "win32" else "node"
         npm_path = shutil.which(npm_cmd) or npm_cmd
+        npx_path = shutil.which(npx_cmd) or npx_cmd
+        node_path = shutil.which(node_cmd) or node_cmd
 
         return {
             "pytest": [py_exe, "-m", "pytest"],
+            "unittest": [py_exe, "-m", "unittest"],
             "python": [py_exe],
             "npm_test": [npm_path, "test"],
+            "vitest": [npx_path, "vitest", "run"],
+            "node": [node_path],
         }
 
     def validate_args(self, args: list[str]) -> None:

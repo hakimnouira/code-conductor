@@ -37,8 +37,8 @@
     "name": "Manus Web",
     "url": "https://manus.im/app",
     "input_selector": "div.tiptap.ProseMirror, div.ProseMirror[contenteditable='true'], [contenteditable='true'], textarea",
-    "send_selector": "button[class*='accent-send-button'], button:has(svg)",
-    "response_selector": "[class*='message'], [class*='response'], .markdown, .prose",
+    "send_selector": "button[class*='accent-send-button'], button.bg-\\[var\\(--accent-send-button\\)\\]",
+    "response_selector": "[class*='u-break-words'], [class*='whitespace-pre-wrap'], div.prose, [class*='message']",
     "description": "Manus Web AI workspace via CloakBrowser",
     "is_preset": true,
     "created_at": 1791825340.2558494

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.adapters.registry import AgentRegistry
+from app.adapters.registry import AgentRegistry, get_agent_registry
 from app.core.security import require_bearer_token
 from app.models.schemas import EventType, TaskCreateRequest
 from app.web_models_store import load_web_models

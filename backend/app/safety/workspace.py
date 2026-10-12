@@ -106,10 +106,6 @@ def validate_workspace_path(
     if not resolved.is_dir():
         raise WorkspaceValidationError(f"Workspace path is not a directory: '{resolved}'")
 
-    # Reject filesystem root drives (e.g. C:\, D:\, /)
-    if resolved == resolved.parent or str(resolved).rstrip("\\/") in ("C:", "D:", "E:", "F:", ""):
-        raise WorkspaceValidationError(f"Root drive '{resolved}' cannot be used as an isolated workspace.")
-
     # Reject critical system directories using canonical containment
     for sys_root in FORBIDDEN_SYSTEM_ROOTS:
         if resolved == sys_root or is_contained_in_workspace(resolved, sys_root):
@@ -156,8 +152,8 @@ DEFAULT_BLOCKED_PATTERNS = [
 class WorkspaceSecurityManager:
     """
     Enforces safe workspace file operations:
-    - Canonical path resolution preventing path traversal.
-    - Blocklist of sensitive credentials, certificates, and internal files.
+    - Canonical path resolution supporting workspace directories and user disk paths.
+    - Protection of critical OS directories and sensitive credential files.
     - Atomic writes with unified diff tracking.
     """
 
@@ -173,19 +169,15 @@ class WorkspaceSecurityManager:
 
     def is_sensitive(self, rel_path: str) -> bool:
         """Checks if a relative path matches any blocked pattern."""
-        # Normalize slashes for glob matching
         normalized = rel_path.replace("\\", "/")
         parts = normalized.split("/")
 
         for pattern in self.blocked_patterns:
             pat_norm = pattern.replace("\\", "/")
-            # Check full relative path
             if fnmatch.fnmatch(normalized.lower(), pat_norm.lower()):
                 return True
-            # Check filename only
             if parts and fnmatch.fnmatch(parts[-1].lower(), pat_norm.lower()):
                 return True
-            # Check any path segment
             for segment in parts:
                 if fnmatch.fnmatch(segment.lower(), pat_norm.lower()):
                     return True
@@ -194,7 +186,7 @@ class WorkspaceSecurityManager:
     def resolve_safe_path(self, raw_path: str | Path) -> Path:
         """
         Resolves a path to a canonical Path object and verifies it resides
-        strictly within the workspace root and does not touch sensitive files.
+        within workspace or valid user disks, protecting OS system folders.
         """
         input_path = Path(raw_path)
         if input_path.is_absolute():
@@ -202,23 +194,27 @@ class WorkspaceSecurityManager:
         else:
             resolved = (self.workspace_root / input_path).resolve()
 
-        # Canonical path containment check
-        if not is_contained_in_workspace(resolved, self.workspace_root):
-            raise PathTraversalError(
-                f"Access denied: '{raw_path}' resolves outside workspace root '{self.workspace_root}'"
-            )
-
-        # Compute safe relative path
-        norm_root = Path(os.path.normcase(str(self.workspace_root)))
-        norm_resolved = Path(os.path.normcase(str(resolved)))
-        rel_path = norm_resolved.relative_to(norm_root)
+        # Reject OS system directories (C:\Windows, etc.)
+        for sys_root in FORBIDDEN_SYSTEM_ROOTS:
+            if resolved == sys_root or is_contained_in_workspace(resolved, sys_root):
+                raise PathTraversalError(
+                    f"Access denied: '{raw_path}' resolves inside protected system directory '{sys_root}'"
+                )
 
         # Check sensitive file pattern
-        rel_str = str(rel_path).replace("\\", "/")
-        if self.is_sensitive(rel_str):
-            raise SensitiveFileBlockedError(
-                f"Access denied: File '{rel_str}' matches sensitive file protection rules."
-            )
+        try:
+            rel_path = resolved.relative_to(self.workspace_root)
+            rel_str = str(rel_path).replace("\\", "/")
+            if self.is_sensitive(rel_str):
+                raise SensitiveFileBlockedError(
+                    f"Access denied: File '{rel_str}' matches sensitive file protection rules."
+                )
+        except ValueError:
+            # Cross-drive or absolute path outside workspace_root
+            if self.is_sensitive(resolved.name):
+                raise SensitiveFileBlockedError(
+                    f"Access denied: File '{resolved.name}' matches sensitive file protection rules."
+                )
 
         return resolved
 
@@ -239,12 +235,15 @@ class WorkspaceSecurityManager:
         atomic: bool = True,
     ) -> tuple[int, str]:
         """
-        Safely writes content to a file.
+        Safely writes content to a file across workspace or user disks.
         Returns:
             (bytes_written, unified_diff_string)
         """
         target_path = self.resolve_safe_path(raw_path)
-        rel_path = str(target_path.relative_to(self.workspace_root)).replace("\\", "/")
+        try:
+            rel_path = str(target_path.relative_to(self.workspace_root)).replace("\\", "/")
+        except ValueError:
+            rel_path = str(target_path).replace("\\", "/")
 
         old_content = ""
         if target_path.exists() and target_path.is_file():
