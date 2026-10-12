@@ -279,3 +279,20 @@ def test_api_workspace_git_and_test_endpoints(client: TestClient):
     data = test_res.json()
     assert data["passed"] is True
     assert "api test run passed" in data["stdout"]
+
+
+def test_test_runner_discovers_pytest_project(tmp_path: Path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    assert SafeTestRunner(tmp_path).discover_runner() == "pytest"
+
+
+def test_test_runner_discovers_npm_test_script(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"test":"vitest run"}}', encoding="utf-8"
+    )
+    assert SafeTestRunner(tmp_path).discover_runner() == "npm_test"
+
+
+def test_test_runner_skips_unknown_project(tmp_path: Path):
+    (tmp_path / "README.md").write_text("No test configuration", encoding="utf-8")
+    assert SafeTestRunner(tmp_path).discover_runner() is None
