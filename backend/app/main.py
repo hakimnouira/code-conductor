@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import secrets
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -601,6 +601,7 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
         "timestamp": record.completed_at,
         "data": {},
     }))
+    record._persist()
     return {"task_id": task_id, "cancelled": cancelled, "status": record.status}
 
 # ---------------------------------------------------------
