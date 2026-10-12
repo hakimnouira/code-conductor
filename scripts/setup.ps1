@@ -133,7 +133,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Backend dependencies installed successfully." -ForegroundColor Green
 
 # 4. Node.js & Extension Build
-Write-Host "`n[4/4] Setting up VS Code Extension dependencies..." -ForegroundColor Yellow
+Write-Host "`n[4/5] Setting up VS Code Extension dependencies..." -ForegroundColor Yellow
 $NpmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $NpmCmd) {
     $NpmCmd = Get-Command npm -ErrorAction SilentlyContinue
@@ -162,6 +162,24 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 Write-Host "Extension compiled successfully." -ForegroundColor Green
+
+Write-Host "Extension compiled successfully." -ForegroundColor Green
+
+# 5. Web dashboard dependencies (required by Start_CodeConductor.bat)
+Write-Host "`n[5/5] Setting up web dashboard dependencies..." -ForegroundColor Yellow
+$WebDir = Join-Path $WorkspaceRoot "web"
+if (-not (Test-Path (Join-Path $WebDir "package-lock.json"))) {
+    Write-Host "`n[ERROR] web/package-lock.json is missing." -ForegroundColor Red
+    exit 1
+}
+Set-Location $WebDir
+Write-Host "Installing web dashboard packages..." -ForegroundColor Gray
+cmd.exe /c "npm.cmd ci --no-audit --no-fund"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "`n[ERROR] 'npm ci' failed in $WebDir." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host "Web dashboard dependencies installed successfully." -ForegroundColor Green
 
 Set-Location $WorkspaceRoot
 Write-Host "`n==========================================================" -ForegroundColor Green
