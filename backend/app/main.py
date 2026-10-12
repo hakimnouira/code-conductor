@@ -88,7 +88,12 @@ app = FastAPI(
 # Strictly restrict CORS to local origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["vscode-webview://*", "http://127.0.0.1", "http://localhost"],
+    allow_origins=[
+        "vscode-webview://*",
+        "http://127.0.0.1", "http://localhost",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+        "http://127.0.0.1:4173", "http://localhost:4173",
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
