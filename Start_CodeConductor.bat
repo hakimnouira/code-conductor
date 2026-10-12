@@ -8,6 +8,8 @@ set "PROJECT_DIR=%~dp0"
 cd /d "%PROJECT_DIR%"
 
 echo [*] Starting Backend server on http://127.0.0.1:8765...
+rem The Python package lives in backend\app, not at the repository root.
+set "PYTHONPATH=%PROJECT_DIR%backend"
 start /b "" "%PROJECT_DIR%.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 timeout /t 2 /nobreak >nul

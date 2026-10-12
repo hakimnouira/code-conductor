@@ -9,7 +9,7 @@ $WorkspaceRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $WorkspaceRoot
 
 # 1. Discover Python (3.11+)
-Write-Host "`n[1/4] Checking Python 3.11+ prerequisite..." -ForegroundColor Yellow
+Write-Host "`n[1/5] Checking Python 3.11+ prerequisite..." -ForegroundColor Yellow
 
 # Check PATH for uv first
 $UvCmd = Get-Command uv -ErrorAction SilentlyContinue
@@ -92,7 +92,7 @@ try {
 }
 
 # 2. Virtual Environment Setup
-Write-Host "`n[2/4] Setting up Python virtual environment..." -ForegroundColor Yellow
+Write-Host "`n[2/5] Setting up Python virtual environment..." -ForegroundColor Yellow
 $VenvDir = Join-Path $WorkspaceRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -112,7 +112,7 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 # 3. Install backend dependencies
-Write-Host "`n[3/4] Installing backend dependencies..." -ForegroundColor Yellow
+Write-Host "`n[3/5] Installing backend dependencies..." -ForegroundColor Yellow
 $ReqFile = Join-Path $WorkspaceRoot "backend\requirements.txt"
 if (-not (Test-Path $ReqFile)) {
     Write-Host "`n[ERROR] requirements.txt not found at $ReqFile." -ForegroundColor Red
@@ -133,7 +133,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Backend dependencies installed successfully." -ForegroundColor Green
 
 # 4. Node.js & Extension Build
-Write-Host "`n[4/4] Setting up VS Code Extension dependencies..." -ForegroundColor Yellow
+Write-Host "`n[4/5] Setting up VS Code Extension dependencies..." -ForegroundColor Yellow
 $NpmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $NpmCmd) {
     $NpmCmd = Get-Command npm -ErrorAction SilentlyContinue
@@ -162,6 +162,22 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 Write-Host "Extension compiled successfully." -ForegroundColor Green
+
+# 5. Web dashboard dependencies (required by Start_CodeConductor.bat)
+Write-Host "`n[5/5] Setting up web dashboard dependencies..." -ForegroundColor Yellow
+$WebDir = Join-Path $WorkspaceRoot "web"
+if (-not (Test-Path (Join-Path $WebDir "package-lock.json"))) {
+    Write-Host "`n[ERROR] web/package-lock.json is missing." -ForegroundColor Red
+    exit 1
+}
+Set-Location $WebDir
+Write-Host "Installing web dashboard packages..." -ForegroundColor Gray
+cmd.exe /c "npm.cmd ci --no-audit --no-fund"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "`n[ERROR] 'npm ci' failed in $WebDir." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host "Web dashboard dependencies installed successfully." -ForegroundColor Green
 
 Set-Location $WorkspaceRoot
 Write-Host "`n==========================================================" -ForegroundColor Green

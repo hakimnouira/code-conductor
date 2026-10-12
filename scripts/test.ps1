@@ -23,5 +23,14 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+# 3. Build the web dashboard as well (catches UI/TypeScript production errors)
+Write-Host "3. Building web dashboard..." -ForegroundColor Yellow
+Set-Location "$WorkspaceRoot\web"
+cmd.exe /c "npm.cmd run build"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Web dashboard build failed!" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 Set-Location $WorkspaceRoot
 Write-Host "=== All tests and builds passed! ===" -ForegroundColor Green
