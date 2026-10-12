@@ -132,20 +132,36 @@ async def test_mcp_client_tool_discovery_and_call():
 async def test_antigravity_cancellation(monkeypatch):
     adapter = AntigravityAdapter()
     with tempfile.TemporaryDirectory() as tmp_dir:
-        fake_cli = Path(tmp_dir) / "agy"
-        fake_cli.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, sys, time\n"
-            "if '--version' in sys.argv:\n"
-            "    print('agy test 1.0')\n"
-            "    raise SystemExit(0)\n"
-            "message = json.loads(sys.stdin.readline())\n"
-            "print(json.dumps({'event':'init','init':{'permission_mode':'request-review'}}), flush=True)\n"
-            "time.sleep(3)\n"
-            "print(json.dumps({'event':'result','result':{'status':'SUCCESS','response':'done'}}), flush=True)\n",
-            encoding="utf-8",
-        )
-        fake_cli.chmod(0o755)
+        if sys.platform == "win32":
+            py_script = Path(tmp_dir) / "fake_agy.py"
+            py_script.write_text(
+                "import json, sys, time\n"
+                "if '--version' in sys.argv:\n"
+                "    print('agy test 1.0')\n"
+                "    raise SystemExit(0)\n"
+                "message = json.loads(sys.stdin.readline())\n"
+                "print(json.dumps({'event':'init','init':{'permission_mode':'request-review'}}), flush=True)\n"
+                "time.sleep(3)\n"
+                "print(json.dumps({'event':'result','result':{'status':'SUCCESS','response':'done'}}), flush=True)\n",
+                encoding="utf-8",
+            )
+            fake_cli = Path(tmp_dir) / "agy.cmd"
+            fake_cli.write_text(f'@"{sys.executable}" "{py_script}" %*\n', encoding="utf-8")
+        else:
+            fake_cli = Path(tmp_dir) / "agy"
+            fake_cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys, time\n"
+                "if '--version' in sys.argv:\n"
+                "    print('agy test 1.0')\n"
+                "    raise SystemExit(0)\n"
+                "message = json.loads(sys.stdin.readline())\n"
+                "print(json.dumps({'event':'init','init':{'permission_mode':'request-review'}}), flush=True)\n"
+                "time.sleep(3)\n"
+                "print(json.dumps({'event':'result','result':{'status':'SUCCESS','response':'done'}}), flush=True)\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
         monkeypatch.setattr(adapter, "find_cli", lambda: str(fake_cli))
         req = TaskCreateRequest(prompt="Long analysis", agent_id="antigravity", workspace_path=tmp_dir)
         events = []
