@@ -3,9 +3,10 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.core.config import get_settings
 
 client = TestClient(app)
-AUTH_HEADERS = {"Authorization": "Bearer 5e542c42b89db11fc7a10a2e19fa6e0929fd09d8d5a4c204a5414ead6c42a6be"}
+AUTH_HEADERS = {"Authorization": f"Bearer {get_settings().auth_token}"}
 
 
 def test_guided_workflow_unauthorized():

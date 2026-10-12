@@ -50,13 +50,8 @@ async def test_web_model_availability_ready():
     model = PRESET_MODELS[0]
     adapter = WebBrowserModelAdapter(model)
 
-    with patch("app.adapters.web_model.is_cdp_connected", new_callable=AsyncMock) as mock_cdp, \
-         patch("httpx.AsyncClient.get") as mock_get:
-        mock_cdp.return_value = True
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [{"url": "https://chatgpt.com/c/123", "type": "page"}]
-        mock_get.return_value = mock_resp
-
+    with patch("app.adapters.web_model._get_cached_cdp_status", new_callable=AsyncMock) as mock_status:
+        mock_status.return_value = (True, [{"url": "https://chatgpt.com/c/123", "type": "page"}])
         state, diag = await adapter.check_availability()
         assert state == AvailabilityState.READY
         assert "ChatGPT" in diag

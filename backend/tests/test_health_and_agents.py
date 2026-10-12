@@ -55,7 +55,24 @@ async def test_agent_routing_and_auto_resolution(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_detect_provider(auth_headers):
+async def test_auto_detect_provider(auth_headers, monkeypatch, tmp_path):
+    import keyring
+    from app.core import provider_store
+
+    class FakeSecureKeyring:
+        priority = 1
+        def __init__(self):
+            self.values = {}
+        def get_password(self, service, username):
+            return self.values.get((service, username))
+        def set_password(self, service, username, password):
+            self.values[(service, username)] = password
+        def delete_password(self, service, username):
+            self.values.pop((service, username), None)
+
+    fake_keyring = FakeSecureKeyring()
+    monkeypatch.setattr(keyring, "get_keyring", lambda: fake_keyring)
+    monkeypatch.setattr(provider_store, "STORE_PATH", tmp_path / "providers.json")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Test Groq detection
         res = await client.post(

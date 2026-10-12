@@ -104,3 +104,29 @@ async def test_codex_execution_and_cancellation(monkeypatch):
 
         assert any(ev.event_type == EventType.STARTED for ev in events)
         assert any(ev.event_type in (EventType.CANCELLED, EventType.ERROR) for ev in events)
+
+
+def test_codex_json_stream_decodes_agent_message():
+    from app.adapters.codex import _parse_codex_json_event
+    events = _parse_codex_json_event("task-json", '{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"Implemented the fix."}}')
+    assert events is not None and len(events) == 1
+    assert events[0].event_type == EventType.TOKEN
+    assert events[0].text == "Implemented the fix."
+
+
+def test_codex_json_stream_decodes_command_events():
+    from app.adapters.codex import _parse_codex_json_event
+    started = _parse_codex_json_event("task-json", '{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"pytest"}}')
+    completed = _parse_codex_json_event("task-json", '{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","command":"pytest","exit_code":0,"aggregated_output":"2 passed"}}')
+    assert started and started[0].event_type == EventType.TOOL_CALL
+    assert "pytest" in started[0].text
+    assert completed and completed[0].event_type == EventType.TOOL_RESULT
+    assert "2 passed" in completed[0].text
+
+
+def test_codex_json_stream_handles_failure_and_non_json_output():
+    from app.adapters.codex import _parse_codex_json_event
+    failed = _parse_codex_json_event("task-json", '{"type":"turn.failed","error":{"message":"model unavailable"}}')
+    assert failed and failed[0].event_type == EventType.ERROR
+    assert "model unavailable" in failed[0].text
+    assert _parse_codex_json_event("task-json", "plain CLI output") is None

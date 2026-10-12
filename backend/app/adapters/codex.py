@@ -1,8 +1,11 @@
 import asyncio
+import json
 import os
 import shutil
 import subprocess
+import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
 from app.adapters.base import BaseAgentAdapter
@@ -13,6 +16,95 @@ from app.models.schemas import (
     EventType,
     TaskCreateRequest,
 )
+
+
+def _parse_codex_json_event(task_id: str, line: str) -> list[AgentEvent] | None:
+    """Translate Codex CLI --json JSONL events into stable UI events.
+
+    Returns None for ordinary non-JSON output. Unknown JSON events are surfaced as
+    logs rather than leaked as raw JSON into the assistant response.
+    """
+    try:
+        payload = json.loads(line)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return []
+
+    now = time.time()
+    kind = str(payload.get("type") or "")
+    item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    item_type = str(item.get("type") or "")
+
+    def event(event_type: EventType, text: str, data: dict | None = None) -> AgentEvent:
+        return AgentEvent(task_id=task_id, event_type=event_type, text=text, timestamp=now, data=data or {})
+
+    if kind.startswith("item.") and item:
+        if item_type == "agent_message":
+            # item.updated may repeat the full accumulated text. Emit once at completion.
+            if kind == "item.completed":
+                text = item.get("text") or item.get("content") or ""
+                if isinstance(text, list):
+                    text = "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in text)
+                if text:
+                    return [event(EventType.TOKEN, str(text))]
+            return []
+        if item_type == "command_execution":
+            command = str(item.get("command") or "command")
+            if kind == "item.started":
+                return [event(EventType.TOOL_CALL, f"Codex running: {command[:240]}", {"tool": "command_execution", "command": command})]
+            if kind == "item.completed":
+                exit_code = item.get("exit_code")
+                output = str(item.get("aggregated_output") or "")
+                summary = f"Command finished (exit code {exit_code})."
+                if output.strip():
+                    summary += "\n" + output.strip()[-1200:]
+                return [event(EventType.TOOL_RESULT, summary, {"tool": "command_execution", "exit_code": exit_code, "command": command})]
+            return []
+        if item_type in {"mcp_tool_call", "function_call"}:
+            name = str(item.get("name") or item.get("tool_name") or "tool")
+            if kind == "item.started":
+                return [event(EventType.TOOL_CALL, f"Codex tool: {name}", {"tool": name})]
+            if kind == "item.completed":
+                result = item.get("result") or item.get("output") or ""
+                return [event(EventType.TOOL_RESULT, f"Codex tool finished: {name}" + (f"\n{str(result)[:1000]}" if result else ""), {"tool": name})]
+            return []
+        if item_type == "file_change" and kind == "item.completed":
+            changes = item.get("changes") or item.get("text") or "File changes reported by Codex."
+            if not isinstance(changes, str):
+                changes = json.dumps(changes, ensure_ascii=False)
+            return [event(EventType.DIFF, changes[:4000])]
+        title = item.get("title") or item.get("command") or item_type or "Codex activity"
+        if kind in {"item.started", "item.completed"}:
+            return [event(EventType.LOG, f"{title} ({kind.removeprefix('item.')})"[:300])]
+        return []
+
+    if kind in {"turn.failed", "error"}:
+        detail = payload.get("error") or payload.get("message") or payload.get("text") or "Codex reported an error."
+        if isinstance(detail, dict):
+            detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+        return [event(EventType.ERROR, str(detail)[:1800])]
+    if kind == "turn.completed":
+        return [event(EventType.LOG, "Codex turn completed.", {"usage": payload.get("usage", {})})]
+    if kind == "thread.started":
+        return [event(EventType.LOG, "Codex session started.", {"thread_id": payload.get("thread_id")})]
+
+    summary = payload.get("message") or payload.get("text") or payload.get("title")
+    if summary:
+        return [event(EventType.LOG, str(summary)[:500])]
+    return [event(EventType.LOG, f"Codex event: {kind or 'unknown JSON event'}"[:300])]
+
+
+def _drain_stderr(stream, buffer: deque[str]) -> None:
+    """Drain stderr concurrently to prevent a verbose CLI from blocking on a full pipe."""
+    if stream is None:
+        return
+    try:
+        for line in iter(stream.readline, ""):
+            buffer.append(line)
+    except (OSError, ValueError):
+        pass
+
 
 class CodexAdapter(BaseAgentAdapter):
     """OpenAI Codex CLI adapter reusing existing ChatGPT subscription authentication."""
@@ -217,6 +309,9 @@ class CodexAdapter(BaseAgentAdapter):
         try:
             proc = await asyncio.to_thread(spawn_proc)
             self._active_processes[task_id] = proc
+            stderr_buffer: deque[str] = deque(maxlen=200)
+            stderr_thread = threading.Thread(target=_drain_stderr, args=(proc.stderr, stderr_buffer), daemon=True)
+            stderr_thread.start()
 
             # Stream stdout lines
             while True:
@@ -239,39 +334,15 @@ class CodexAdapter(BaseAgentAdapter):
                 decoded_line = line.strip()
                 if not decoded_line:
                     continue
-                try:
-                    payload = json.loads(decoded_line)
-                    msg_type = payload.get("type", "")
-                    if msg_type in ("item_created", "item_updated"):
-                        item = payload.get("item", {})
-                        itype = item.get("type", "")
-                        if itype == "message":
-                            content = item.get("content", "")
-                            if content:
-                                yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(content), timestamp=time.time())
-                        elif itype == "function_call":
-                            fname = item.get("name", "tool")
-                            args = item.get("arguments", "")
-                            yield AgentEvent(task_id=task_id, event_type=EventType.TOOL_CALL, text=f"Codex tool: {fname}", timestamp=time.time(), data={"tool": fname, "args": args})
-                    elif msg_type == "message":
-                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(payload.get("content", "")), timestamp=time.time())
-                    elif msg_type == "error":
-                        yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text=str(payload.get("message", "Codex error")), timestamp=time.time())
-                    else:
-                        summary = payload.get("message") or payload.get("text") or payload.get("title")
-                        if summary:
-                            yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=str(summary)[:300], timestamp=time.time())
-                        else:
-                            yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=line, timestamp=time.time())
-                except Exception:
-                    yield AgentEvent(
-                        task_id=task_id,
-                        event_type=EventType.TOKEN,
-                        text=line,
-                        timestamp=time.time(),
-                    )
+                parsed_events = _parse_codex_json_event(task_id, decoded_line)
+                if parsed_events is None:
+                    yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=line, timestamp=time.time())
+                else:
+                    for parsed_event in parsed_events:
+                        yield parsed_event
 
             await asyncio.to_thread(proc.wait)
+            await asyncio.to_thread(stderr_thread.join, 1.0)
 
             if cancel_event.is_set():
                 yield AgentEvent(
@@ -288,7 +359,7 @@ class CodexAdapter(BaseAgentAdapter):
                     timestamp=time.time(),
                 )
             else:
-                stderr_output = await asyncio.to_thread(proc.stderr.read)
+                stderr_output = "".join(stderr_buffer)
                 yield AgentEvent(
                     task_id=task_id,
                     event_type=EventType.ERROR,
