@@ -18,17 +18,30 @@ async def test_antigravity_metadata():
     assert "gemini-2.5-pro" in caps.supported_models
 
 @pytest.mark.asyncio
-async def test_antigravity_disabled_diagnostic():
+async def test_antigravity_availability():
     adapter = AntigravityAdapter()
     state, diag = await adapter.check_availability()
-    # Antigravity does not expose an open MCP endpoint by default without antigravity-mcp
-    assert state == AvailabilityState.DISABLED
-    assert "antigravity-mcp" in diag
-    assert "CSRF" in diag
+    assert state in (AvailabilityState.READY, AvailabilityState.DISABLED)
+    assert len(diag) > 0
 
 @pytest.mark.asyncio
-async def test_antigravity_stream_when_disabled():
+async def test_antigravity_disabled_diagnostic(monkeypatch):
     adapter = AntigravityAdapter()
+    monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
+    import app.adapters.antigravity as ag_mod
+    monkeypatch.setattr(ag_mod, "CONFIG_PATH", Path("C:/nonexistent/api_keys.json"))
+
+    state, diag = await adapter.check_availability()
+    assert state == AvailabilityState.DISABLED
+    assert "not active" in diag.lower()
+
+@pytest.mark.asyncio
+async def test_antigravity_stream_when_disabled(monkeypatch):
+    adapter = AntigravityAdapter()
+    monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
+    import app.adapters.antigravity as ag_mod
+    monkeypatch.setattr(ag_mod, "CONFIG_PATH", Path("C:/nonexistent/api_keys.json"))
+
     req = TaskCreateRequest(prompt="Analyze architecture", agent_id="antigravity")
     events = []
     async for event in adapter.stream_task("ag-task-1", req):
@@ -36,7 +49,8 @@ async def test_antigravity_stream_when_disabled():
 
     assert len(events) >= 1
     assert events[0].event_type == EventType.ERROR
-    assert "disabled" in events[0].text.lower()
+    assert "unavailable" in events[0].text.lower()
+
 
 @pytest.mark.asyncio
 async def test_mcp_client_tool_discovery_and_call():

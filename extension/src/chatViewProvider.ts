@@ -40,11 +40,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'cancelTask':
           await this.handleCancelTask();
           break;
+        case 'loadHistory':
+          await this.handleLoadHistory();
+          break;
       }
     });
 
     // Initial load of agents
     this.loadAgents();
+  }
+
+  private async handleLoadHistory(): Promise<void> {
+    try {
+      const records = await this.backendClient.getOrchestrationHistory(15);
+      this.postMessage({ type: 'setHistory', records });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage({ type: 'setError', text: `Failed to load audit history: ${message}` });
+    }
   }
 
   private async loadAgents(retries = 3): Promise<void> {
@@ -264,15 +277,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <select id="agentSelect" class="agent-select">
       <option value="auto">Auto Router</option>
     </select>
-    <span id="statusBadge" class="status-badge">Backend Ready</span>
+    <div style="display: flex; gap: 6px; align-items: center;">
+      <button id="historyBtn" style="padding: 2px 8px; font-size: 11px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--fg);">Audit Log</button>
+      <span id="statusBadge" class="status-badge">Backend Ready</span>
+    </div>
   </div>
 
   <div id="chatHistory" class="chat-history">
     <div class="message system">Unified AI Coding Hub initialized. Select an agent and enter your request.</div>
   </div>
 
+  <div id="auditModal" style="display: none; border: 1px solid var(--border); background: var(--bg); padding: 8px; border-radius: 4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; font-size: 11px;">
+    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-weight: bold;">
+      <span>Orchestration Audit History</span>
+      <span id="closeAuditBtn" style="cursor: pointer; color: var(--badge-error);">✕</span>
+    </div>
+    <div id="auditList">No audit records found.</div>
+  </div>
+
   <div class="input-container">
-    <textarea id="promptInput" placeholder="Ask Codex, Copilot, Antigravity, or Local Model... (Ctrl+Enter to send)"></textarea>
+    <textarea id="promptInput" placeholder="Ask Codex, Copilot, Antigravity, or Multi-Agent Orchestrator... (Ctrl+Enter to send)"></textarea>
     <div class="btn-row">
       <button id="cancelBtn" class="cancel-btn">Cancel Task</button>
       <div style="flex: 1;"></div>
@@ -288,8 +312,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const cancelBtn = document.getElementById('cancelBtn');
     const agentSelect = document.getElementById('agentSelect');
     const statusBadge = document.getElementById('statusBadge');
+    const historyBtn = document.getElementById('historyBtn');
+    const auditModal = document.getElementById('auditModal');
+    const closeAuditBtn = document.getElementById('closeAuditBtn');
+    const auditList = document.getElementById('auditList');
 
     let currentAssistantMsgEl = null;
+
+    historyBtn.addEventListener('click', () => {
+      if (auditModal.style.display === 'none') {
+        auditModal.style.display = 'block';
+        vscode.postMessage({ type: 'loadHistory' });
+      } else {
+        auditModal.style.display = 'none';
+      }
+    });
+
+    closeAuditBtn.addEventListener('click', () => {
+      auditModal.style.display = 'none';
+    });
 
     function addMessage(role, text) {
       const el = document.createElement('div');
@@ -338,12 +379,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             agentSelect.appendChild(opt);
           });
           break;
+        case 'setHistory':
+          if (!msg.records || msg.records.length === 0) {
+            auditList.innerHTML = '<div>No orchestration tasks recorded yet.</div>';
+          } else {
+            auditList.innerHTML = msg.records.map(r => {
+              const verdictColor = r.review_passed ? '#4caf50' : '#f44336';
+              const verdictText = r.review_passed ? 'APPROVED' : 'REVIEW_ISSUES';
+              return '<div style="border-bottom: 1px solid var(--border); padding: 4px 0;">' +
+                '<div style="display: flex; justify-content: space-between;">' +
+                  '<strong>' + (r.agent_id || 'orchestrator') + '</strong>' +
+                  '<span style="color:' + verdictColor + '; font-weight:bold;">' + verdictText + '</span>' +
+                '</div>' +
+                '<div style="color: var(--vscode-descriptionForeground); font-size:10px;">' + (r.prompt || '').substring(0, 50) + '...</div>' +
+                '<div style="font-size:10px;">Subtasks: ' + (r.subtasks_count || 0) + ' | Success: ' + r.success + '</div>' +
+              '</div>';
+            }).join('');
+          }
+          break;
         case 'streamEvent':
           if (currentAssistantMsgEl) {
             if (msg.event.event_type === 'token') {
               currentAssistantMsgEl.textContent += msg.event.text;
             } else if (msg.event.event_type === 'started') {
               currentAssistantMsgEl.textContent = msg.event.text + '\\n';
+            } else if (msg.event.event_type === 'status') {
+              currentAssistantMsgEl.textContent += '\\n[Progress] ' + msg.event.text + '\\n';
+            } else if (msg.event.event_type === 'tool_call') {
+              currentAssistantMsgEl.textContent += '\\n[Tool] ' + msg.event.text + '\\n';
+            } else if (msg.event.event_type === 'tool_result') {
+              currentAssistantMsgEl.textContent += '[Result] ' + msg.event.text + '\\n';
             } else if (msg.event.event_type === 'error') {
               currentAssistantMsgEl.textContent += '\\n[Error] ' + msg.event.text;
             }

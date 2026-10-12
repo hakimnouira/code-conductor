@@ -36,8 +36,8 @@ class CodexAdapter(BaseAgentAdapter):
 
     def find_executable(self) -> str | None:
         """Find the codex CLI executable in PATH or standard installation locations."""
-        if self._custom_executable and os.path.exists(self._custom_executable):
-            return self._custom_executable
+        if self._custom_executable:
+            return self._custom_executable if os.path.exists(self._custom_executable) else None
 
         # 1. Check system PATH
         which_path = shutil.which("codex") or shutil.which("codex.exe") or shutil.which("codex.cmd")

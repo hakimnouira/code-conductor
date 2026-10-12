@@ -97,6 +97,17 @@ In a separate terminal, test health:
 ```
 
 ---
+---
+
+## Multi-Agent Orchestration & Code Review Gatekeeper (Milestone 8)
+
+The backend provides a full DAG-based multi-agent orchestration engine:
+- **Dependency DAG Decomposition**: Breaks down broad user prompts into granular, single-responsibility subtasks (`PlanDecomposer`). Subtasks with independent file targets are grouped into disjoint topological batches (`compute_parallel_batches`).
+- **Parallel Worker Dispatch**: Dispatches disjoint subtasks concurrently via `asyncio.gather` across available agent adapters (`ParallelOrchestrator`).
+- **Automated Code Review Gatekeeper**: Analyzes outputs and diffs against security standards (`CodeReviewer`), catching dangerous functions (`eval`, `os.system`, `subprocess.Popen(shell=True)`), syntax markers, and hardcoded credentials (`api_key = "..."`, `ghp_...`).
+- **Immutable Audit History**: Records all execution plans, subtasks, worker outputs, review verdicts, and execution metrics to an append-only JSONL log (`AuditHistoryTracker` at `~/.aihub_history.jsonl`). Accessible via `GET /orchestrator/history` and in the VS Code sidebar via the **Audit Log** button.
+
+---
 
 ## Milestones Progress
 
@@ -107,5 +118,5 @@ In a separate terminal, test health:
 - [x] **Milestone 5**: Antigravity MCP integration experiment.
 - [x] **Milestone 6**: Ollama integration and agent registry.
 - [x] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
-- [ ] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
+- [x] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
 - [ ] **Milestone 9**: Packaging, Windows integration tests, and documentation.

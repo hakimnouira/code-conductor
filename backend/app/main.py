@@ -47,6 +47,11 @@ from app.safety.workspace import (
 )
 from app.safety.git_guard import GitGuard
 from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
+from app.orchestrator.history import AuditHistoryTracker
+from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
+from app.orchestrator.planner import PlanDecomposer
+from pathlib import Path
+
 
 
 # In-memory task tracker
@@ -290,7 +295,34 @@ async def run_tests(req: TestRunRequest, _: str = Depends(require_bearer_token))
     except TestRunnerSecurityError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
+# ---------------------------------------------------------
+# Multi-Agent Orchestration & Audit History (Milestone 8)
+# ---------------------------------------------------------
+
+@app.post("/orchestrator/plan", response_model=ExecutionPlan)
+async def generate_orchestration_plan(req: TaskCreateRequest, _: str = Depends(require_bearer_token)):
+    ws = Path(req.workspace_path or get_settings().workspace_root).resolve()
+    planner = PlanDecomposer(ws)
+    return planner.decompose(req.prompt)
+
+@app.get("/orchestrator/history", response_model=list[OrchestrationAuditRecord])
+async def list_orchestration_history(limit: int = 50, _: str = Depends(require_bearer_token)):
+    tracker = AuditHistoryTracker()
+    return tracker.list_records(limit=limit)
+
+@app.get("/orchestrator/history/{task_id}", response_model=OrchestrationAuditRecord)
+async def get_orchestration_record(task_id: str, _: str = Depends(require_bearer_token)):
+    tracker = AuditHistoryTracker()
+    record = tracker.get_record(task_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Audit record '{task_id}' not found.",
+        )
+    return record
+
 @app.get("/web", response_class=HTMLResponse)
+
 
 async def web_chat_interface():
     token = get_settings().auth_token

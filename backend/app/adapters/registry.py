@@ -5,12 +5,14 @@ from app.adapters.copilot import CopilotAdapter
 from app.adapters.echo import EchoMockAdapter
 from app.adapters.multimodel import MultiModelAdapter
 from app.adapters.ollama import OllamaAdapter
+from app.adapters.orchestrator import OrchestratorAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
 
 class AgentRegistry:
     def __init__(self):
         self._adapters: dict[str, BaseAgentAdapter] = {}
         # Register adapters
+        self.register(OrchestratorAdapter())
         self.register(CodexAdapter())
         self.register(MultiModelAdapter("auto"))
         self.register(MultiModelAdapter("groq"))
@@ -18,6 +20,7 @@ class AgentRegistry:
         self.register(AntigravityAdapter())
         self.register(OllamaAdapter())
         self.register(EchoMockAdapter())
+
 
 
     def register(self, adapter: BaseAgentAdapter) -> None:

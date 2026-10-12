@@ -132,6 +132,14 @@ export class BackendClient {
     return this.request('POST', `/tasks/${taskId}/cancel`);
   }
 
+  public async getOrchestrationPlan(prompt: string, workspacePath?: string): Promise<any> {
+    return this.request('POST', '/orchestrator/plan', { prompt, workspace_path: workspacePath });
+  }
+
+  public async getOrchestrationHistory(limit = 20): Promise<any[]> {
+    return this.request('GET', `/orchestrator/history?limit=${limit}`);
+  }
+
   public streamEvents(
     taskId: string,
     onEvent: (event: AgentEvent) => void,
