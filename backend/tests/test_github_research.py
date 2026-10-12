@@ -20,7 +20,7 @@ def test_task_research_classifier(prompt, expected):
 def test_design_tasks_get_ui_focused_queries():
     query = build_search_query("Design a beautiful dashboard UI", ["React", "TypeScript"])
     assert "dashboard" in query
-    assert "React" in query
+    assert "language:TypeScript" in query
     assert "stars:>20" in query
 
 
