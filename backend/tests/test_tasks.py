@@ -1,3 +1,4 @@
+import asyncio
 import json
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -95,3 +96,59 @@ async def test_task_status_endpoint_rejects_unknown_task(auth_headers):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/tasks/missing-task", headers=auth_headers)
         assert response.status_code == 404
+
+
+
+@pytest.mark.asyncio
+async def test_task_events_include_replayable_ids_and_can_resume(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/tasks",
+            json={"prompt": "Replay task events", "agent_id": "mock", "github_research": False},
+            headers=auth_headers,
+        )
+        assert created.status_code == 200
+        task_id = created.json()["task_id"]
+
+        stream = await client.get(f"/tasks/{task_id}/events", headers=auth_headers)
+        assert stream.status_code == 200
+        assert "id: " in stream.text
+        ids = [
+            int(line[4:])
+            for line in stream.text.splitlines()
+            if line.startswith("id: ") and line[4:].isdigit()
+        ]
+        assert ids
+        last_id = max(ids)
+
+        resumed = await client.get(
+            f"/tasks/{task_id}/events?after={last_id}",
+            headers=auth_headers,
+        )
+        assert resumed.status_code == 200
+        assert "[DONE]" in resumed.text
+        assert "Replay task events" not in resumed.text
+
+
+@pytest.mark.asyncio
+async def test_task_list_includes_completed_task(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/tasks",
+            json={"prompt": "Task history listing", "agent_id": "mock", "github_research": False},
+            headers=auth_headers,
+        )
+        assert created.status_code == 200
+        task_id = created.json()["task_id"]
+
+        # Wait for the mock task to finish before asserting its durable status.
+        for _ in range(30):
+            status_response = await client.get(f"/tasks/{task_id}", headers=auth_headers)
+            if status_response.json()["status"] in {"completed", "failed", "cancelled"}:
+                break
+            await asyncio.sleep(0.05)
+
+        listing = await client.get("/tasks?limit=20", headers=auth_headers)
+        assert listing.status_code == 200
+        found = next(item for item in listing.json() if item["task_id"] == task_id)
+        assert found["status"] == "completed"
