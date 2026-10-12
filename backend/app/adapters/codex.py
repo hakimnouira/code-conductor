@@ -178,7 +178,7 @@ class CodexAdapter(BaseAgentAdapter):
 
         # Build non-interactive command line
         # Build non-interactive command line using official Codex CLI exec syntax
-        cmd = [exe, "exec", "-C", str(workspace), "--skip-git-repo-check"]
+        cmd = [exe, "exec", "--json", "-C", str(workspace), "--skip-git-repo-check"]
         if request.model and request.model != "default":
             cmd.extend(["-m", request.model])
         if request.permission_mode == "balanced":
@@ -235,12 +235,41 @@ class CodexAdapter(BaseAgentAdapter):
                         timestamp=time.time(),
                     )
                     return
-                yield AgentEvent(
-                    task_id=task_id,
-                    event_type=EventType.TOKEN,
-                    text=line,
-                    timestamp=time.time(),
-                )
+
+                decoded_line = line.strip()
+                if not decoded_line:
+                    continue
+                try:
+                    payload = json.loads(decoded_line)
+                    msg_type = payload.get("type", "")
+                    if msg_type in ("item_created", "item_updated"):
+                        item = payload.get("item", {})
+                        itype = item.get("type", "")
+                        if itype == "message":
+                            content = item.get("content", "")
+                            if content:
+                                yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(content), timestamp=time.time())
+                        elif itype == "function_call":
+                            fname = item.get("name", "tool")
+                            args = item.get("arguments", "")
+                            yield AgentEvent(task_id=task_id, event_type=EventType.TOOL_CALL, text=f"Codex tool: {fname}", timestamp=time.time(), data={"tool": fname, "args": args})
+                    elif msg_type == "message":
+                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(payload.get("content", "")), timestamp=time.time())
+                    elif msg_type == "error":
+                        yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text=str(payload.get("message", "Codex error")), timestamp=time.time())
+                    else:
+                        summary = payload.get("message") or payload.get("text") or payload.get("title")
+                        if summary:
+                            yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=str(summary)[:300], timestamp=time.time())
+                        else:
+                            yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=line, timestamp=time.time())
+                except Exception:
+                    yield AgentEvent(
+                        task_id=task_id,
+                        event_type=EventType.TOKEN,
+                        text=line,
+                        timestamp=time.time(),
+                    )
 
             await asyncio.to_thread(proc.wait)
 
