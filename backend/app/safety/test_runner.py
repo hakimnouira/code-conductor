@@ -43,9 +43,30 @@ class SafeTestRunner:
             "unittest": [py_exe, "-m", "unittest"],
             "python": [py_exe],
             "npm_test": [npm_path, "test"],
+            "npm_build": [npm_path, "run", "build"],
             "vitest": [npx_path, "vitest", "run"],
             "node": [node_path],
         }
+
+    def discover_runner(self) -> str | None:
+        """Select a known test runner from project metadata without executing scripts."""
+        import json
+
+        root = self.workspace_root
+        if (root / "pytest.ini").is_file() or (root / "pyproject.toml").is_file() or (root / "setup.cfg").is_file():
+            return "pytest"
+        if (root / "tests").is_dir() and any(root.glob("tests/test_*.py")):
+            return "pytest"
+        package_file = root / "package.json"
+        if package_file.is_file():
+            try:
+                package = json.loads(package_file.read_text(encoding="utf-8"))
+                scripts = package.get("scripts", {})
+                if isinstance(scripts, dict) and scripts.get("test"):
+                    return "npm_test"
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                return None
+        return None
 
     def validate_args(self, args: list[str]) -> None:
         """Ensures arguments contain no forbidden shell metacharacters."""
