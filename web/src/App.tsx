@@ -209,6 +209,7 @@ export default function App() {
       }
       if (selectedPlan && selectedPlan.subtasks.length > 0) {
         const outputs: string[] = [];
+        let planFailed = false;
         for (let i = 0; i < selectedPlan.subtasks.length; i++) {
           if (controller.signal.aborted) break;
           const step = selectedPlan.subtasks[i];
@@ -226,9 +227,9 @@ export default function App() {
           ].filter(Boolean).join("\n\n");
           const result = await dispatch(stepPrompt, stepAgent, controller.signal);
           outputs.push("Step " + (i + 1) + " — " + step.title + ":\n" + result.output.slice(-3500));
-          if (result.failed) { setNotice("Plan paused because step " + (i + 1) + " failed. Fix the error, then review the workspace before continuing."); break; }
+          if (result.failed) { planFailed = true; setNotice("Plan paused because step " + (i + 1) + " failed. Fix the error, then review the workspace before continuing."); break; }
         }
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !planFailed) {
           setNotice("Plan execution finished. Review the response and run tests before accepting changes.");
           setTask(old => old ? { ...old, status: "completed" } : old);
         }
@@ -331,7 +332,6 @@ export default function App() {
               </div>
             </div> : <div className="thread">
               {conversationPrompt && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>{clock()}</span></div><p>{conversationPrompt}</p></div></div>}
-              {!task && conversationPrompt && plan && <div className="message user-message"><div className="message-avatar user-avatar">YOU</div><div className="message-content"><div className="message-meta"><b>You</b><span>Plan request</span></div><p>{conversationPrompt}</p></div></div>}
               {plan && <div className="plan-card"><div className="plan-card-head"><div className="plan-icon"><Workflow size={18}/></div><div><b>Execution plan</b><span>{plan.subtasks.length} steps · {plan.parallel_batches.length} dependency batches</span></div><span className="review-badge">REVIEW BEFORE RUN</span></div><p>{plan.goal}</p><div className="plan-step-list">{plan.subtasks.map((step, i) => <div className={"plan-step " + (activeStep === i ? "current" : activeStep > i ? "finished" : "")} key={step.id}><div className="step-number">{activeStep > i ? <Check size={14}/> : String(i + 1).padStart(2, "0")}</div><div className="step-main"><b>{step.title}</b><span>{step.target_files.join(", ") || "Inspect repository"}{step.dependencies.length ? " · depends on " + step.dependencies.join(", ") : ""}</span></div><small>{step.assigned_agent || agent}</small></div>)}</div><div className="plan-card-foot"><span><ShieldCheck size={14}/> Plan is visible before execution</span><button className="subtle-button" onClick={() => setPlan(null)}>Dismiss</button></div></div>}
               {(task || events.length > 0) && <div className="message assistant-message"><div className="message-avatar assistant-avatar"><Sparkles size={16}/></div><div className="message-content"><div className="message-meta"><b>Conductor</b><span>{busy ? runningLabel : task?.status === "failed" ? "Stopped with an error" : task?.status === "completed" ? "Finished" : "Response"}</span><span className="agent-label">{activeAgent?.name || task?.agent_id || agent}</span></div>
                 {busy && !events.length && <div className="thinking-row"><span className="thinking-dots"><i/><i/><i/></span><span>{runningLabel} · waiting for the agent response</span></div>}
