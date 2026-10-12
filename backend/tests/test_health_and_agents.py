@@ -72,6 +72,7 @@ async def test_auto_detect_provider(auth_headers, monkeypatch, tmp_path):
 
     fake_keyring = FakeSecureKeyring()
     monkeypatch.setattr(keyring, "get_keyring", lambda: fake_keyring)
+    monkeypatch.setattr(keyring.core, "get_keyring", lambda: fake_keyring)
     monkeypatch.setattr(provider_store, "STORE_PATH", tmp_path / "providers.json")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Test Groq detection
