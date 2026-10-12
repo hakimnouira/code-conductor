@@ -50,6 +50,7 @@ class TaskCreateRequest(BaseModel):
     auto_approve: bool = False
     permission_mode: Literal["safe", "balanced", "god"] = "safe"
     god_mode_confirmed: bool = False
+    github_research: bool = True
 
 class TaskResponse(BaseModel):
     task_id: str

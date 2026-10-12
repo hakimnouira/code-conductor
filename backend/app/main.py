@@ -57,6 +57,7 @@ from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
 from app.orchestrator.planner import PlanDecomposer
 from pathlib import Path
 from app.repository_import import router as repository_import_router
+from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
 
 
@@ -119,6 +120,18 @@ async def get_health(_: str = Depends(require_bearer_token)):
         active_tasks=active,
     )
 
+class GitHubResearchRequest(BaseModel):
+    prompt: str
+    workspace_path: str | None = None
+    clone_best: bool = True
+
+
+@app.post("/research/github")
+async def preview_github_research(req: GitHubResearchRequest, _: str = Depends(require_bearer_token)):
+    ws = _resolve_validated_ws(req.workspace_path)
+    return await research_github(req.prompt, str(ws), clone_best=req.clone_best)
+
+
 @app.get("/agents", response_model=list[AgentInfo])
 async def list_agents(_: str = Depends(require_bearer_token)):
     registry = get_agent_registry()
@@ -169,6 +182,49 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
 async def _run_task_pipeline(record: TaskRecord, adapter):
     record.status = TaskStatus.RUNNING
     try:
+        if record.request.github_research:
+            research_event = {
+                "task_id": record.task_id,
+                "event_type": "log",
+                "text": "Evaluating whether GitHub references could improve this task…",
+                "timestamp": time.time(),
+                "data": {"phase": "github_research", "status": "started"},
+            }
+            await record.event_queue.put(json.dumps(research_event))
+            try:
+                research = await research_github(record.request.prompt, record.request.workspace_path, clone_best=True)
+                status_text = research.get("status", "unavailable")
+                repos = research.get("repositories", [])
+                if status_text == "complete" and repos:
+                    names = ", ".join(item.get("full_name", "") for item in repos[:3])
+                    research_event = {
+                        "task_id": record.task_id, "event_type": "log",
+                        "text": f"GitHub research found {len(repos)} relevant reference(s): {names}. " + ("A permissively licensed reference was cloned for inspection." if any(item.get("cloned") for item in repos) else "No reference was cloned; inspect licenses and compatibility before reuse."),
+                        "timestamp": time.time(),
+                        "data": {"phase": "github_research", "status": status_text, "query": research.get("query"), "repositories": repos, "cache_hit": research.get("cache_hit", False)},
+                    }
+                    record.request.prompt = record.request.prompt + "\n\n" + research.get("injected_context", "")
+                elif status_text == "skipped":
+                    research_event = {
+                        "task_id": record.task_id, "event_type": "log",
+                        "text": "GitHub research skipped: " + str(research.get("reason", "task classified as trivial")) + ".",
+                        "timestamp": time.time(),
+                        "data": {"phase": "github_research", "status": "skipped", "reason": research.get("reason")},
+                    }
+                else:
+                    research_event = {
+                        "task_id": record.task_id, "event_type": "log",
+                        "text": "GitHub research unavailable; continuing with the current codebase. " + str(research.get("reason", "")),
+                        "timestamp": time.time(),
+                        "data": {"phase": "github_research", "status": "unavailable", "query": research.get("query")},
+                    }
+                await record.event_queue.put(json.dumps(research_event))
+            except Exception as research_error:
+                await record.event_queue.put(json.dumps({
+                    "task_id": record.task_id, "event_type": "log",
+                    "text": "GitHub research failed safely; continuing without external references: " + str(research_error)[:240],
+                    "timestamp": time.time(), "data": {"phase": "github_research", "status": "error"},
+                }))
         async for event in adapter.stream_task(record.task_id, record.request):
             payload = event.model_dump_json()
             await record.event_queue.put(payload)

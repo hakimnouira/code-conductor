@@ -47,6 +47,7 @@ export default function App() {
   const [repoFolder, setRepoFolder] = useState("");
   const [repoBusy, setRepoBusy] = useState(false);
   const [repo, setRepo] = useState<RepoResult | null>(null);
+  const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>((localStorage.getItem("cc_permission_mode") as PermissionMode) || "safe");
   const [notifications, setNotifications] = useState<NotificationPrefs>(() => {
     try { return { enabled: false, completion: true, action: true, sound: "chime", ...JSON.parse(localStorage.getItem("cc_notifications") || "{}") }; }
@@ -195,7 +196,7 @@ export default function App() {
       body: JSON.stringify({
         prompt: taskPrompt, agent_id: selectedAgent, workspace_path: workspace || undefined,
         stream: true, auto_approve: false, permission_mode: permissionMode,
-        god_mode_confirmed: permissionMode === "god"
+        god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal);
@@ -390,7 +391,12 @@ export default function App() {
                   if (event.event_type === "tool_call") return <div className="event-card tool-event" key={i}><Terminal size={14}/><span>{event.text || "Agent requested a tool"}</span></div>;
                   if (event.event_type === "tool_result") return <div className="event-card" key={i}><CheckCircle2 size={14}/><span>{event.text}</span></div>;
                   if (event.event_type === "error") return <div className="event-card error-event" key={i}><CircleAlert size={14}/><span>{event.text}</span></div>;
-                  if (event.event_type === "log") return <div className="event-card" key={i}><Activity size={14}/><span>{event.text}</span></div>;
+                  if (event.event_type === "log") {
+                    const research = event.data?.phase === "github_research" && Array.isArray(event.data?.repositories)
+                      ? event.data.repositories as { full_name: string; url: string; description: string; stars: number; license: string; score: number; cloned?: boolean; local_path?: string | null }[]
+                      : [];
+                    return <div className="event-card research-event" key={i}><Activity size={14}/><div><span>{event.text}</span>{research.length > 0 && <div className="research-results">{research.slice(0, 5).map(repo => <a key={repo.full_name} href={repo.url} target="_blank" rel="noreferrer"><b>{repo.full_name}</b><small>{repo.stars.toLocaleString()} stars · {repo.license} · score {repo.score}</small><span>{repo.description}</span>{repo.cloned && repo.local_path && <em>Cloned reference: {repo.local_path}</em>}</a>)}</div>}</div></div>;
+                  }
                   if (event.event_type === "started") return <div className="event-card" key={i}><LoaderCircle size={14}/><span>{event.text || "Task started"}</span></div>;
                   return null;
                 })}</div>}
@@ -411,7 +417,8 @@ export default function App() {
               <div className="composer-bottom"><div className="composer-tools">
                 <label className="select-pill"><Bot size={14}/><select value={agent} onChange={e => setAgent(e.target.value)}><option value="auto">Auto agent</option>{agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select><ChevronDown size={12}/></label>
                 <label className={"select-pill permission-pill " + (permissionMode === "god" ? "danger-mode" : "")}><ShieldCheck size={14}/><select aria-label="Permission mode" value={permissionMode} onChange={e => setMode(e.target.value as PermissionMode)}><option value="safe">Safe</option><option value="balanced">Balanced</option><option value="god">God mode</option></select><ChevronDown size={12}/></label>
-                <button className="tool-pill" onClick={() => setRepoOpen(v => !v)}><Github size={14}/> GitHub repo</button>
+                <button className={"tool-pill " + (githubResearchEnabled ? "research-enabled" : "")} title="Automatically research relevant public GitHub projects for coding tasks" onClick={() => { const next = !githubResearchEnabled; setGithubResearchEnabled(next); localStorage.setItem("cc_github_research", String(next)); }}><Github size={14}/> Research {githubResearchEnabled ? "ON" : "OFF"}</button>
+                <button className="tool-pill" onClick={() => setRepoOpen(v => !v)}><FolderGit2 size={14}/> GitHub repo</button>
                 <button className="tool-pill" onClick={() => void makePlan()} disabled={!prompt.trim() || planning}><Workflow size={14}/>{planning ? "Planning…" : "Plan task"}</button>
               </div><div className="composer-submit">{busy ? <button className="stop-button" onClick={() => void cancel()}><Square size={13}/> Stop</button> : <button className="send-button" disabled={!prompt.trim() || !health} onClick={() => void runTask()}>{plan ? "Run plan" : "Run task"} <Send size={15}/></button>}</div></div>
               <div className="composer-footnote"><span><Command size={11}/> Enter to write · Ctrl/⌘ + Enter to run</span><span><ShieldCheck size={12}/> Safe by default</span></div>
