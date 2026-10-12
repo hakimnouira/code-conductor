@@ -109,6 +109,87 @@ The backend provides a full DAG-based multi-agent orchestration engine:
 
 ---
 
+## Production Packaging & Windows Integration Tests (Milestone 9)
+
+### 1. Standalone Production Packaging
+To package the complete standalone VS Code extension:
+```powershell
+.\scripts\package.ps1
+```
+This script cleans old builds, runs strict TypeScript type-checking, builds the production bundle via `@vscode/vsce`, and outputs `dist/unified-ai-hub-0.1.0.vsix` (verified ~16 KB, excluded test/source bloat via `.vscodeignore`, with valid 128x128 PNG icon and MIT license).
+
+To install the built package into your local VS Code:
+```powershell
+code --install-extension .\dist\unified-ai-hub-0.1.0.vsix --force
+```
+
+### 2. Comprehensive Test Suite & E2E Validation
+Run the full 52-test automated suite (including 7 Windows-native E2E lifecycle tests and TypeScript compilation):
+```powershell
+.\scripts\test.ps1
+```
+
+---
+
+## Agent Configuration & Subscription Reuse
+
+The hub is designed to leverage your **existing subscriptions without requiring paid cloud API keys**:
+
+| Engine | Protocol / Adapter | Auth / Subscription Discovery | Diagnostic & Fallback |
+| :--- | :--- | :--- | :--- |
+| **OpenAI Codex CLI** | Subprocess CLI (`codex exec -C <ws>`) | `~/.codex` session credentials (reusing ChatGPT Plus/Team/Enterprise). Auto-discovers bundled `codex.exe` in VS Code extension directory. | Non-interactive execution, graceful tree kill via `taskkill /F /T /PID`. |
+| **GitHub Copilot** | Official `github-copilot-sdk` | Auto-detects GitHub Copilot VS Code session tokens or `gh auth login`. | Reports `unauthenticated` with login guidance if session not active. |
+| **Google Antigravity** | Local Session & API Router | Auto-discovers `~/.gemini/antigravity/bin/agentapi.bat` and queries AI Router with rotating keys. | Reports `DISABLED` diagnostic with clear activation instructions if offline. |
+| **Ollama / Local** | HTTP REST (`/api/generate`) | Connects to `http://127.0.0.1:11434`. Runs completely offline without internet or tokens. | Probes connectivity; returns `offline` diagnostic with command to start daemon. |
+| **Multi-Agent Orchestrator** | DAG Pipeline & Parallel Workers | Internal coordinator querying available local and cloud adapters in disjoint topological batches. | Automatic code review gatekeeper rejecting dangerous commands or hardcoded keys. |
+| **Multi-Model Router** | Fast API Rotation | 7 rotating Groq keys, 3 APMix keys, 3 CodeCraft keys in `~/.gemini/config/api_keys.json`. | Automatic failover upon rate limits (HTTP 429). |
+
+---
+
+## REST & SSE API Reference
+
+The local daemon listens on `http://127.0.0.1:8765` with `Authorization: Bearer <token>` (token stored in `~/.aihub_token`).
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Server status, version, uptime, workspace root, active task count. |
+| `GET` | `/agents` | List all discovered agents with availability state and diagnostics. |
+| `POST` | `/tasks` | Create an execution task (`prompt`, `agent_id`, `workspace_path`). |
+| `GET` | `/tasks/{id}/events` | Server-Sent Events (SSE) token and status stream. |
+| `POST` | `/tasks/{id}/cancel` | Immediately cancel in-flight process and child trees. |
+| `POST` | `/orchestrator/plan` | Decompose prompt into dependency DAG and disjoint parallel batches. |
+| `GET` | `/orchestrator/history` | List immutable audit records of all multi-agent runs and review verdicts. |
+| `GET` | `/orchestrator/history/{id}` | Retrieve specific audit record details. |
+| `POST` | `/workspace/file/read` | Safely read file with path traversal and secret blocking. |
+| `POST` | `/workspace/file/write` | Atomically write file with unified diff calculation. |
+| `GET` | `/workspace/files` | List workspace files safely, excluding sensitive patterns. |
+| `GET` | `/workspace/git/status` | Git branch and working tree status. |
+| `POST` | `/workspace/git/diff` | Calculate clean unified diff against HEAD. |
+| `POST` | `/workspace/git/checkpoint` | Create safety checkpoint branch or stash. |
+| `POST` | `/workspace/test/run` | Execute allowlisted test runner with process sandboxing. |
+
+---
+
+## Troubleshooting Guide
+
+### 1. Codex CLI shows `unauthenticated`
+* **Cause**: Codex session credentials in `~/.codex` have expired.
+* **Fix**: Run `codex auth login` in PowerShell and log in with your ChatGPT account.
+
+### 2. Copilot shows `unauthenticated`
+* **Cause**: No active GitHub Copilot token in environment or VS Code.
+* **Fix**: Run `gh auth login` in PowerShell or sign into GitHub via VS Code.
+
+### 3. Ollama shows `offline`
+* **Cause**: Ollama daemon is not running on port 11434.
+* **Fix**: Open PowerShell and run `ollama serve`. To pull a model: `ollama pull qwen2.5-coder`.
+
+### 4. Backend reports `401 Unauthorized` in VS Code
+* **Cause**: Token mismatch between extension and backend daemon.
+* **Fix**: The extension automatically syncs with `~/.aihub_token`. Run `Restart Backend Server` from the VS Code command palette.
+
+---
+
 ## Milestones Progress
 
 - [x] **Milestone 1**: Research, architecture, and dependency compatibility.
@@ -119,4 +200,4 @@ The backend provides a full DAG-based multi-agent orchestration engine:
 - [x] **Milestone 6**: Ollama integration and agent registry.
 - [x] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
 - [x] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
-- [ ] **Milestone 9**: Packaging, Windows integration tests, and documentation.
+- [x] **Milestone 9**: Packaging, Windows integration tests, and documentation.

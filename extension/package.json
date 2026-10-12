@@ -4,6 +4,21 @@
   "description": "Unified AI Coding Hub for VS Code integrating Codex, Copilot, Antigravity, and Local Models",
   "version": "0.1.0",
   "publisher": "local-developer",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/unified-ai-hub"
+  },
+  "keywords": [
+    "ai",
+    "copilot",
+    "codex",
+    "antigravity",
+    "multi-agent",
+    "orchestrator",
+    "chatgpt"
+  ],
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
