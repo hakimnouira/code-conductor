@@ -17,7 +17,7 @@ from app.repository_import import _parse_public_github_url
 def test_parse_public_github_url(url, expected):
     clone_url, repo_name = _parse_public_github_url(url)
     assert clone_url == expected
-    assert repo_name == "openai" if "openai" in expected else repo_name == "repo"
+    assert repo_name == expected.removeprefix("https://github.com/").removesuffix(".git").split("/")[-1]
 
 
 @pytest.mark.parametrize(
@@ -38,7 +38,7 @@ def test_reject_unsafe_github_url(url):
 
 
 @pytest.mark.asyncio
-async def test_clone_endpoint_rejects_non_github_url_before_git(auth_headers=None):
+async def test_clone_endpoint_rejects_non_github_url_before_git():
     token = get_settings().auth_token
     headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
