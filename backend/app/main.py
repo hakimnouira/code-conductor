@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 import secrets
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from fastapi.security import HTTPAuthorizationCredentials
 from sse_starlette.sse import EventSourceResponse
@@ -649,6 +649,27 @@ async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
             detail=f"Task '{task_id}' not found.",
         )
     return record.snapshot()
+
+
+@app.get("/tasks/{task_id}/artifacts/browser-verification.png")
+async def get_browser_verification_artifact(task_id: str, _: str = Depends(require_bearer_token)):
+    """Serve a task's browser screenshot only from its validated workspace artifact directory."""
+    record = _tasks.get(task_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    root = _resolve_validated_ws(record.request.workspace_path)
+    target = root / ".code-conductor" / "artifacts" / record.task_id / "browser-verification.png"
+    resolved = target.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise HTTPException(status_code=403, detail="Artifact path escapes the selected workspace.")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Browser verification screenshot is not available.")
+    return FileResponse(
+        path=resolved,
+        media_type="image/png",
+        filename="browser-verification.png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/tasks/{task_id}/events")
