@@ -19,6 +19,9 @@ class AgentRegistry:
         self.register(OllamaAdapter())
         self.register(AntigravityAdapter())
         self.register(MultiModelAdapter("groq"))
+        self.register(MultiModelAdapter("codecraft"))
+        self.register(MultiModelAdapter("apmix"))
+        self.register(MultiModelAdapter("experientiallabs"))
         self.register(MultiModelAdapter("auto"))
 
         # 2. Register multi-agent orchestrator coordinator
@@ -39,7 +42,17 @@ class AgentRegistry:
 
     async def get_ready_workers(self) -> list[BaseAgentAdapter]:
         """Returns all currently ready real worker adapters (excluding orchestrator and mock)."""
-        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"]
+        worker_ids = [
+            "codex",
+            "copilot",
+            "ollama",
+            "antigravity",
+            "groq",
+            "codecraft",
+            "apmix",
+            "experientiallabs",
+            "multimodel",
+        ]
         ready_workers: list[BaseAgentAdapter] = []
         for wid in worker_ids:
             adapter = self._adapters.get(wid)

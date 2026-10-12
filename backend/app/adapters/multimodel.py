@@ -70,21 +70,40 @@ class MultiModelAdapter(BaseAgentAdapter):
                 f"No API key configuration found at {CONFIG_PATH}.",
             )
 
-        # Check Groq keys
         groq_keys = cfg.get("groq", {}).get("keys", [])
+        codecraft_keys = cfg.get("codecraft", {}).get("keys", [])
         apmix_keys = cfg.get("apmix", {}).get("keys", [])
+        xpl_keys = cfg.get("experientiallabs", {}).get("keys", [])
+        thk_keys = cfg.get("tokenharbor", {}).get("keys", [])
 
-        if self.provider == "groq" and not groq_keys:
-            return AvailabilityState.UNAUTHENTICATED, "No Groq API keys configured."
-        if self.provider == "apmix" and not apmix_keys:
-            return AvailabilityState.UNAUTHENTICATED, "No APMix API keys configured."
+        if self.provider == "groq":
+            if not groq_keys:
+                return AvailabilityState.UNAUTHENTICATED, "No Groq API keys configured."
+            return AvailabilityState.READY, f"Groq engine ready with {len(groq_keys)} rotating API keys."
 
-        if not groq_keys and not apmix_keys:
+        if self.provider == "codecraft":
+            if not codecraft_keys:
+                return AvailabilityState.UNAUTHENTICATED, "No CodeCraft API keys configured."
+            return AvailabilityState.READY, f"CodeCraft engine ready with {len(codecraft_keys)} active keys."
+
+        if self.provider == "apmix":
+            if not apmix_keys:
+                return AvailabilityState.UNAUTHENTICATED, "No APMix API keys configured."
+            return AvailabilityState.READY, f"APMix gateway ready with {len(apmix_keys)} keys."
+
+        if self.provider == "experientiallabs":
+            if not xpl_keys:
+                return AvailabilityState.UNAUTHENTICATED, "No Experiential Labs keys configured."
+            return AvailabilityState.READY, f"Experiential Labs ready with {len(xpl_keys)} keys."
+
+        # For "auto" / "multimodel"
+        total_keys = len(groq_keys) + len(codecraft_keys) + len(apmix_keys) + len(xpl_keys) + len(thk_keys)
+        if total_keys == 0:
             return AvailabilityState.UNAUTHENTICATED, "No active API keys found in api_keys.json."
 
         return (
             AvailabilityState.READY,
-            f"Multi-Model Router ready with {len(groq_keys)} Groq keys and {len(apmix_keys)} APMix keys.",
+            f"Multi-Model Router ready with {total_keys} total keys across Groq, CodeCraft, and APMix.",
         )
 
     async def get_capabilities(self) -> AgentCapabilities:
@@ -124,7 +143,6 @@ class MultiModelAdapter(BaseAgentAdapter):
             timestamp=time.time(),
         )
 
-        # Query APIs using worker thread so event loop remains free
         response_text = ""
         try:
             cfg = load_api_config()
@@ -161,7 +179,7 @@ class MultiModelAdapter(BaseAgentAdapter):
                 text=word + (" " if i < len(words) - 1 else ""),
                 timestamp=time.time(),
             )
-            await asyncio.sleep(0.015)
+            await asyncio.sleep(0.01)
 
         yield AgentEvent(
             task_id=task_id,
@@ -179,67 +197,128 @@ class MultiModelAdapter(BaseAgentAdapter):
 
     def _query_with_failover(self, config: dict, prompt: str, system: str) -> str:
         """Executes query with rotating keys and fallback between providers."""
-        # 1. Try Groq first
-        groq_cfg = config.get("groq", {})
-        groq_keys = groq_cfg.get("keys", [])
-        groq_url = f"{groq_cfg.get('base_url', 'https://api.groq.com/openai/v1')}/chat/completions"
-        groq_model = groq_cfg.get("default_model", "qwen/qwen3.8-27b")
+        providers_to_try = []
+        if self.provider in ("groq", "codecraft", "apmix", "experientiallabs"):
+            providers_to_try.append(self.provider)
+            # Add other providers as fallback
+            for p in ["groq", "codecraft", "apmix", "experientiallabs"]:
+                if p not in providers_to_try:
+                    providers_to_try.append(p)
+        else:
+            # Default auto sequence: Groq (ultra fast 8ms) -> CodeCraft -> APMix -> ExperientialLabs
+            providers_to_try = ["groq", "codecraft", "apmix", "experientiallabs"]
 
-        for key in groq_keys:
-            try:
-                res = self._post_json(
-                    groq_url,
-                    {
-                        "model": groq_model,
-                        "messages": [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": 2048,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                    },
-                )
-                if "choices" in res and res["choices"]:
-                    return res["choices"][0]["message"].get("content", "").strip()
-            except Exception:
-                continue
+        for prov in providers_to_try:
+            if prov == "groq":
+                groq_cfg = config.get("groq", {})
+                keys = groq_cfg.get("keys", [])
+                url = f"{groq_cfg.get('base_url', 'https://api.groq.com/openai/v1')}/chat/completions"
+                model = groq_cfg.get("default_model", "qwen/qwen3.8-27b")
+                for key in keys:
+                    try:
+                        res = self._post_json(
+                            url,
+                            {
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": system},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 2048,
+                            },
+                            headers={"Authorization": f"Bearer {key}"},
+                            timeout=8,
+                        )
+                        if "choices" in res and res["choices"]:
+                            return res["choices"][0]["message"].get("content", "").strip()
+                    except Exception:
+                        continue
 
-        # 2. Try APMix fallback
-        apmix_cfg = config.get("apmix", {})
-        apmix_keys = apmix_cfg.get("keys", [])
-        apmix_url = f"{apmix_cfg.get('base_url', 'https://api.apmix.ai/v1')}/chat/completions"
-        apmix_model = "claude-sonnet-4-6-free"
+            elif prov == "codecraft":
+                cc_cfg = config.get("codecraft", {})
+                keys = cc_cfg.get("keys", [])
+                url = f"{cc_cfg.get('base_url', 'https://codecraftapi.com/v1')}/chat/completions"
+                model = cc_cfg.get("default_model", "gemma-2-2b")
+                for key in keys:
+                    try:
+                        res = self._post_json(
+                            url,
+                            {
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": system},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 1024,
+                            },
+                            headers={"Authorization": f"Bearer {key}"},
+                            timeout=6,
+                        )
+                        if "choices" in res and res["choices"]:
+                            return res["choices"][0]["message"].get("content", "").strip()
+                    except Exception:
+                        continue
 
-        for key in apmix_keys:
-            try:
-                res = self._post_json(
-                    apmix_url,
-                    {
-                        "model": apmix_model,
-                        "messages": [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": 2048,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                    },
-                )
-                if "choices" in res and res["choices"]:
-                    return res["choices"][0]["message"].get("content", "").strip()
-            except Exception:
-                continue
+            elif prov == "apmix":
+                apmix_cfg = config.get("apmix", {})
+                keys = apmix_cfg.get("keys", [])
+                url = f"{apmix_cfg.get('base_url', 'https://api.apmix.ai/v1')}/chat/completions"
+                model = "claude-sonnet-4-6-free"
+                for key in keys:
+                    try:
+                        res = self._post_json(
+                            url,
+                            {
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": system},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 2048,
+                            },
+                            headers={"Authorization": f"Bearer {key}"},
+                            timeout=6,
+                        )
+                        if "choices" in res and res["choices"]:
+                            return res["choices"][0]["message"].get("content", "").strip()
+                    except Exception:
+                        continue
 
-        return "All configured API keys (Groq & APMix) were exhausted or timed out."
+            elif prov == "experientiallabs":
+                xpl_cfg = config.get("experientiallabs", {})
+                keys = xpl_cfg.get("keys", [])
+                url = f"{xpl_cfg.get('base_url', 'https://api.experientiallabs.ai/v1')}/chat/completions"
+                model = "aion-3.0-mini"
+                for key in keys:
+                    try:
+                        res = self._post_json(
+                            url,
+                            {
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": system},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 1024,
+                            },
+                            headers={"Authorization": f"Bearer {key}"},
+                            timeout=6,
+                        )
+                        if "choices" in res and res["choices"]:
+                            return res["choices"][0]["message"].get("content", "").strip()
+                    except Exception:
+                        continue
 
-    def _post_json(self, url: str, payload: dict, headers: dict, timeout: int = 20) -> dict:
+        return "All configured API keys were exhausted or timed out."
+
+    def _post_json(self, url: str, payload: dict, headers: dict, timeout: int = 10) -> dict:
         ctx = ssl.create_default_context()
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers)
+        all_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CodeConductor/1.0",
+            "Content-Type": "application/json",
+            **headers,
+        }
+        req = urllib.request.Request(url, data=data, headers=all_headers)
         with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))

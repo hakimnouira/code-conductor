@@ -96,6 +96,20 @@ class CopilotAdapter(BaseAgentAdapter):
     def description(self) -> str:
         return "Official GitHub Copilot agent runtime reusing existing Copilot Individual/Business subscription without separate API keys."
 
+    def _resolve_token(self) -> str | None:
+        if self._github_token:
+            return self._github_token
+        for env_var in ("GITHUB_TOKEN", "GH_TOKEN", "COPILOT_TOKEN"):
+            val = os.environ.get(env_var)
+            if val:
+                return val
+        try:
+            from app.adapters.multimodel import load_api_config
+            cfg = load_api_config()
+            return cfg.get("github", {}).get("token") or cfg.get("copilot", {}).get("token")
+        except Exception:
+            return None
+
     async def check_availability(self) -> tuple[AvailabilityState, str]:
         try:
             import copilot
@@ -107,7 +121,7 @@ class CopilotAdapter(BaseAgentAdapter):
             )
 
         try:
-            token = self._github_token or os.environ.get("GITHUB_TOKEN")
+            token = self._resolve_token()
             client_kwargs = {"use_logged_in_user": True}
             if token:
                 client_kwargs = {"github_token": token, "use_logged_in_user": False}
@@ -199,7 +213,7 @@ class CopilotAdapter(BaseAgentAdapter):
             timestamp=time.time(),
         )
 
-        token = self._github_token or os.environ.get("GITHUB_TOKEN")
+        token = self._resolve_token()
         client_kwargs = {"use_logged_in_user": True}
         if token:
             client_kwargs = {"github_token": token, "use_logged_in_user": False}
