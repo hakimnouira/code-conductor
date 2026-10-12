@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown,
+  Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown, GitBranch,
   CircleAlert, Code2, Command, Copy, Edit3, ExternalLink, Eye, FolderGit2, FolderOpen, Github,
   Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Search, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
@@ -146,6 +146,7 @@ export default function App() {
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
+  const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>((localStorage.getItem("cc_permission_mode") as PermissionMode) || "safe");
   const [notifications, setNotifications] = useState<NotificationPrefs>(() => {
     try { return { enabled: false, completion: true, action: true, sound: "chime", ...JSON.parse(localStorage.getItem("cc_notifications") || "{}") }; }
@@ -525,6 +526,30 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Could not build task plan");
       return null;
     } finally { setPlanning(false); }
+  };
+
+  const createIsolatedWorktree = async () => {
+    if (!workspace.trim()) {
+      setError("Select a Git repository workspace before creating an isolated worktree.");
+      setWorkspaceModalOpen(true);
+      return;
+    }
+    setWorktreeBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await request("/workspace/git/worktrees", {
+        method: "POST",
+        body: JSON.stringify({ workspace_path: workspace })
+      }).then(r => r.json()) as { success: boolean; branch: string; worktree_path: string };
+      if (!result.success || !result.worktree_path) throw new Error("The backend did not create a worktree.");
+      applyWorkspace(result.worktree_path);
+      setNotice("Created isolated worktree on branch " + result.branch + ". Your original checkout is unchanged.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create isolated worktree");
+    } finally {
+      setWorktreeBusy(false);
+    }
   };
 
   const openProjectRules = async () => {
@@ -1621,6 +1646,7 @@ export default function App() {
                     </div>
                     <button className="tool-pill active" title="Run 4-Phase Guided Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={14}/> Guided Flow</button>
                     <button className="tool-pill" title="Edit workspace-specific AI instructions" onClick={() => void openProjectRules()}><Edit3 size={14}/> Project Rules</button>
+                    <button className="tool-pill" title="Create a new isolated Git worktree and switch the active workspace" onClick={() => void createIsolatedWorktree()} disabled={worktreeBusy}><GitBranch size={14}/>{worktreeBusy ? "Creating…" : "Isolated Worktree"}</button>
                     <button className={"tool-pill " + (githubResearchEnabled ? "research-enabled" : "")} title="Automatically research public GitHub projects" onClick={() => { const next = !githubResearchEnabled; setGithubResearchEnabled(next); localStorage.setItem("cc_github_research", String(next)); }}><Github size={14}/> Research {githubResearchEnabled ? "ON" : "OFF"}</button>
                     <button className={"tool-pill " + (autoVerifyEnabled ? "research-enabled" : "")} title="Run detected project tests after the agent finishes and ask it to repair failures (up to 2 attempts)" onClick={() => { const next = !autoVerifyEnabled; setAutoVerifyEnabled(next); localStorage.setItem("cc_auto_verify", String(next)); }}><CheckCircle2 size={14}/> Verify {autoVerifyEnabled ? "ON" : "OFF"}</button>
                     <button className="tool-pill" onClick={() => void makePlan()} disabled={!prompt.trim() || planning}><Workflow size={14}/>{planning ? "Planning…" : "Plan task"}</button>
