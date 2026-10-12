@@ -33,7 +33,7 @@ async def test_agent_discovery(auth_headers):
         assert mock_agent["capabilities"]["supports_streaming"] is True
 
 @pytest.mark.asyncio
-async def test_agent_routing_and_auto_resolution():
+async def test_agent_routing_and_auto_resolution(monkeypatch):
     from app.adapters.registry import get_agent_registry
     registry = get_agent_registry()
 
@@ -42,9 +42,12 @@ async def test_agent_routing_and_auto_resolution():
     assert adapter is not None
     assert adapter.agent_id == "mock"
 
-    # Auto resolution falls back to available ready engine (e.g. mock or codex if ready)
+    # Auto routing must not disguise the mock adapter as a real provider when no worker is ready.
+    async def no_ready_workers():
+        return []
+    monkeypatch.setattr(registry, "get_ready_workers", no_ready_workers)
     auto_adapter = await registry.resolve_agent("auto", "Refactor module")
-    assert auto_adapter is not None
+    assert auto_adapter is None
 
     # Invalid agent returns None
     invalid_adapter = await registry.resolve_agent("non_existent_engine_id_xyz", "prompt")

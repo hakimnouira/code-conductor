@@ -2,6 +2,8 @@ from app.adapters.antigravity import AntigravityAdapter
 from app.adapters.base import BaseAgentAdapter
 from app.adapters.codex import CodexAdapter
 from app.adapters.copilot import CopilotAdapter
+from app.adapters.custom_provider import CustomProviderAdapter
+from app.core.provider_store import list_providers
 from app.adapters.echo import EchoMockAdapter
 from app.adapters.multimodel import MultiModelAdapter
 from app.adapters.ollama import OllamaAdapter
@@ -23,6 +25,9 @@ class AgentRegistry:
         self.register(MultiModelAdapter("apmix"))
         self.register(MultiModelAdapter("experientiallabs"))
         self.register(MultiModelAdapter("auto"))
+        # User-added OpenAI-compatible endpoints; secrets remain in the OS credential store.
+        for provider in list_providers():
+            self.register(CustomProviderAdapter(provider))
 
         # 2. Register multi-agent orchestrator coordinator
         self.register(OrchestratorAdapter())
@@ -35,6 +40,9 @@ class AgentRegistry:
 
     def get(self, agent_id: str) -> BaseAgentAdapter | None:
         return self._adapters.get(agent_id)
+
+    def unregister(self, agent_id: str) -> None:
+        self._adapters.pop(agent_id, None)
 
     async def list_agents(self) -> list[AgentInfo]:
         import asyncio

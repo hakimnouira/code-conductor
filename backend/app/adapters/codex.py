@@ -181,6 +181,10 @@ class CodexAdapter(BaseAgentAdapter):
         cmd = [exe, "exec", "-C", str(workspace), "--skip-git-repo-check"]
         if request.model and request.model != "default":
             cmd.extend(["-m", request.model])
+        if request.permission_mode == "balanced":
+            cmd.append("--full-auto")
+        elif request.permission_mode == "god" and request.god_mode_confirmed:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
         cmd.append(request.prompt)
 
         env = dict(os.environ)

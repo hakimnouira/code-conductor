@@ -48,6 +48,8 @@ class TaskCreateRequest(BaseModel):
     model: str | None = None
     stream: bool = True
     auto_approve: bool = False
+    permission_mode: Literal["safe", "balanced", "god"] = "safe"
+    god_mode_confirmed: bool = False
 
 class TaskResponse(BaseModel):
     task_id: str
