@@ -97,7 +97,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const selected = getEditorSelection();
       if (!selected) return;
       await sendEditorPrompt(
-        `Explain the following code clearly. Do not modify files. Identify its purpose, important logic, assumptions, and potential edge cases.\\n\\nFile: ${selected.editor.document.uri.fsPath}\\nLines: ${selected.startLine}-${selected.endLine}\\nLanguage: ${selected.editor.document.languageId}\\n\\n\`\`\`${selected.editor.document.languageId}\\n${selected.code}\\n\`\`\``
+        `Explain the following code clearly. Do not modify files. Identify its purpose, important logic, assumptions, and potential edge cases.\n\nFile: ${selected.editor.document.uri.fsPath}\nLines: ${selected.startLine}-${selected.endLine}\nLanguage: ${selected.editor.document.languageId}\n\n\`\`\`${selected.editor.document.languageId}\n${selected.code}\n\`\`\``
       );
     })
   );
@@ -107,7 +107,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const selected = getEditorSelection();
       if (!selected) return;
       await sendEditorPrompt(
-        `Refactor the selected code in place while preserving behavior and public interfaces. Inspect surrounding code and project conventions first, avoid unrelated edits, and run relevant tests if available. Explain the changes and verification performed.\\n\\nFile: ${selected.editor.document.uri.fsPath}\\nLines: ${selected.startLine}-${selected.endLine}\\nLanguage: ${selected.editor.document.languageId}\\n\\n\`\`\`${selected.editor.document.languageId}\\n${selected.code}\\n\`\`\``
+        `Refactor the selected code in place while preserving behavior and public interfaces. Inspect surrounding code and project conventions first, avoid unrelated edits, and run relevant tests if available. Explain the changes and verification performed.\n\nFile: ${selected.editor.document.uri.fsPath}\nLines: ${selected.startLine}-${selected.endLine}\nLanguage: ${selected.editor.document.languageId}\n\n\`\`\`${selected.editor.document.languageId}\n${selected.code}\n\`\`\``
       );
     })
   );
@@ -125,7 +125,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       await sendEditorPrompt(
-        `Fix the current VS Code diagnostics in this file. Inspect the actual file and related code before editing. Make the smallest correct changes, preserve behavior, and run relevant tests or type checks. Do not suppress diagnostics without fixing their cause.\\n\\nFile: ${selected.editor.document.uri.fsPath}\\nLanguage: ${selected.editor.document.languageId}\\nDiagnostics:\\n${diagnostics.join('\\n')}\\n\\nRelevant selected code:\\n\`\`\`${selected.editor.document.languageId}\\n${selected.code}\\n\`\`\``
+        `Fix the current VS Code diagnostics in this file. Inspect the actual file and related code before editing. Make the smallest correct changes, preserve behavior, and run relevant tests or type checks. Do not suppress diagnostics without fixing their cause.\n\nFile: ${selected.editor.document.uri.fsPath}\nLanguage: ${selected.editor.document.languageId}\nDiagnostics:\n${diagnostics.join('\n')}\n\nRelevant selected code:\n\`\`\`${selected.editor.document.languageId}\n${selected.code}\n\`\`\``
       );
     })
   );
