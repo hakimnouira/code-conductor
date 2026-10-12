@@ -193,6 +193,14 @@ class WorkspaceSecurityManager:
             resolved = input_path.resolve()
         else:
             resolved = (self.workspace_root / input_path).resolve()
+            # Relative paths are always scoped to the selected workspace. This also
+            # blocks symlinks inside the workspace that resolve to an outside target.
+            try:
+                resolved.relative_to(self.workspace_root)
+            except ValueError as exc:
+                raise PathTraversalError(
+                    f"Access denied: relative path '{raw_path}' escapes workspace '{self.workspace_root}'."
+                ) from exc
 
         # Reject OS system directories (C:\Windows, etc.)
         for sys_root in FORBIDDEN_SYSTEM_ROOTS:
