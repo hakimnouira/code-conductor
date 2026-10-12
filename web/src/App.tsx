@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown,
-  CircleAlert, Code2, Command, Copy, ExternalLink, Eye, FolderGit2, Github,
+  CircleAlert, Code2, Command, Copy, Edit3, ExternalLink, Eye, FolderGit2, FolderOpen, Github,
   Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Search, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
 } from "lucide-react";
@@ -15,8 +15,27 @@ type PermissionMode = "safe" | "balanced" | "god";
 type NotificationPrefs = { enabled: boolean; completion: boolean; action: boolean; sound: string };
 type Provider = { id: string; name: string; base_url: string; model: string; key_configured: boolean; key_count?: number };
 type RepoResult = { repository_url: string; repository_name: string; workspace_path: string; branch: string; cloned: boolean; analysis_safety: string };
-type ConvSummary = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; first_prompt: string };
-type ConvDetail = { id: string; title: string; updated_at: number; updated_time: string; message_count: number; messages: { role: string; content: string; step?: number }[]; artifacts: { name: string; size: number; modified_time: string }[] };
+type ConvSummary = {
+  id: string;
+  title: string;
+  updated_at: number;
+  updated_time: string;
+  message_count: number;
+  first_prompt: string;
+  workspace_path?: string | null;
+  project_name?: string | null;
+};
+type ConvDetail = {
+  id: string;
+  title: string;
+  updated_at: number;
+  updated_time: string;
+  message_count: number;
+  messages: { role: string; content: string; step?: number }[];
+  artifacts: { name: string; size: number; modified_time: string }[];
+  workspace_path?: string | null;
+  project_name?: string | null;
+};
 type TaskHistoryItem = {
   id: string;
   timestamp: number;
@@ -160,6 +179,45 @@ export default function App() {
   const [taskHistorySearch, setTaskHistorySearch] = useState("");
   const [sidebarHistoryQuery, setSidebarHistoryQuery] = useState("");
   const [copiedAnswer, setCopiedAnswer] = useState(false);
+
+  // Workspace Directory Manager State
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false);
+  const [customWorkspaceInput, setCustomWorkspaceInput] = useState(() => localStorage.getItem("cc_workspace") || "");
+  const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("cc_recent_workspaces");
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [
+      "D:\\work\\code-conductor",
+      "C:\\Users\\hakim\\Desktop\\vs extention",
+      "C:\\Users\\hakim\\Desktop",
+      "d:\\Games\\dofus\\BubbleGame",
+      "d:\\oriflame site",
+      "c:\\Users\\hakim\\Desktop\\api test"
+    ];
+  });
+
+  const saveRecentWorkspace = (path: string) => {
+    if (!path || !path.trim()) return;
+    const norm = path.trim();
+    setRecentWorkspaces(prev => {
+      const next = [norm, ...prev.filter(p => p.toLowerCase() !== norm.toLowerCase())].slice(0, 15);
+      try { localStorage.setItem("cc_recent_workspaces", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
+  const applyWorkspace = (path: string) => {
+    const norm = path.trim();
+    if (!norm) return;
+    setWorkspace(norm);
+    setCustomWorkspaceInput(norm);
+    try { localStorage.setItem("cc_workspace", norm); } catch {}
+    saveRecentWorkspace(norm);
+    setWorkspaceModalOpen(false);
+    setNotice(`Switched project directory to: "${norm}"`);
+  };
 
   useEffect(() => {
     try {
@@ -715,6 +773,7 @@ export default function App() {
       status: "completed",
       agent_id: "google-antigravity",
       prompt: effectivePrompt,
+      workspace_path: detail.workspace_path || workspace,
     };
 
     setTask(loadedTask);
@@ -723,6 +782,14 @@ export default function App() {
     setPrompt("");
     setPlan(null);
     setSelectedHistoryId("antigravity-" + detail.id);
+
+    // Switch and save project workspace directory if present in Antigravity chat
+    if (detail.workspace_path) {
+      setWorkspace(detail.workspace_path);
+      setCustomWorkspaceInput(detail.workspace_path);
+      try { localStorage.setItem("cc_workspace", detail.workspace_path); } catch {}
+      saveRecentWorkspace(detail.workspace_path);
+    }
 
     // Save into persistent taskHistory so it shows up in CHATS & TASKS left sidebar
     const historyItem: TaskHistoryItem = {
@@ -741,7 +808,8 @@ export default function App() {
       return [historyItem, ...filtered];
     });
 
-    setNotice(`Loaded Antigravity chat: "${detail.title}" (${msgs.length} messages) into workspace.`);
+    const dirNotice = detail.workspace_path ? ` · Switched project folder to "${detail.workspace_path}"` : "";
+    setNotice(`Loaded Antigravity chat: "${detail.title}" (${msgs.length} messages)${dirNotice}`);
     setHistoryOpen(false);
   };
 
@@ -995,13 +1063,14 @@ export default function App() {
         </button>
 
         <div className="rail-label">WORKSPACE</div>
-        <div className="workspace-mini" onClick={() => setContextOpen(true)} style={{ cursor: "pointer" }} title="Click to configure workspace directory">
+        <div className="workspace-mini" onClick={() => setWorkspaceModalOpen(true)} style={{ cursor: "pointer" }} title="Click to change project workspace directory">
           <div className="folder-glyph"><FolderGit2 size={17}/></div>
           <div className="workspace-name">
             <b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "No project open"}</b>
-            <span>{repo?.repository_name || (health ? "Local workspace" : "Connect backend")}</span>
+            <span>{workspace ? (workspace.length > 24 ? "..." + workspace.slice(-21) : workspace) : (repo?.repository_name || (health ? "Local workspace" : "Connect backend"))}</span>
           </div>
-          <button className="icon-button" title="Import GitHub repository" onClick={(e) => { e.stopPropagation(); setRepoOpen(v => !v); }}><Github size={15}/></button>
+          <button className="icon-button" title="Change Project Directory" onClick={(e) => { e.stopPropagation(); setWorkspaceModalOpen(true); }}><FolderOpen size={14}/></button>
+          <button className="icon-button" title="Import GitHub repository" onClick={(e) => { e.stopPropagation(); setRepoOpen(v => !v); }}><Github size={14}/></button>
         </div>
 
         {/* TASK & CHAT HISTORY SECTION (PRIMARY SIDEBAR SPACE) */}
@@ -1099,9 +1168,9 @@ export default function App() {
 
       <main className="chat-shell">
         <header className="topbar">
-          <div className="top-project" onClick={() => setContextOpen(v => !v)} style={{ cursor: "pointer" }} title="Click to open workspace context panel">
+          <div className="top-project" onClick={() => setWorkspaceModalOpen(true)} style={{ cursor: "pointer" }} title="Click to view and switch project directory">
             <div className="top-project-icon"><Code2 size={16}/></div>
-            <div><span>PROJECT</span><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "New workspace"}</b></div>
+            <div><span>PROJECT</span><b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "Select folder"}</b></div>
             <ChevronDown size={14}/>
           </div>
           <div className="top-actions">
@@ -1470,8 +1539,20 @@ export default function App() {
                   </div>
                 </div>
                 <div className="composer-footnote">
-                  <span><Command size={11}/> Enter to write · Ctrl/⌘ + Enter to run</span>
-                  <span><ShieldCheck size={12}/> Safe sandbox · Git guard protected</span>
+                  <button
+                    type="button"
+                    className="composer-dir-pill"
+                    onClick={() => setWorkspaceModalOpen(true)}
+                    title="Active project directory. Click to switch or set any folder."
+                  >
+                    <FolderGit2 size={12}/>
+                    <span>{workspace ? (workspace.length > 46 ? "..." + workspace.slice(-42) : workspace) : "No project folder set"}</span>
+                    <Edit3 size={11} className="dir-edit-glyph"/>
+                  </button>
+                  <div className="composer-hints">
+                    <span><Command size={11}/> Enter to write · Ctrl/⌘ + Enter to run</span>
+                    <span><ShieldCheck size={12}/> Safe sandbox</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2053,6 +2134,12 @@ export default function App() {
                       onClick={() => void openConversation(c.id)}
                     >
                       <b>{c.title || "Untitled Conversation"}</b>
+                      {c.workspace_path && (
+                        <div className="history-item-dir" title={c.workspace_path}>
+                          <FolderGit2 size={11}/>
+                          <span>{c.project_name || c.workspace_path.split(/[\\/]/).pop()}</span>
+                        </div>
+                      )}
                       <div className="history-meta">
                         <span>{c.updated_time}</span>
                         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
@@ -2060,11 +2147,15 @@ export default function App() {
                           <button
                             type="button"
                             className="history-quick-load-btn"
-                            title="Load directly into workspace chat"
+                            title={c.workspace_path ? `Load chat & switch directory to ${c.workspace_path}` : "Load directly into workspace chat"}
                             onClick={async (e) => {
                               e.stopPropagation();
                               try {
                                 const d = await request("/antigravity/history/" + encodeURIComponent(c.id)).then(r => r.json()) as ConvDetail;
+                                if (!d.workspace_path && c.workspace_path) {
+                                  d.workspace_path = c.workspace_path;
+                                  d.project_name = c.project_name;
+                                }
                                 loadIntoWorkspace(d);
                               } catch (err) {
                                 setError(err instanceof Error ? err.message : "Failed to load conversation");
@@ -2090,9 +2181,16 @@ export default function App() {
                       <div>
                         <h3>{selectedConv.title}</h3>
                         <span>ID: {selectedConv.id} · {selectedConv.messages.length} turns · Updated {selectedConv.updated_time}</span>
+                        {selectedConv.workspace_path && (
+                          <div className="history-convo-dir-badge" title={selectedConv.workspace_path}>
+                            <FolderGit2 size={13}/>
+                            <b>Project Directory:</b>
+                            <code>{selectedConv.workspace_path}</code>
+                          </div>
+                        )}
                       </div>
                       <button className="primary-button" onClick={() => loadIntoWorkspace(selectedConv)}>
-                        Load into Workspace ({selectedConv.messages.length} msgs) <ArrowUpRight size={13}/>
+                        Load into Workspace {selectedConv.workspace_path ? " & Directory" : `(${selectedConv.messages.length} msgs)`} <ArrowUpRight size={13}/>
                       </button>
                     </div>
 
@@ -2398,6 +2496,138 @@ export default function App() {
                   <p>Submit your first prompt or ask a web model to start building your history!</p>
                 </div>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Project & Workspace Directory Modal */}
+      {workspaceModalOpen && (
+        <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setWorkspaceModalOpen(false); }}>
+          <section className="settings-modal workspace-modal" role="dialog" aria-modal="true">
+            <div className="settings-modal-head">
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div className="brand-symbol"><FolderGit2 size={20}/></div>
+                <div>
+                  <h2>Project & Workspace Directory</h2>
+                  <p>Choose or enter any folder path on your computer for AI code tasks and tests</p>
+                </div>
+              </div>
+              <button className="icon-button" onClick={() => setWorkspaceModalOpen(false)}><X size={17}/></button>
+            </div>
+
+            <div className="workspace-modal-body">
+              {/* Custom Input Section */}
+              <div className="workspace-input-section">
+                <label className="field-label">
+                  <b>Enter Any Project Directory Path</b>
+                  <span>Type or paste any local path (e.g. C:\Users\hakim\Desktop\my-project or D:\work\...)</span>
+                </label>
+                <div className="workspace-input-row">
+                  <input
+                    type="text"
+                    className="workspace-custom-input"
+                    value={customWorkspaceInput}
+                    onChange={e => setCustomWorkspaceInput(e.target.value)}
+                    placeholder="e.g. C:\Users\hakim\Desktop\my-app or D:\..."
+                    onKeyDown={e => {
+                      if (e.key === "Enter") applyWorkspace(customWorkspaceInput);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => applyWorkspace(customWorkspaceInput)}
+                    disabled={!customWorkspaceInput.trim()}
+                  >
+                    <Check size={14}/> Set Directory
+                  </button>
+                </div>
+              </div>
+
+              {/* Current Active Directory Card */}
+              <div className="workspace-current-card">
+                <div className="current-badge">CURRENTLY ACTIVE DIRECTORY</div>
+                <div className="current-path-row">
+                  <FolderOpen size={20} className="folder-icon"/>
+                  <div className="current-path-info">
+                    <b>{workspace.split(/[\\/]/).filter(Boolean).pop() || "No Folder Set"}</b>
+                    <code>{workspace || "Default backend directory"}</code>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Presets Grid */}
+              <div className="workspace-modal-presets">
+                <div className="presets-title"><Sparkles size={14}/> Quick Preset Locations</div>
+                <div className="presets-grid">
+                  {[
+                    { name: "Desktop", path: "C:\\Users\\hakim\\Desktop", icon: "🖥️", desc: "User Desktop folder" },
+                    { name: "VS Extension", path: "C:\\Users\\hakim\\Desktop\\vs extention", icon: "⚡", desc: "VS Code Extension project" },
+                    { name: "Conductor (D:)", path: "D:\\work\\code-conductor", icon: "📁", desc: "Code Conductor repository" },
+                    { name: "BubbleGame", path: "d:\\Games\\dofus\\BubbleGame", icon: "🎮", desc: "Dofus BubbleGame project" },
+                    { name: "Oriflame Site", path: "d:\\oriflame site", icon: "🌐", desc: "Oriflame web platform" },
+                    { name: "API Test", path: "c:\\Users\\hakim\\Desktop\\api test", icon: "🔬", desc: "API testing folder" },
+                    { name: "Drive C:\\", path: "C:\\", icon: "💽", desc: "Root of C: drive" },
+                    { name: "Drive D:\\", path: "D:\\", icon: "💽", desc: "Root of D: drive" },
+                  ].map(preset => (
+                    <button
+                      key={preset.path}
+                      type="button"
+                      className={"preset-btn " + (workspace.toLowerCase() === preset.path.toLowerCase() ? "active" : "")}
+                      onClick={() => applyWorkspace(preset.path)}
+                    >
+                      <span className="preset-icon">{preset.icon}</span>
+                      <div className="preset-info">
+                        <b>{preset.name}</b>
+                        <code>{preset.path}</code>
+                      </div>
+                      {workspace.toLowerCase() === preset.path.toLowerCase() && <Check size={14} className="active-check"/>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Recent Project Directories */}
+              {recentWorkspaces.length > 0 && (
+                <div className="workspace-recent-section">
+                  <div className="recent-title"><History size={14}/> Recent Project Directories</div>
+                  <div className="recent-list">
+                    {recentWorkspaces.map(recPath => (
+                      <div key={recPath} className={"recent-item " + (workspace.toLowerCase() === recPath.toLowerCase() ? "active" : "")}>
+                        <button
+                          type="button"
+                          className="recent-select-btn"
+                          onClick={() => applyWorkspace(recPath)}
+                        >
+                          <FolderGit2 size={14}/>
+                          <span className="recent-name">{recPath.split(/[\\/]/).filter(Boolean).pop() || recPath}</span>
+                          <code className="recent-path">{recPath}</code>
+                        </button>
+                        <button
+                          type="button"
+                          className="recent-remove-btn"
+                          title="Remove from recents"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRecentWorkspaces(old => {
+                              const next = old.filter(p => p !== recPath);
+                              try { localStorage.setItem("cc_recent_workspaces", JSON.stringify(next)); } catch {}
+                              return next;
+                            });
+                          }}
+                        >
+                          <X size={12}/>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions bottom-actions">
+              <button className="outline-button" onClick={() => setWorkspaceModalOpen(false)}>Done</button>
             </div>
           </section>
         </div>

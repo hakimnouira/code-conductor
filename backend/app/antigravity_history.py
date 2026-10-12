@@ -41,6 +41,8 @@ class ConversationSummary(BaseModel):
     updated_time: str
     message_count: int
     first_prompt: str
+    workspace_path: str | None = None
+    project_name: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -64,6 +66,58 @@ class ConversationDetail(BaseModel):
     message_count: int
     messages: list[ChatMessage]
     artifacts: list[ArtifactItem]
+    workspace_path: str | None = None
+    project_name: str | None = None
+
+
+def extract_workspace_from_transcript(log_file: pathlib.Path) -> tuple[str | None, str | None]:
+    """Extracts project workspace directory and project name from transcript log."""
+    if not log_file.exists():
+        return None, None
+    found_path = None
+    try:
+        with open(log_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # 1. Check user_information mapping: e.g. [URI] -> [CorpusName]
+                m_map = re.search(r'([a-zA-Z]:\\[^\r\n"<>]+?)\s*->', line)
+                if m_map:
+                    cand = m_map.group(1).strip()
+                    if not any(x in cand for x in [".gemini", "AppData", "Temp"]):
+                        found_path = cand
+                        break
+
+                # 2. Check tool_calls args
+                if '"tool_calls"' in line:
+                    try:
+                        rec = json.loads(line)
+                        for tc in rec.get("tool_calls", []):
+                            args = tc.get("args", {})
+                            for k in ["Cwd", "SearchPath", "DirectoryPath", "TargetFile"]:
+                                val = args.get(k)
+                                if isinstance(val, str):
+                                    val = val.strip(' "\'')
+                                    if ":" in val and ("\\" in val or "/" in val):
+                                        p = pathlib.Path(val)
+                                        if k == "TargetFile" or (p.suffix and not p.is_dir()):
+                                            p = p.parent
+                                        clean_str = str(p)
+                                        if not any(x in clean_str for x in [".gemini", "AppData", "Temp"]):
+                                            found_path = clean_str
+                                            break
+                            if found_path:
+                                break
+                    except Exception:
+                        pass
+                if found_path:
+                    break
+    except Exception:
+        pass
+
+    if found_path:
+        norm = str(pathlib.Path(found_path))
+        pname = pathlib.Path(norm).name or norm
+        return norm, pname
+    return None, None
 
 
 @router.get("", response_model=list[ConversationSummary])
@@ -116,6 +170,7 @@ async def list_conversations(_: str = Depends(require_bearer_token)) -> list[Con
                 clean_title = clean_title[:87] + "..."
 
             formatted_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+            ws_path, proj_name = extract_workspace_from_transcript(log_file)
 
             summaries.append(
                 ConversationSummary(
@@ -125,6 +180,8 @@ async def list_conversations(_: str = Depends(require_bearer_token)) -> list[Con
                     updated_time=formatted_time,
                     message_count=msg_count,
                     first_prompt=first_prompt,
+                    workspace_path=ws_path,
+                    project_name=proj_name,
                 )
             )
         except Exception:
@@ -197,6 +254,7 @@ async def get_conversation(
 
     clean_title = " ".join((first_prompt or f"Conversation {conversation_id[:8]}").splitlines()).strip()
     formatted_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+    ws_path, proj_name = extract_workspace_from_transcript(log_file)
 
     return ConversationDetail(
         id=conversation_id,
@@ -206,4 +264,6 @@ async def get_conversation(
         message_count=len(messages),
         messages=messages,
         artifacts=artifacts,
+        workspace_path=ws_path,
+        project_name=proj_name,
     )

@@ -1701,5 +1701,325 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-weight: 700;
 }
 
+/* ========================================================
+   COMPOSER DIRECTORY PILL & HINTS
+   ======================================================== */
+.composer-dir-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  max-width: 60%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-dir-pill:hover {
+  background: var(--hover);
+  border-color: var(--violet);
+  color: var(--violet);
+}
+.dir-edit-glyph {
+  opacity: 0.6;
+  margin-left: 2px;
+}
+.composer-hints {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* ========================================================
+   ANTIGRAVITY CHAT DIRECTORY BADGES
+   ======================================================== */
+.history-item-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  background: var(--input-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  margin-top: 3px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-convo-dir-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: var(--violet-bg);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 6px;
+  color: var(--violet);
+}
+.history-convo-dir-badge code {
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* ========================================================
+   WORKSPACE DIRECTORY MODAL
+   ======================================================== */
+.workspace-modal {
+  max-width: 760px;
+  width: 95%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.workspace-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 4px 0 16px;
+}
+.workspace-input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel-2);
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.workspace-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.workspace-custom-input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.workspace-custom-input:focus {
+  border-color: var(--violet);
+}
+
+/* Active Project Status Card */
+.workspace-current-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08) 0%, rgba(59, 130, 246, 0.04) 100%);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.current-badge {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--violet);
+}
+.current-path-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.current-path-row .folder-icon {
+  color: var(--violet);
+  flex-shrink: 0;
+}
+.current-path-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.current-path-info b {
+  font-size: 14px;
+  color: var(--text);
+}
+.current-path-info code {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* Preset Locations Grid */
+.workspace-modal-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.presets-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.preset-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+  position: relative;
+}
+.preset-btn:hover {
+  background: var(--hover);
+  border-color: var(--violet);
+  transform: translateY(-1px);
+}
+.preset-btn.active {
+  background: var(--violet-bg);
+  border-color: var(--violet);
+}
+.preset-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.preset-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.preset-info b {
+  font-size: 12px;
+  color: var(--text);
+}
+.preset-info code {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.active-check {
+  color: var(--violet);
+  flex-shrink: 0;
+}
+
+/* Recent Workspaces List */
+.workspace-recent-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.recent-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.recent-item {
+  display: flex;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+.recent-item:hover {
+  border-color: var(--violet);
+  background: var(--hover);
+}
+.recent-item.active {
+  border-color: var(--violet);
+  background: var(--violet-bg);
+}
+.recent-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  flex: 1;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.recent-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.recent-path {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  margin-left: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.recent-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.recent-remove-btn:hover {
+  color: var(--red);
+}
+
+
 
 
