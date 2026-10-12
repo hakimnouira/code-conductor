@@ -63,24 +63,72 @@ from app.browser_session import router as browser_session_router
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
+from app.task_store import append_event, events_after, get_saved_tasks, save_task
 
 
 
-# In-memory task tracker
+# Task records are cached in memory for active execution, with durable local state/events.
+class PersistentEventQueue:
+    def __init__(self, record: "TaskRecord"):
+        self.record = record
+        self.queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def put(self, item: str | None) -> None:
+        if isinstance(item, str):
+            timestamp = time.time()
+            try:
+                parsed = json.loads(item)
+                timestamp = float(parsed.get("timestamp", timestamp))
+            except (ValueError, TypeError, AttributeError):
+                pass
+            append_event(self.record.task_id, item, timestamp)
+            self.record._persist()
+        await self.queue.put(item)
+
+
 class TaskRecord:
-    def __init__(self, task_id: str, request: TaskCreateRequest, agent_id: str):
+    def __init__(
+        self,
+        task_id: str,
+        request: TaskCreateRequest,
+        agent_id: str,
+        restored: dict | None = None,
+    ):
         self.task_id = task_id
         self.request = request
         self.agent_id = agent_id
-        self.status = TaskStatus.PENDING
+        self._status = TaskStatus.PENDING
         self.created_at = time.time()
         self.started_at: float | None = None
         self.completed_at: float | None = None
         self.error: str | None = None
-        self.event_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self.event_queue = PersistentEventQueue(self)
+        if restored:
+            try:
+                self._status = TaskStatus(restored.get("status", TaskStatus.PENDING.value))
+            except ValueError:
+                self._status = TaskStatus.FAILED
+            self.created_at = float(restored.get("created_at") or self.created_at)
+            self.started_at = restored.get("started_at")
+            self.completed_at = restored.get("completed_at")
+            self.error = restored.get("error")
+        self._persist()
+
+    @property
+    def status(self) -> TaskStatus:
+        return self._status
+
+    @status.setter
+    def status(self, value: TaskStatus) -> None:
+        self._status = value
+        if hasattr(self, "event_queue"):
+            self._persist()
+
+    def _persist(self) -> None:
+        save_task(self.snapshot(), self.request.model_dump_json())
 
     def snapshot(self) -> dict:
-        """Return a stable status payload without exposing request secrets."""
+        """Return a stable status payload without exposing provider secrets."""
         return {
             "task_id": self.task_id,
             "status": self.status.value,
@@ -93,18 +141,63 @@ class TaskRecord:
             "error": self.error,
         }
 
+
 _tasks: dict[str, TaskRecord] = {}
 _start_time = time.time()
 
+
+async def _restore_task_records() -> None:
+    """Restore history and mark interrupted tasks instead of pretending they resumed."""
+    for item in get_saved_tasks(limit=500):
+        snapshot = item["snapshot"]
+        task_id = snapshot.get("task_id")
+        if not task_id or task_id in _tasks:
+            continue
+        try:
+            request = TaskCreateRequest.model_validate(item["request"])
+            record = TaskRecord(
+                task_id=task_id,
+                request=request,
+                agent_id=str(snapshot.get("agent_id") or request.agent_id),
+                restored=snapshot,
+            )
+        except Exception:
+            continue
+        _tasks[task_id] = record
+        if record.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+            record.error = "Backend restarted while this task was active; execution was not resumed."
+            record.status = TaskStatus.FAILED
+            record.completed_at = time.time()
+            await record.event_queue.put(json.dumps({
+                "task_id": task_id,
+                "event_type": "error",
+                "text": record.error,
+                "timestamp": record.completed_at,
+                "data": {"reason": "backend_restart", "recoverable": True},
+            }))
+            record._persist()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    await _restore_task_records()
     yield
-    # Shutdown: cancel all active tasks
+    # Shutdown marks active work as interrupted; it is not silently resumed on restart.
     for task in _tasks.values():
         if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             task.status = TaskStatus.CANCELLED
+            task.error = "Backend shut down while this task was active."
+            task.completed_at = time.time()
+            await task.event_queue.put(json.dumps({
+                "task_id": task.task_id,
+                "event_type": "cancelled",
+                "text": task.error,
+                "timestamp": task.completed_at,
+                "data": {"reason": "backend_shutdown"},
+            }))
+            task._persist()
             await task.event_queue.put(None)
+
 
 app = FastAPI(
     title="Unified AI Coding Hub Backend",
@@ -409,8 +502,18 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
         ):
             record.completed_at = time.time()
+        record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
+
+@app.get("/tasks")
+async def list_tasks(limit: int = Query(default=100, ge=1, le=500), _: str = Depends(require_bearer_token)):
+    """List persisted task snapshots, newest first."""
+    # Restore lazily for ASGI test clients that do not run lifespan hooks.
+    if not _tasks:
+        await _restore_task_records()
+    return [item.snapshot() for item in sorted(_tasks.values(), key=lambda t: t.created_at, reverse=True)[:limit]]
+
 
 @app.get("/tasks/{task_id}")
 async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
@@ -427,6 +530,8 @@ async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
 @app.get("/tasks/{task_id}/events")
 async def stream_task_events(
     task_id: str,
+    after: int = Query(default=0, ge=0, description="Replay events after this event ID"),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     _: str = Depends(require_bearer_token),
 ):
     record = _tasks.get(task_id)
@@ -436,14 +541,35 @@ async def stream_task_events(
             detail=f"Task '{task_id}' not found.",
         )
 
+    cursor = after
+    if last_event_id:
+        try:
+            cursor = max(cursor, int(last_event_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer.")
+
     async def event_generator() -> AsyncIterator[dict]:
+        terminal_idle_polls = 0
         while True:
-            item = await record.event_queue.get()
-            if item is None:
-                # End of stream event
-                yield {"event": "done", "data": "[DONE]"}
-                break
-            yield {"event": "message", "data": item}
+            batch = events_after(task_id, cursor, limit=200)
+            for item in batch:
+                cursor = int(item["event_id"])
+                yield {"id": str(cursor), "event": "message", "data": item["payload"]}
+            if batch:
+                terminal_idle_polls = 0
+                continue
+
+            current = _tasks.get(task_id)
+            terminal = current is not None and current.status in (
+                TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
+            )
+            if terminal:
+                # Allow a final terminal/error event to be committed after its status update.
+                terminal_idle_polls += 1
+                if terminal_idle_polls >= 2:
+                    yield {"event": "done", "data": "[DONE]"}
+                    break
+            await asyncio.sleep(0.2)
 
     return EventSourceResponse(event_generator())
 
