@@ -60,8 +60,17 @@ class AntigravityAdapter(BaseAgentAdapter):
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+            combined = (stderr or stdout or b"").decode("utf-8", errors="replace")
             if proc.returncode != 0:
-                detail = (stderr or stdout).decode("utf-8", errors="replace")[:220]
+                # Also try --help for agentapi compatibility
+                help_proc = await asyncio.create_subprocess_exec(
+                    executable, "--help",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                h_out, _ = await asyncio.wait_for(help_proc.communicate(), timeout=5)
+                if help_proc.returncode == 0:
+                    return AvailabilityState.READY, f"Google Antigravity CLI ready at '{executable}'."
+                detail = combined[:220]
                 return AvailabilityState.ERROR, f"agy CLI probe failed: {detail}"
             version = (stdout or stderr).decode("utf-8", errors="replace").strip()
             return AvailabilityState.READY, f"Official agy CLI found{': ' + version if version else ''}. Sign-in is checked when a task runs."
