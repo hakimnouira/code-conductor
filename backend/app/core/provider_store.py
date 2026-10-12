@@ -44,23 +44,37 @@ def validate_base_url(value: str) -> str:
 
 
 def list_providers() -> list[dict]:
-    return [{**item, "configured": True, "key_configured": _has_key(item["id"])} for item in _load()]
+    return [
+        {**item, "configured": True, "key_configured": bool(get_keys(item["id"])), "key_count": len(get_keys(item["id"]))}
+        for item in _load()
+    ]
+
+
+def get_keys(provider_id: str) -> list[str]:
+    try:
+        import keyring
+        keys = []
+        for index in range(20):
+            value = keyring.get_password(SERVICE_NAME, f"{provider_id}:{index}")
+            if value:
+                keys.append(value)
+        # Read legacy single-key entries written by an earlier local version.
+        if not keys:
+            legacy = keyring.get_password(SERVICE_NAME, provider_id)
+            if legacy:
+                keys.append(legacy)
+        return keys
+    except Exception:
+        return []
 
 
 def _has_key(provider_id: str) -> bool:
-    try:
-        import keyring
-        return bool(keyring.get_password(SERVICE_NAME, provider_id))
-    except Exception:
-        return False
+    return bool(get_keys(provider_id))
 
 
 def get_key(provider_id: str) -> str | None:
-    try:
-        import keyring
-        return keyring.get_password(SERVICE_NAME, provider_id)
-    except Exception:
-        return None
+    keys = get_keys(provider_id)
+    return keys[0] if keys else None
 
 
 def upsert_provider(*, provider_id: str, name: str, base_url: str, model: str, api_key: str | None) -> dict:
@@ -79,10 +93,22 @@ def upsert_provider(*, provider_id: str, name: str, base_url: str, model: str, a
         backend_name = type(backend).__name__.lower()
         if getattr(backend, "priority", 0) <= 0 or "fail" in backend_name or "plaintext" in backend_name:
             raise RuntimeError("No secure OS credential backend is available. Configure Windows Credential Manager, macOS Keychain, or a Secret Service keyring.")
-        if api_key and api_key.strip():
-            keyring.set_password(SERVICE_NAME, provider_id, api_key.strip())
-        elif not keyring.get_password(SERVICE_NAME, provider_id):
-            raise ValueError("Provide an API key, or an existing key must already be stored for this provider.")
+        supplied_keys = [line.strip() for line in (api_key or "").splitlines() if line.strip()]
+        if supplied_keys:
+            for index, secret in enumerate(supplied_keys):
+                keyring.set_password(SERVICE_NAME, f"{provider_id}:{index}", secret)
+            # Remove old extra slots and any legacy single-key entry.
+            for index in range(len(supplied_keys), 20):
+                try:
+                    keyring.delete_password(SERVICE_NAME, f"{provider_id}:{index}")
+                except Exception:
+                    pass
+            try:
+                keyring.delete_password(SERVICE_NAME, provider_id)
+            except Exception:
+                pass
+        elif not get_keys(provider_id):
+            raise ValueError("Provide one API key per line, or an existing key must already be stored for this provider.")
     except ValueError:
         raise
     except Exception as exc:
@@ -93,7 +119,7 @@ def upsert_provider(*, provider_id: str, name: str, base_url: str, model: str, a
     items = [existing for existing in items if existing.get("id") != provider_id]
     items.append(item)
     _save(items)
-    return {**item, "configured": True, "key_configured": True}
+    return {**item, "configured": True, "key_configured": True, "key_count": len(supplied_keys) if supplied_keys else len(get_keys(provider_id))}
 
 
 def delete_provider(provider_id: str) -> bool:
@@ -104,7 +130,15 @@ def delete_provider(provider_id: str) -> bool:
     _save(remaining)
     try:
         import keyring
-        keyring.delete_password(SERVICE_NAME, provider_id)
+        for index in range(20):
+            try:
+                keyring.delete_password(SERVICE_NAME, f"{provider_id}:{index}")
+            except Exception:
+                pass
+        try:
+            keyring.delete_password(SERVICE_NAME, provider_id)
+        except Exception:
+            pass
     except Exception:
         pass
     return True
