@@ -296,3 +296,35 @@ def test_test_runner_discovers_npm_test_script(tmp_path: Path):
 def test_test_runner_skips_unknown_project(tmp_path: Path):
     (tmp_path / "README.md").write_text("No test configuration", encoding="utf-8")
     assert SafeTestRunner(tmp_path).discover_runner() is None
+
+
+
+def test_test_runner_does_not_assume_every_pyproject_uses_pytest(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "sample-project"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    assert SafeTestRunner(tmp_path).discover_runner() is None
+
+
+def test_test_runner_detects_explicit_pytest_config_in_pyproject(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        encoding="utf-8",
+    )
+    assert SafeTestRunner(tmp_path).discover_runner() == "pytest"
+
+
+def test_dashboard_cors_allows_project_rule_mutations(client: TestClient):
+    response = client.options(
+        "/workspace/rules",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    allowed_methods = response.headers.get("access-control-allow-methods", "")
+    assert "PUT" in allowed_methods
+    assert "DELETE" in allowed_methods
