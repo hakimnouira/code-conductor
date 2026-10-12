@@ -1,32 +1,28 @@
 import asyncio
+import json
 import os
+import re
+import shutil
 import subprocess
-import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.adapters.base import BaseAgentAdapter
-from app.models.schemas import (
-    AgentCapabilities,
-    AgentEvent,
-    AvailabilityState,
-    EventType,
-    TaskCreateRequest,
-)
+from app.models.schemas import AgentCapabilities, AgentEvent, AvailabilityState, EventType, TaskCreateRequest
 
 
 class AntigravityAdapter(BaseAgentAdapter):
-    """
-    Google Antigravity IDE agent adapter connecting strictly to the local
-    Antigravity IDE agentapi process. Only reports READY if a real session
-    is active; never disguises cloud API keys as Antigravity responses.
+    """Adapter for Google's documented, official Antigravity CLI (agy).
+
+    The undocumented IDE agentapi/RPC integration is deliberately not used.
+    Authentication stays inside the official CLI and its own credential store.
     """
 
-    def __init__(self, agentapi_executable: str | None = None):
-        self._custom_executable = agentapi_executable
-        self._active_cancels: dict[str, asyncio.Event] = {}
-        self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+    def __init__(self, executable: str | None = None):
+        self._configured_executable = executable or os.environ.get("ANTIGRAVITY_CLI")
+        self._active: dict[str, asyncio.subprocess.Process] = {}
+        self._cancel: dict[str, asyncio.Event] = {}
 
     @property
     def agent_id(self) -> str:
@@ -34,221 +30,194 @@ class AntigravityAdapter(BaseAgentAdapter):
 
     @property
     def name(self) -> str:
-        return "Google Antigravity IDE"
+        return "Google Antigravity CLI"
 
     @property
     def description(self) -> str:
-        return (
-            "Direct interface to local Google Antigravity IDE agent session "
-            "(requires running Antigravity IDE with an active project)."
-        )
+        return "Official agy CLI using your own local Google sign-in. Supports headless task execution."
 
-    def find_agentapi_bat(self) -> str | None:
-        if self._custom_executable and os.path.exists(self._custom_executable):
-            return self._custom_executable
-
-        user_profile = os.environ.get("USERPROFILE", "")
-        candidates = [
-            os.path.join(user_profile, ".gemini", "antigravity", "bin", "agentapi.bat"),
-            os.path.join(user_profile, ".gemini", "antigravity-ide", "bin", "agentapi.bat"),
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                return c
-        return None
-
-    def _probe_connection(self, agentapi_path: str) -> tuple[bool, str]:
-        """Probes whether agentapi is connected to an active IDE project session."""
-        try:
-            cmd_help = ["cmd.exe", "/c", agentapi_path, "--help"] if sys.platform == "win32" else [agentapi_path, "--help"]
-            proc = subprocess.run(
-                cmd_help,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if proc.returncode != 0:
-                return False, f"agentapi CLI returned code {proc.returncode}."
-
-            cmd_probe = (
-                ["cmd.exe", "/c", agentapi_path, "get-conversation-metadata", "__probe__"]
-                if sys.platform == "win32"
-                else [agentapi_path, "get-conversation-metadata", "__probe__"]
-            )
-            test_proc = subprocess.run(
-                cmd_probe,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            out = (test_proc.stdout + test_proc.stderr).lower()
-            if "project_id is required" in out:
-                return False, "IDE project environment not initialized (open workspace in Antigravity IDE)."
-            if "unavailable" in out or "connection refused" in out:
-                return False, "Antigravity IDE local daemon is not reachable."
-            if "trajectory not found" in out:
-                return True, "Antigravity IDE local RPC daemon connected and ready."
-
-            if test_proc.returncode == 0:
-                return True, "Connected to active Antigravity IDE session."
-
-            return False, f"Antigravity session verification returned: {out[:120].strip()}"
-        except Exception as e:
-            return False, f"Agent probe error: {str(e)}"
+    def find_cli(self) -> str | None:
+        if self._configured_executable:
+            configured = Path(self._configured_executable).expanduser()
+            if configured.exists():
+                return str(configured)
+            located = shutil.which(self._configured_executable)
+            if located:
+                return located
+        return shutil.which("agy") or shutil.which("agy.exe")
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
-        agentapi = self.find_agentapi_bat()
-        if not agentapi:
-            return (
-                AvailabilityState.DISABLED,
-                "Google Antigravity agentapi CLI not found in ~/.gemini/antigravity/bin. Launch Antigravity IDE to install.",
+        executable = self.find_cli()
+        if not executable:
+            return AvailabilityState.MISSING_CLI, (
+                "Official Antigravity CLI 'agy' was not found on PATH. Install Google's CLI, "
+                "sign in with an interactive agy session, then restart Code Conductor. "
+                "Set ANTIGRAVITY_CLI to its full path if it is not on PATH."
             )
-
-        is_connected, msg = await asyncio.to_thread(self._probe_connection, agentapi)
-        if is_connected:
-            return (
-                AvailabilityState.READY,
-                "Google Antigravity IDE agent session is active.",
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                executable, "--version",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-
-        return (
-            AvailabilityState.DISABLED,
-            f"Google Antigravity IDE session unavailable: {msg}",
-        )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode != 0:
+                detail = (stderr or stdout).decode("utf-8", errors="replace")[:220]
+                return AvailabilityState.ERROR, f"agy CLI probe failed: {detail}"
+            version = (stdout or stderr).decode("utf-8", errors="replace").strip()
+            return AvailabilityState.READY, f"Official agy CLI found{': ' + version if version else ''}. Sign-in is checked when a task runs."
+        except asyncio.TimeoutError:
+            return AvailabilityState.ERROR, "agy --version timed out."
+        except Exception as exc:
+            return AvailabilityState.ERROR, f"Could not start agy: {exc}"
 
     async def get_capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(
             supports_streaming=True,
             supports_code_edits=True,
-            supports_terminal_execution=False,
+            supports_terminal_execution=True,
             supports_subagents=True,
-            supported_models=["antigravity-default", "gemini-2.5-pro", "gemini-2.5-flash"],
+            supported_models=["Use agy models to list models supported by your installed CLI"],
         )
 
     async def stream_task(self, task_id: str, request: TaskCreateRequest) -> AsyncIterator[AgentEvent]:
-        state, diag = await self.check_availability()
-        if state != AvailabilityState.READY:
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.ERROR,
-                text=f"Antigravity unavailable: {diag}",
-                timestamp=time.time(),
-            )
+        executable = self.find_cli()
+        if not executable:
+            yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text="Official Antigravity CLI 'agy' not found.", timestamp=time.time())
             return
 
-        agentapi = self.find_agentapi_bat()
-        if not agentapi:
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.ERROR,
-                text="Antigravity agentapi CLI path could not be resolved.",
-                timestamp=time.time(),
-            )
+        workspace = Path(request.workspace_path or os.getcwd()).expanduser().resolve()
+        if not workspace.is_dir():
+            yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text=f"Workspace is not a directory: {workspace}", timestamp=time.time())
             return
+
+        mode = getattr(request, "permission_mode", "safe")
+        confirmed = bool(getattr(request, "god_mode_confirmed", False))
+        if mode == "god" and not confirmed:
+            yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text="God Mode was selected but its explicit confirmation is missing. Re-submit after confirming the high-risk mode.", timestamp=time.time())
+            return
+
+        # Send the prompt over stdin (not the process command line). This also supports
+        # Windows npm .cmd shims without interpolating user prompt text into cmd.exe.
+        args = ["--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "20m"]
+        if request.model and request.model not in {"auto", "antigravity-default"}:
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request.model):
+                yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text="Invalid Antigravity model slug.", timestamp=time.time())
+                return
+            args.extend(["--model", request.model])
+        if mode == "safe":
+            args.append("--sandbox")
+        elif mode == "god" and confirmed:
+            # Explicitly requested high-risk behavior; never enabled by default.
+            args.append("--dangerously-skip-permissions")
+
+        if executable.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline([executable, *args])]
+        else:
+            cmd = [executable, *args]
 
         cancel_event = asyncio.Event()
-        self._active_cancels[task_id] = cancel_event
-
+        self._cancel[task_id] = cancel_event
         yield AgentEvent(
-            task_id=task_id,
-            event_type=EventType.STARTED,
-            text="Google Antigravity task started in local IDE session.",
+            task_id=task_id, event_type=EventType.STARTED,
+            text=f"Started official agy CLI in {workspace} (permission mode: {mode}).",
             timestamp=time.time(),
+            data={"permission_mode": mode, "workspace": str(workspace)},
         )
-
-        ws_path = Path(request.workspace_path or os.getcwd()).resolve()
-
-        raw_cmd = [agentapi, "new-conversation"]
-        if request.model and request.model in ["flash_lite", "flash", "pro"]:
-            raw_cmd.append(f"--model={request.model}")
-        raw_cmd.append(request.prompt)
-
-        cmd = ["cmd.exe", "/c"] + raw_cmd if sys.platform == "win32" else raw_cmd
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(ws_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                *cmd, cwd=str(workspace), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            self._active_processes[task_id] = proc
-
-            async def cancel_watcher():
-                await cancel_event.wait()
+            self._active[task_id] = proc
+            assert proc.stdout is not None
+            assert proc.stdin is not None
+            proc.stdin.write((json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\n").encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+            stderr_task = asyncio.create_task(proc.stderr.read()) if proc.stderr else None
+            final_status: str | None = None
+            final_error = ""
+            last_text = ""
+            while True:
+                if cancel_event.is_set():
+                    await self._terminate(proc)
+                    yield AgentEvent(task_id=task_id, event_type=EventType.CANCELLED, text="Antigravity CLI task cancelled.", timestamp=time.time())
+                    return
                 try:
-                    proc.kill()
-                except Exception:
-                    pass
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    if proc.returncode is not None:
+                        break
+                    continue
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if not decoded:
+                    continue
+                try:
+                    event = json.loads(decoded)
+                except json.JSONDecodeError:
+                    yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=decoded[:1000], timestamp=time.time())
+                    continue
 
-            watcher_task = asyncio.create_task(cancel_watcher())
-            try:
-                stdout_bytes, stderr_bytes = await proc.communicate()
-            finally:
-                watcher_task.cancel()
+                kind = event.get("event")
+                if kind == "step_update":
+                    step = event.get("step_update") or {}
+                    delta = step.get("text_delta")
+                    if delta:
+                        last_text += delta
+                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=delta, timestamp=time.time())
+                    tool = step.get("tool_name")
+                    if step.get("step_type") == "tool" and tool:
+                        yield AgentEvent(task_id=task_id, event_type=EventType.TOOL_CALL, text=f"Antigravity tool: {tool}", timestamp=time.time(), data={"tool": tool})
+                elif kind == "result":
+                    result = event.get("result") or {}
+                    final_status = str(result.get("status", ""))
+                    final_error = str(result.get("error", ""))
+                    response = result.get("response")
+                    if response and not last_text:
+                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(response), timestamp=time.time())
+                elif kind == "init":
+                    init = event.get("init") or {}
+                    yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=f"Antigravity CLI permission mode: {init.get('permission_mode', 'configured by CLI settings')}", timestamp=time.time())
 
-            combined_out = stdout_bytes.decode("utf-8", errors="replace")
-            combined_err = stderr_bytes.decode("utf-8", errors="replace")
-
-            if cancel_event.is_set():
-                yield AgentEvent(
-                    task_id=task_id,
-                    event_type=EventType.CANCELLED,
-                    text="Antigravity execution cancelled.",
-                    timestamp=time.time(),
-                )
-                return
-
-            if proc.returncode != 0 or "failed to start conversation" in combined_out.lower() or "project_id is required" in combined_out.lower():
-                # If running outside of active IDE project binding, route seamlessly via Google Gemini / fast AI layer
-                yield AgentEvent(
-                    task_id=task_id,
-                    event_type=EventType.TOKEN,
-                    text="[Google Antigravity IDE: Executing via Gemini AI Layer]\n\n",
-                    timestamp=time.time(),
-                )
-                from app.adapters.multimodel import MultiModelAdapter
-                fallback_adapter = MultiModelAdapter("auto")
-                async for fb_event in fallback_adapter.stream_task(task_id, request):
-                    if fb_event.event_type != EventType.STARTED:
-                        yield fb_event
-                return
-
-            # Successfully received output from native Antigravity session
-            for line in combined_out.splitlines(keepends=True):
-                yield AgentEvent(
-                    task_id=task_id,
-                    event_type=EventType.TOKEN,
-                    text=line,
-                    timestamp=time.time(),
-                )
-
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.COMPLETED,
-                text="Antigravity task completed successfully.",
-                timestamp=time.time(),
-            )
-        except Exception as e:
-            yield AgentEvent(
-                task_id=task_id,
-                event_type=EventType.ERROR,
-                text=f"Failed to execute Antigravity session: {str(e)}",
-                timestamp=time.time(),
-            )
+            return_code = await proc.wait()
+            stderr_bytes = await stderr_task if stderr_task else b""
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            if stderr_text and any(word in stderr_text.lower() for word in ("permission", "approval", "soft-denied", "ask to allow")):
+                yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=("Antigravity permission notice: " + stderr_text[:1200]), timestamp=time.time())
+            if final_status == "SUCCESS" and return_code == 0:
+                yield AgentEvent(task_id=task_id, event_type=EventType.COMPLETED, text="Antigravity task completed successfully.", timestamp=time.time(), data={"status": final_status})
+            else:
+                detail = final_error or stderr_text or f"agy exited with code {return_code} (status: {final_status or 'unknown'})."
+                yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text=f"Antigravity did not complete successfully: {detail[:1800]}", timestamp=time.time(), data={"status": final_status, "exit_code": return_code})
+        except Exception as exc:
+            yield AgentEvent(task_id=task_id, event_type=EventType.ERROR, text=f"Failed to execute official agy CLI: {type(exc).__name__}: {exc}", timestamp=time.time())
         finally:
-            self._active_processes.pop(task_id, None)
-            self._active_cancels.pop(task_id, None)
+            self._active.pop(task_id, None)
+            self._cancel.pop(task_id, None)
 
-    async def cancel_task(self, task_id: str) -> bool:
-        event = self._active_cancels.get(task_id)
-        if event:
-            event.set()
-        proc = self._active_processes.get(task_id)
-        if proc:
+    async def _terminate(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            if os.name == "nt" and proc.pid:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=5, check=False)
+            else:
+                proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except Exception:
             try:
                 proc.kill()
-            except Exception:
+            except ProcessLookupError:
                 pass
-            return True
-        return event is not None
+
+    async def cancel_task(self, task_id: str) -> bool:
+        event = self._cancel.get(task_id)
+        proc = self._active.get(task_id)
+        if not event or not proc:
+            return False
+        event.set()
+        await self._terminate(proc)
+        return True
