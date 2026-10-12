@@ -6,6 +6,7 @@ navigate, evaluate scripts, and capture screenshots.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -39,6 +40,12 @@ class BrowserNavigatePayload(BaseModel):
 class BrowserEvalPayload(BaseModel):
     expression: str = Field(..., description="JavaScript expression to evaluate in the tab")
     tab_id: str | None = Field(default=None, description="Optional target tab ID")
+
+
+class BrowserVerifyPayload(BaseModel):
+    url: str = Field(..., description="HTTP(S) URL to open and smoke-check")
+    tab_id: str | None = None
+    wait_seconds: int = Field(default=2, ge=1, le=10)
 
 
 def get_current_endpoint() -> str:
@@ -340,6 +347,82 @@ async def capture_browser_screenshot(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Screenshot capture failed: {exc}",
         )
+
+
+@router.post("/verify")
+async def verify_browser_page(
+    payload: BrowserVerifyPayload,
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Navigate to a local/dev URL and collect a bounded page smoke-check plus screenshot."""
+    parsed = urllib.parse.urlparse(payload.url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="Verification URL must be a valid HTTP(S) URL without embedded credentials.")
+
+    import websockets
+
+    tabs = await _fetch_cdp_json("/json/list")
+    target_tab = next((t for t in tabs if payload.tab_id and t.get("id") == payload.tab_id), None)
+    if not target_tab:
+        target_tab = next((t for t in tabs if t.get("type") == "page"), None)
+    if not target_tab or not target_tab.get("webSocketDebuggerUrl"):
+        raise HTTPException(status_code=404, detail="No active page tab found. Connect or launch a browser first.")
+
+    ws_url = target_tab["webSocketDebuggerUrl"]
+
+    async def command(command_id: int, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        async with websockets.connect(ws_url, close_timeout=3.0) as ws:
+            await ws.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                message = json.loads(raw)
+                if message.get("id") == command_id:
+                    if "error" in message:
+                        raise RuntimeError(message["error"].get("message", "CDP command failed"))
+                    return message.get("result", {})
+
+    try:
+        await command(101, "Page.enable")
+        await command(102, "Page.navigate", {"url": payload.url})
+        await asyncio.sleep(payload.wait_seconds)
+        evaluated = await command(103, "Runtime.evaluate", {
+            "expression": """(() => ({
+              url: location.href,
+              title: document.title || '',
+              ready_state: document.readyState,
+              body_text: (document.body?.innerText || '').slice(0, 6000),
+              body_text_length: (document.body?.innerText || '').length,
+              links: document.querySelectorAll('a[href]').length,
+              buttons: document.querySelectorAll('button, [role=button]').length,
+              inputs: document.querySelectorAll('input, textarea, select').length,
+              visible_error_markers: ['Application error', 'Internal Server Error', 'This site can’t be reached', 'This site can't be reached'].filter(marker => (document.body?.innerText || '').includes(marker))
+            }))()""",
+            "returnByValue": True,
+            "awaitPromise": True,
+        })
+        page = evaluated.get("result", {}).get("value", {})
+        screenshot = await command(104, "Page.captureScreenshot", {"format": "png", "captureBeyondViewport": False})
+        image_data = screenshot.get("data", "")
+        checks = {
+            "document_loaded": page.get("ready_state") in ("interactive", "complete"),
+            "has_title": bool(page.get("title", "").strip()),
+            "has_body_content": page.get("body_text_length", 0) > 0,
+            "no_common_error_page": not page.get("visible_error_markers"),
+        }
+        return {
+            "success": all(checks.values()),
+            "url": page.get("url", payload.url),
+            "title": page.get("title", ""),
+            "ready_state": page.get("ready_state", "unknown"),
+            "body_text_excerpt": page.get("body_text", ""),
+            "counts": {key: page.get(key, 0) for key in ("links", "buttons", "inputs")},
+            "error_markers": page.get("visible_error_markers", []),
+            "checks": checks,
+            "screenshot": f"data:image/png;base64,{image_data}" if image_data else None,
+            "note": "Smoke-check only: this does not replace application-specific assertions or inspect browser console/network errors.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Browser verification failed: {str(exc)[:300]}")
 
 
 @router.post("/launch")
