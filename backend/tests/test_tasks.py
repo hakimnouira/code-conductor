@@ -3,7 +3,7 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
-from app.main import TaskRecord, _browser_verification_gate, _verify_browser_for_task, app
+from app.main import TaskRecord, _browser_verification_gate, _verify_browser_for_task, _tasks, app
 from app.models.schemas import TaskCreateRequest
 
 pytestmark = pytest.mark.mocked_integration
@@ -216,3 +216,31 @@ async def test_browser_verification_gate_retries_then_fails(monkeypatch, tmp_pat
     assert action == "failed"
     assert attempts == 2
     assert record.status.value == "failed"
+
+
+
+@pytest.mark.asyncio
+async def test_browser_screenshot_artifact_endpoint_is_authenticated_and_workspace_scoped(auth_headers, tmp_path):
+    from pathlib import Path
+
+    task_id = "task-artifact-route-test"
+    record = TaskRecord(
+        task_id,
+        TaskCreateRequest(prompt="artifact route test", workspace_path=str(tmp_path), github_research=False),
+        "mock",
+    )
+    _tasks[task_id] = record
+    artifact = Path(tmp_path) / ".code-conductor" / "artifacts" / task_id / "browser-verification.png"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"png-fixture")
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/tasks/{task_id}/artifacts/browser-verification.png",
+                headers=auth_headers,
+            )
+            assert response.status_code == 200
+            assert response.content == b"png-fixture"
+            assert response.headers["content-type"].startswith("image/png")
+    finally:
+        _tasks.pop(task_id, None)
