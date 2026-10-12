@@ -52,6 +52,8 @@ class TaskCreateRequest(BaseModel):
     permission_mode: Literal["safe", "balanced", "god"] = "safe"
     god_mode_confirmed: bool = False
     github_research: bool = True
+    auto_verify: bool = False
+    verification_max_attempts: int = Field(default=2, ge=1, le=3)
 
 class TaskResponse(BaseModel):
     task_id: str
