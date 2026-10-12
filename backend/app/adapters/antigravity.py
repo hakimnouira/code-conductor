@@ -76,7 +76,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             supports_code_edits=True,
             supports_terminal_execution=True,
             supports_subagents=True,
-            supported_models=["Use agy models to list models supported by your installed CLI"],
+            supported_models=["antigravity-default", "gemini-2.5-pro", "gemini-2.5-flash"],
         )
 
     async def stream_task(self, task_id: str, request: TaskCreateRequest) -> AsyncIterator[AgentEvent]:
@@ -117,13 +117,6 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         cancel_event = asyncio.Event()
         self._cancel[task_id] = cancel_event
-        yield AgentEvent(
-            task_id=task_id, event_type=EventType.STARTED,
-            text=f"Started official agy CLI in {workspace} (permission mode: {mode}).",
-            timestamp=time.time(),
-            data={"permission_mode": mode, "workspace": str(workspace)},
-        )
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=str(workspace), stdin=asyncio.subprocess.PIPE,
@@ -136,6 +129,12 @@ class AntigravityAdapter(BaseAgentAdapter):
             await proc.stdin.drain()
             proc.stdin.close()
             stderr_task = asyncio.create_task(proc.stderr.read()) if proc.stderr else None
+            yield AgentEvent(
+                task_id=task_id, event_type=EventType.STARTED,
+                text=f"Started official agy CLI in {workspace} (permission mode: {mode}).",
+                timestamp=time.time(),
+                data={"permission_mode": mode, "workspace": str(workspace)},
+            )
             final_status: str | None = None
             final_error = ""
             last_text = ""
