@@ -64,3 +64,34 @@ async def test_task_failure_handling(auth_headers):
         )
         assert res_bad_agent.status_code == 404
 
+
+@pytest.mark.asyncio
+async def test_task_status_endpoint_reports_terminal_state(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.post(
+            "/tasks",
+            json={"prompt": "Check status endpoint", "agent_id": "mock", "github_research": False},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        task_id = res.json()["task_id"]
+
+        # Consume the stream so the mock adapter finishes before checking state.
+        stream = await client.get(f"/tasks/{task_id}/events", headers=auth_headers)
+        assert "[DONE]" in stream.text
+
+        status_res = await client.get(f"/tasks/{task_id}", headers=auth_headers)
+        assert status_res.status_code == 200
+        payload = status_res.json()
+        assert payload["task_id"] == task_id
+        assert payload["status"] == "completed"
+        assert payload["started_at"] is not None
+        assert payload["completed_at"] is not None
+        assert payload["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_task_status_endpoint_rejects_unknown_task(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/tasks/missing-task", headers=auth_headers)
+        assert response.status_code == 404
