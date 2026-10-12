@@ -48,6 +48,7 @@ class MultiModelAdapter(BaseAgentAdapter):
             "apmix": "APMix (Claude Sonnet 4.6 / GPT-6 Luna Free)",
             "codecraft": "CodeCraft (Gemma 2 2B)",
             "experientiallabs": "Experiential Labs (AION 3.0 Mini)",
+            "tokenharbor": "TokenHarbor (Claude Haiku 5.5 Free)",
         }
         return names.get(self.provider, f"Multi-Model ({self.provider})")
 
@@ -55,7 +56,7 @@ class MultiModelAdapter(BaseAgentAdapter):
     def description(self) -> str:
         return (
             "Multi-provider cloud AI hub using your rotating keys for Groq, APMix, "
-            "CodeCraft, and Experiential Labs with automatic failover."
+            "CodeCraft, Experiential Labs, and TokenHarbor with automatic failover."
         )
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
@@ -92,14 +93,19 @@ class MultiModelAdapter(BaseAgentAdapter):
                 return AvailabilityState.UNAUTHENTICATED, "No Experiential Labs keys configured."
             return AvailabilityState.READY, f"Experiential Labs ready with {len(xpl_keys)} keys."
 
+        if self.provider == "tokenharbor":
+            if not thk_keys:
+                return AvailabilityState.UNAUTHENTICATED, "No TokenHarbor API keys configured."
+            return AvailabilityState.READY, f"TokenHarbor engine ready with {len(thk_keys)} keys."
+
         # For "auto" / "multimodel"
         total_keys = len(groq_keys) + len(codecraft_keys) + len(apmix_keys) + len(xpl_keys) + len(thk_keys)
         if total_keys == 0:
-            return AvailabilityState.UNAUTHENTICATED, "No active API keys found in api_keys.json."
+            return AvailabilityState.UNAUTHENTICATED, "No active API keys found."
 
         return (
             AvailabilityState.READY,
-            f"Multi-Model Router ready with {total_keys} total keys across Groq, CodeCraft, and APMix.",
+            f"Multi-Model Router ready with {total_keys} total keys across Groq, CodeCraft, APMix, Experiential Labs, and TokenHarbor.",
         )
 
     async def get_capabilities(self) -> AgentCapabilities:
@@ -115,6 +121,7 @@ class MultiModelAdapter(BaseAgentAdapter):
                 "gpt-6-luna-free",
                 "gemma-2-2b",
                 "aion-3.0-mini",
+                "claude-haiku-5.5:free",
             ],
         )
 
@@ -193,16 +200,16 @@ class MultiModelAdapter(BaseAgentAdapter):
 
     def _query_with_failover(self, config: dict, prompt: str, system: str) -> str:
         """Executes query with rotating keys and fallback between providers."""
+        all_providers = ["groq", "tokenharbor", "codecraft", "apmix", "experientiallabs"]
         providers_to_try = []
-        if self.provider in ("groq", "codecraft", "apmix", "experientiallabs"):
+        if self.provider in all_providers:
             providers_to_try.append(self.provider)
-            # Add other providers as fallback
-            for p in ["groq", "codecraft", "apmix", "experientiallabs"]:
+            for p in all_providers:
                 if p not in providers_to_try:
                     providers_to_try.append(p)
         else:
-            # Default auto sequence: Groq (ultra fast 8ms) -> CodeCraft -> APMix -> ExperientialLabs
-            providers_to_try = ["groq", "codecraft", "apmix", "experientiallabs"]
+            # Default auto sequence: Groq -> TokenHarbor -> CodeCraft -> APMix -> ExperientialLabs
+            providers_to_try = all_providers
 
         for prov in providers_to_try:
             if prov == "groq":
@@ -224,6 +231,31 @@ class MultiModelAdapter(BaseAgentAdapter):
                             },
                             headers={"Authorization": f"Bearer {key}"},
                             timeout=8,
+                        )
+                        if "choices" in res and res["choices"]:
+                            return res["choices"][0]["message"].get("content", "").strip()
+                    except Exception:
+                        continue
+
+            elif prov == "tokenharbor":
+                thk_cfg = config.get("tokenharbor", {})
+                keys = thk_cfg.get("keys", [])
+                url = f"{thk_cfg.get('base_url', 'https://tokenharbor.ai/v1')}/chat/completions"
+                model = thk_cfg.get("default_model", "claude-haiku-5.5:free")
+                for key in keys:
+                    try:
+                        res = self._post_json(
+                            url,
+                            {
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": system},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 2048,
+                            },
+                            headers={"Authorization": f"Bearer {key}"},
+                            timeout=6,
                         )
                         if "choices" in res and res["choices"]:
                             return res["choices"][0]["message"].get("content", "").strip()

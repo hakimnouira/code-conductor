@@ -107,9 +107,11 @@ def main():
         ("OPENAI_API_KEY", "OpenAI Codex (API Key or leave blank to use ~/.codex login)", "openai", "api_key"),
         ("GEMINI_API_KEY", "Google Gemini / Antigravity AI Layer Key", "gemini", "api_key"),
         ("GROQ_API_KEY", "Groq Cloud Key (Ultra-fast inference: Qwen / GPT-OSS)", "groq", "keys"),
+        ("TOKENHARBOR_API_KEY", "TokenHarbor Key (Claude Haiku 5.5 Free)", "tokenharbor", "keys"),
         ("CODECRAFT_API_KEY", "CodeCraft Key (Gemma 2 2B)", "codecraft", "keys"),
         ("APMIX_API_KEY", "APMix Gateway Key (Claude Sonnet 4.6 / GPT-6 Luna)", "apmix", "keys"),
         ("EXPERIENTIALLABS_API_KEY", "Experiential Labs Key (AION 3.0 Mini)", "experientiallabs", "keys"),
+        ("FIRECRAWL_API_KEY", "Firecrawl Web Extraction Key", "firecrawl", "keys"),
         ("AIHUB_AUTH_TOKEN", "Custom Hub Bearer Token (or blank to auto-generate)", None, None),
     ]
 

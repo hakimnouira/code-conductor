@@ -24,6 +24,7 @@ class AgentRegistry:
         self.register(MultiModelAdapter("codecraft"))
         self.register(MultiModelAdapter("apmix"))
         self.register(MultiModelAdapter("experientiallabs"))
+        self.register(MultiModelAdapter("tokenharbor"))
         self.register(MultiModelAdapter("auto"))
         # User-added OpenAI-compatible endpoints; secrets remain in the OS credential store.
         for provider in list_providers():
@@ -56,6 +57,7 @@ class AgentRegistry:
             "ollama",
             "antigravity",
             "groq",
+            "tokenharbor",
             "codecraft",
             "apmix",
             "experientiallabs",
