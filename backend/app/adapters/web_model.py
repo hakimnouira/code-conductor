@@ -198,8 +198,18 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 inputEl.dispatchEvent(new Event("input", {{ bubbles: true }}));
                 inputEl.dispatchEvent(new Event("change", {{ bubbles: true }}));
             }} else if (inputEl.isContentEditable) {{
-                inputEl.innerText = promptText;
-                inputEl.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: promptText }}));
+                try {{
+                    inputEl.dispatchEvent(new InputEvent("beforeinput", {{
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: "insertText",
+                        data: promptText
+                    }}));
+                }} catch(e) {{}}
+                document.execCommand("selectAll", false, null);
+                document.execCommand("insertText", false, promptText);
+                inputEl.dispatchEvent(new InputEvent("input", {{ bubbles: true }}));
+                inputEl.dispatchEvent(new KeyboardEvent("keyup", {{ key: "e", bubbles: true }}));
             }}
 
             // 3. Trigger submit
@@ -213,7 +223,7 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
             }}
             if (!sent) {{
                 const sendBtn = document.querySelector(
-                    'button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="Submit" i], button:has(svg)'
+                    'button[data-testid="send-button"], button[data-testid="chat-input-send"], button[aria-label*="Send" i], button[aria-label*="Submit" i], button:has(svg)'
                 );
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
@@ -266,26 +276,51 @@ class WebBrowserModelAdapter(BaseAgentAdapter):
                 extract_script = f"""
                 (function() {{
                     const respSelector = {resp_sel};
-                    let elements = [];
-                    if (respSelector) {{
-                        elements = Array.from(document.querySelectorAll(respSelector));
-                    }}
-                    if (elements.length === 0) {{
-                        elements = Array.from(document.querySelectorAll(
-                            'div[data-message-author-role="assistant"], .font-claude-message, .ds-markdown, div.markdown, .prose, .chat-message'
-                        ));
-                    }}
-                    if (elements.length === 0) {{
-                        return {{ text: "", is_generating: false }};
-                    }}
-                    const latest = elements[elements.length - 1];
-                    const text = latest.innerText || latest.textContent || "";
-                    
+                    let text = "";
+
+                    // Stop button indicator
                     const stopBtn = document.querySelector(
                         'button[aria-label*="Stop" i], button[data-testid*="stop" i], button:has(svg[aria-label*="Stop" i])'
                     );
                     const is_generating = Boolean(stopBtn);
-                    return {{ text: text.trim(), is_generating: is_generating }};
+
+                    // Method 1: Custom configured selector
+                    if (respSelector) {{
+                        const customEls = Array.from(document.querySelectorAll(respSelector));
+                        if (customEls.length > 0) {{
+                            const latest = customEls[customEls.length - 1];
+                            text = (latest.innerText || latest.textContent || "").trim();
+                        }}
+                    }}
+
+                    // Method 2: ChatGPT latest UI (h4 with data-conversation-role="assistant")
+                    if (!text) {{
+                        const h4List = Array.from(document.querySelectorAll('h4[data-conversation-role="assistant"]'));
+                        if (h4List.length > 0) {{
+                            const lastH4 = h4List[h4List.length - 1];
+                            const parent = lastH4.parentElement;
+                            let reply = "";
+                            for (const child of parent.children) {{
+                                if (child !== lastH4) {{
+                                    reply += (child.innerText || "") + "\\n";
+                                }}
+                            }}
+                            text = reply.trim();
+                        }}
+                    }}
+
+                    // Method 3: Claude (.font-claude-message), DeepSeek, Arena, Manus, and standard selectors
+                    if (!text) {{
+                        const elements = Array.from(document.querySelectorAll(
+                            '.font-claude-message, div[data-message-author-role="assistant"], .ds-markdown, div.markdown, .prose, .chat-message'
+                        ));
+                        if (elements.length > 0) {{
+                            const latest = elements[elements.length - 1];
+                            text = (latest.innerText || latest.textContent || "").trim();
+                        }}
+                    }}
+
+                    return {{ text: text, is_generating: is_generating }};
                 }})()
                 """
 
