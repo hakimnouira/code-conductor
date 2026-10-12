@@ -17,12 +17,32 @@ from app.core.config import get_settings
 from app.core.security import require_bearer_token, security_scheme
 from app.models.schemas import (
     AgentInfo,
+    CheckpointRequest,
+    CheckpointResponse,
     EventType,
+    FileReadRequest,
+    FileReadResponse,
+    FileWriteRequest,
+    FileWriteResponse,
+    GitDiffRequest,
+    GitDiffResponse,
+    GitStatusResponse,
     HealthResponse,
+    SafeFileListResponse,
     TaskCreateRequest,
     TaskResponse,
     TaskStatus,
+    TestRunRequest,
+    TestRunResponse,
 )
+from app.safety.workspace import (
+    WorkspaceSecurityManager,
+    PathTraversalError,
+    SensitiveFileBlockedError,
+)
+from app.safety.git_guard import GitGuard
+from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
+
 
 # In-memory task tracker
 class TaskRecord:
@@ -181,7 +201,92 @@ async def cancel_task(task_id: str, _: str = Depends(require_bearer_token)):
     record.status = TaskStatus.CANCELLED
     return {"task_id": task_id, "cancelled": cancelled, "status": record.status}
 
+# ---------------------------------------------------------
+# Workspace Security, Git Guard, and Test Runner (Milestone 7)
+# ---------------------------------------------------------
+
+def _get_sec_manager() -> WorkspaceSecurityManager:
+    return WorkspaceSecurityManager(get_settings().workspace_root)
+
+def _get_git_guard() -> GitGuard:
+    return GitGuard(get_settings().workspace_root)
+
+def _get_test_runner() -> SafeTestRunner:
+    return SafeTestRunner(get_settings().workspace_root)
+
+@app.post("/workspace/file/read", response_model=FileReadResponse)
+async def read_workspace_file(req: FileReadRequest, _: str = Depends(require_bearer_token)):
+    mgr = _get_sec_manager()
+    try:
+        content = mgr.read_file(req.path)
+        return FileReadResponse(
+            path=req.path,
+            content=content,
+            size_bytes=len(content.encode("utf-8")),
+        )
+    except (PathTraversalError, SensitiveFileBlockedError) as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@app.post("/workspace/file/write", response_model=FileWriteResponse)
+async def write_workspace_file(req: FileWriteRequest, _: str = Depends(require_bearer_token)):
+    mgr = _get_sec_manager()
+    try:
+        bytes_written, diff = mgr.write_file(req.path, req.content, atomic=req.atomic)
+        return FileWriteResponse(path=req.path, bytes_written=bytes_written, diff=diff)
+    except (PathTraversalError, SensitiveFileBlockedError) as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@app.get("/workspace/files", response_model=SafeFileListResponse)
+async def list_workspace_files(subpath: str = "", _: str = Depends(require_bearer_token)):
+    mgr = _get_sec_manager()
+    try:
+        files = mgr.list_safe_files(subpath=subpath)
+        return SafeFileListResponse(root=str(mgr.workspace_root), files=files, total_count=len(files))
+    except (PathTraversalError, SensitiveFileBlockedError) as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+@app.get("/workspace/git/status", response_model=GitStatusResponse)
+async def get_git_status(_: str = Depends(require_bearer_token)):
+    guard = _get_git_guard()
+    return await guard.get_status()
+
+@app.post("/workspace/git/diff", response_model=GitDiffResponse)
+async def get_git_diff(req: GitDiffRequest, _: str = Depends(require_bearer_token)):
+    guard = _get_git_guard()
+    return await guard.get_diff(file_path=req.file_path, staged=req.staged)
+
+@app.post("/workspace/git/checkpoint", response_model=CheckpointResponse)
+async def create_git_checkpoint(req: CheckpointRequest, _: str = Depends(require_bearer_token)):
+    guard = _get_git_guard()
+    return await guard.create_checkpoint(req.name)
+
+@app.post("/workspace/git/restore", response_model=CheckpointResponse)
+async def restore_git_checkpoint(req: CheckpointRequest, _: str = Depends(require_bearer_token)):
+    if not req.name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Checkpoint identifier required")
+    guard = _get_git_guard()
+    return await guard.restore_checkpoint(req.name)
+
+@app.post("/workspace/test/run", response_model=TestRunResponse)
+async def run_tests(req: TestRunRequest, _: str = Depends(require_bearer_token)):
+    runner = _get_test_runner()
+    try:
+        return await runner.run_tests(
+            command_key=req.command_key,
+            extra_args=req.extra_args,
+            timeout_seconds=req.timeout_seconds,
+        )
+    except TestRunnerSecurityError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
 @app.get("/web", response_class=HTMLResponse)
+
 async def web_chat_interface():
     token = get_settings().auth_token
     return f"""<!DOCTYPE html>

@@ -81,3 +81,67 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     workspace: str
     active_tasks: int
+
+# Safety & Workspace Models (Milestone 7)
+class FileReadRequest(BaseModel):
+    path: str
+
+class FileReadResponse(BaseModel):
+    path: str
+    content: str
+    size_bytes: int
+
+class FileWriteRequest(BaseModel):
+    path: str
+    content: str
+    atomic: bool = True
+
+class FileWriteResponse(BaseModel):
+    path: str
+    bytes_written: int
+    diff: str
+
+class SafeFileListResponse(BaseModel):
+    root: str
+    files: list[str]
+    total_count: int
+
+class GitStatusResponse(BaseModel):
+    is_repo: bool
+    branch: str = ""
+    clean: bool = True
+    modified: list[str] = Field(default_factory=list)
+    untracked: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
+    error: str = ""
+
+class GitDiffRequest(BaseModel):
+    file_path: str | None = None
+    staged: bool = False
+
+class GitDiffResponse(BaseModel):
+    diff: str
+    file_count: int = 0
+    error: str = ""
+
+class CheckpointRequest(BaseModel):
+    name: str | None = None
+
+class CheckpointResponse(BaseModel):
+    checkpoint_id: str
+    success: bool
+    message: str
+
+class TestRunRequest(BaseModel):
+    command_key: str = "pytest"
+    extra_args: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 30
+
+class TestRunResponse(BaseModel):
+    command: str
+    exit_code: int
+    passed: bool
+    stdout: str
+    stderr: str
+    duration_ms: float
+

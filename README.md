@@ -27,10 +27,12 @@ A Windows-first VS Code extension and local Python/FastAPI backend integrating m
 ├── backend/
 │   ├── app/
 │   │   ├── core/           # Configuration, security, bearer token auth
-│   │   ├── models/         # Pydantic schemas (AgentInfo, TaskRequest, Events)
-│   │   ├── adapters/       # Base adapter interface, Mock Echo adapter, Agent registry
-│   │   └── main.py         # FastAPI application, SSE endpoints, task cancellation
-│   ├── tests/              # Pytest suite (auth, health, agent discovery, tasks, SSE)
+│   │   ├── models/         # Pydantic schemas (AgentInfo, TaskRequest, Safety, Git, Tests)
+│   │   ├── adapters/       # Base adapter interface, Codex, Copilot, Antigravity, Ollama, Echo
+│   │   ├── mcp/            # Generic MCP client and tool manager
+│   │   ├── safety/         # WorkspaceSecurityManager, GitGuard, SafeTestRunner
+│   │   └── main.py         # FastAPI application, SSE endpoints, task cancellation, safety APIs
+│   ├── tests/              # Pytest suite (auth, health, agent discovery, tasks, safety, SSE)
 │   └── requirements.txt    # Python dependencies
 ├── extension/
 │   ├── src/
@@ -50,6 +52,18 @@ A Windows-first VS Code extension and local Python/FastAPI backend integrating m
 ├── .gitignore
 └── README.md
 ```
+
+---
+
+## Safe Workspace Operations & Git Guard
+
+The backend implements strict safety controls for AI coding operations:
+- **Canonical Path Resolution**: Prevents path traversal outside the workspace root (`pathlib.Path.resolve()`).
+- **Sensitive File Protection**: Automatically blocks access to credentials, private keys (`.env*`, `*.pem`, `id_rsa*`, `*api_keys*.json`, `.git/`).
+- **Atomic File Edits**: Writes new file contents to temporary files and executes atomic replace (`os.replace`) with unified diff calculation (`difflib`).
+- **Git Guard**: Tracks branch name, modified, untracked, and deleted files (`git status --porcelain -b`), generates clean unified diffs (`git diff`), and creates safety checkpoints (`git stash create` and safety reference branches).
+- **Safe Test Runner**: Executes allowlisted test runners (`pytest`, `npm test`, `python`) without shell injection, enforcing timeouts and clean Windows process tree termination (`taskkill /F /T /PID`).
+
 
 ---
 
@@ -92,6 +106,6 @@ In a separate terminal, test health:
 - [x] **Milestone 4**: GitHub Copilot SDK integration using existing subscription.
 - [x] **Milestone 5**: Antigravity MCP integration experiment.
 - [x] **Milestone 6**: Ollama integration and agent registry.
-- [ ] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
+- [x] **Milestone 7**: Safe workspace edits, Git diff inspection, and test runner.
 - [ ] **Milestone 8**: Multi-agent planning, parallel workers, review, and task history.
 - [ ] **Milestone 9**: Packaging, Windows integration tests, and documentation.
