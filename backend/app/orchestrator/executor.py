@@ -40,6 +40,7 @@ class ParallelOrchestrator:
         self._repo_root: Path | None = None
         self._workspace_relative = Path(".")
         self._worker_worktrees: dict[str, dict[str, str]] = {}
+        self._worktree_lock = asyncio.Lock()
 
     def _git(self, root: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -191,7 +192,8 @@ class ParallelOrchestrator:
         worker_workspace = self.workspace_root
         try:
             if self._isolated_mode:
-                worker_workspace = self._create_worker_worktree(task_id, subtask.id)
+                async with self._worktree_lock:
+                    worker_workspace = self._create_worker_worktree(task_id, subtask.id)
         except Exception as exc:
             subtask.status = SubtaskStatus.FAILED
             subtask.error = f"Could not isolate worker workspace: {str(exc)[:800]}"
