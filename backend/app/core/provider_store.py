@@ -33,7 +33,9 @@ def _save(items: list[dict]) -> None:
 def validate_base_url(value: str) -> str:
     value = value.strip().rstrip("/")
     parsed = urlparse(value)
-    if parsed.scheme == "https" and parsed.hostname:
+    if not parsed.hostname or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise ValueError("Base URL must not contain credentials, a query string, or a fragment.")
+    if parsed.scheme == "https":
         return value
     # Plain HTTP is permitted only for local inference servers such as LM Studio.
     if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
@@ -72,8 +74,11 @@ def upsert_provider(*, provider_id: str, name: str, base_url: str, model: str, a
     base_url = validate_base_url(base_url)
     try:
         import keyring
-        # Verify a usable OS credential backend before writing any metadata.
-        keyring.get_keyring()
+        # Refuse fail/plaintext backends: API keys must live in a secure OS credential store.
+        backend = keyring.get_keyring()
+        backend_name = type(backend).__name__.lower()
+        if getattr(backend, "priority", 0) <= 0 or "fail" in backend_name or "plaintext" in backend_name:
+            raise RuntimeError("No secure OS credential backend is available. Configure Windows Credential Manager, macOS Keychain, or a Secret Service keyring.")
         if api_key and api_key.strip():
             keyring.set_password(SERVICE_NAME, provider_id, api_key.strip())
         elif not keyring.get_password(SERVICE_NAME, provider_id):
