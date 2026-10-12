@@ -253,3 +253,8 @@ The local backend calls the public GitHub repository search API, ranks candidate
 **Safety rules:** reference repositories are never executed, installed, built, or initialized with submodules by the research engine. No code is copied automatically. The agent is instructed to preserve the target project's stack, review the source license, keep required attribution, and adapt only relevant patterns. Unlicensed repositories may appear as research results but are not automatically cloned. A failed or rate-limited GitHub search does not block the user's task.
 
 The research preview endpoint is `POST /research/github` with `prompt`, optional `workspace_path`, and optional `clone_best`. The task endpoint also accepts `github_research: true|false`. Anonymous GitHub API limits apply unless `GITHUB_TOKEN` or `GH_TOKEN` is set in the backend environment.
+
+
+## Local authentication token
+
+The backend creates or reuses the per-user token in `%USERPROFILE%\.aihub_token` on Windows (or `~/.aihub_token` elsewhere). The Windows launcher passes that token to Vite as `VITE_AI_HUB_TOKEN` at startup, so the UI and backend use the same generated token without embedding a shared secret in source control. The UI keeps the token in session storage, migrates/removes any legacy local-storage copy, and never commits or writes provider API keys to the frontend.
