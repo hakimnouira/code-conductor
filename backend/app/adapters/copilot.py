@@ -11,6 +11,57 @@ from app.models.schemas import (
     TaskCreateRequest,
 )
 
+from pathlib import Path
+
+
+class CopilotPermissionPolicy:
+    """
+    Least-privilege permission policy for autonomous Copilot sessions:
+    - Read operations (inspecting code/files): Approved once.
+    - Write operations (code edits): Allowed only if path is within workspace boundaries.
+    - Shell/Terminal commands: Rejected by default to prevent arbitrary code execution.
+    - Network URLs, Mcp tools, Hooks, Environment/Extension access: Rejected by default.
+    """
+
+    def __init__(self, workspace_root: Path | None = None, allow_terminal: bool = False):
+        self.workspace_root = workspace_root.resolve() if workspace_root else None
+        self.allow_terminal = allow_terminal
+
+    def evaluate(self, request, invocation):
+        from copilot.session import PermissionDecisionApproveOnce, PermissionNoResult
+        from copilot.generated.rpc import PermissionDecisionReject
+
+        if getattr(request, "managed_approval_required", False) is True:
+            return PermissionNoResult()
+
+        req_type_name = type(request).__name__
+
+        # 1. Read operations: safe to approve
+        if "Read" in req_type_name:
+            return PermissionDecisionApproveOnce()
+
+        # 2. Write operations: strictly validate workspace boundaries
+        if "Write" in req_type_name:
+            target_path = getattr(request, "path", None) or getattr(request, "file_path", None)
+            if target_path and self.workspace_root:
+                try:
+                    resolved = Path(target_path).resolve()
+                    if not resolved.is_relative_to(self.workspace_root):
+                        return PermissionDecisionReject()
+                except Exception:
+                    return PermissionDecisionReject()
+            return PermissionDecisionApproveOnce()
+
+        # 3. Shell / Terminal commands: rejected by default under least privilege
+        if "Shell" in req_type_name or "Command" in req_type_name:
+            if self.allow_terminal:
+                return PermissionDecisionApproveOnce()
+            return PermissionDecisionReject()
+
+        # 4. URLs, Hooks, MCP, Environment/Extension access: rejected
+        return PermissionDecisionReject()
+
+
 class CopilotAdapter(BaseAgentAdapter):
     """GitHub Copilot adapter reusing official GitHub Copilot SDK and existing subscription."""
 
@@ -138,11 +189,14 @@ class CopilotAdapter(BaseAgentAdapter):
         if token:
             client_kwargs = {"github_token": token, "use_logged_in_user": False}
 
+        ws_path = Path(request.workspace_path or os.getcwd()).resolve()
+        policy = CopilotPermissionPolicy(workspace_root=ws_path, allow_terminal=False)
+
         try:
             async with CopilotClient(**client_kwargs) as client:
                 model_name = request.model if request.model and request.model != "auto" else "gpt-4o"
                 async with await client.create_session(
-                    on_permission_request=PermissionHandler.approve_all,
+                    on_permission_request=policy.evaluate,
                     model=model_name,
                 ) as session:
                     done_event = asyncio.Event()

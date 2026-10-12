@@ -14,15 +14,92 @@ export class BackendManager {
   private client: BackendClient;
   private outputChannel: vscode.OutputChannel;
   private port = 8765;
+  private pidFile: string;
 
   constructor(context: vscode.ExtensionContext, outputChannel: vscode.OutputChannel) {
     this.context = context;
     this.outputChannel = outputChannel;
     this.client = new BackendClient('127.0.0.1', this.port);
+    this.pidFile = path.join(os.homedir(), '.aihub_backend.pid');
   }
 
   public getClient(): BackendClient {
     return this.client;
+  }
+
+  private resolveWorkspaceRoot(): string {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      for (const folder of workspaceFolders) {
+        const candidate = folder.uri.fsPath;
+        if (fs.existsSync(path.join(candidate, 'backend', 'app', 'main.py'))) {
+          return candidate;
+        }
+      }
+    }
+
+    // Check sibling or parent directory relative to extension location
+    const parentCandidate = path.resolve(this.context.extensionPath, '..');
+    if (fs.existsSync(path.join(parentCandidate, 'backend', 'app', 'main.py'))) {
+      return parentCandidate;
+    }
+
+    if (fs.existsSync(path.join(this.context.extensionPath, 'backend', 'app', 'main.py'))) {
+      return this.context.extensionPath;
+    }
+
+    return (workspaceFolders && workspaceFolders.length > 0)
+      ? workspaceFolders[0].uri.fsPath
+      : this.context.extensionPath;
+  }
+
+  private resolvePythonExecutable(rootPath: string): string {
+    const config = vscode.workspace.getConfiguration('aiHub');
+    const customPath = config.get<string>('pythonPath', '');
+    if (customPath && fs.existsSync(customPath)) {
+      return customPath;
+    }
+
+    if (rootPath) {
+      const venvWin = path.join(rootPath, '.venv', 'Scripts', 'python.exe');
+      if (fs.existsSync(venvWin)) {
+        return venvWin;
+      }
+      const venvPosix = path.join(rootPath, '.venv', 'bin', 'python');
+      if (fs.existsSync(venvPosix)) {
+        return venvPosix;
+      }
+    }
+
+    return process.platform === 'win32' ? 'python.exe' : 'python3';
+  }
+
+  private cleanStaleTrackedProcess(): void {
+    if (!fs.existsSync(this.pidFile)) {
+      return;
+    }
+
+    try {
+      const pidStr = fs.readFileSync(this.pidFile, 'utf8').trim();
+      const pid = parseInt(pidStr, 10);
+      if (pid && !isNaN(pid)) {
+        this.outputChannel.appendLine(`[BackendManager] Found previous backend PID in lock file: ${pid}`);
+        if (process.platform === 'win32') {
+          // Terminate only this specific PID and its tree, never blanket port termination
+          try {
+            child_process.execSync(`taskkill /F /T /PID ${pid} 2>nul`);
+          } catch (_) {}
+        } else {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (_) {}
+        }
+      }
+    } catch (_) {} finally {
+      try {
+        fs.unlinkSync(this.pidFile);
+      } catch (_) {}
+    }
   }
 
   public async start(): Promise<void> {
@@ -57,29 +134,16 @@ export class BackendManager {
       // Backend not running or token needs renewal
     }
 
-    // 3. Locate workspace backend and Python virtual environment
-    let rootPath = 'c:\\Users\\hakim\\Desktop\\vs extention';
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const candidate = workspaceFolders[0].uri.fsPath;
-      if (fs.existsSync(path.join(candidate, 'backend', 'app', 'main.py'))) {
-        rootPath = candidate;
-      }
-    }
+    // 3. Clean up only our previous recorded backend PID if stale
+    this.cleanStaleTrackedProcess();
 
-    let pythonPath = path.join(rootPath, '.venv', 'Scripts', 'python.exe');
-    if (!fs.existsSync(pythonPath)) {
-      pythonPath = 'c:\\Users\\hakim\\Desktop\\vs extention\\.venv\\Scripts\\python.exe';
-    }
+    // 4. Resolve workspace and Python
+    const rootPath = this.resolveWorkspaceRoot();
+    const pythonPath = this.resolvePythonExecutable(rootPath);
     const backendPath = path.join(rootPath, 'backend');
 
-    // If port 8765 is occupied by an unresponsive or mismatched process, kill it
-    if (process.platform === 'win32') {
-      try {
-        child_process.execSync(
-          `powershell -Command "Get-NetTCPConnection -LocalPort ${this.port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`
-        );
-      } catch (_) {}
+    if (!fs.existsSync(path.join(backendPath, 'app', 'main.py'))) {
+      throw new Error(`Cannot locate FastAPI backend application in: ${backendPath}`);
     }
 
     this.outputChannel.appendLine(`[BackendManager] Starting backend at ${backendPath}`);
@@ -92,7 +156,7 @@ export class BackendManager {
       PYTHONPATH: backendPath,
     };
 
-    // 4. Spawn Uvicorn process
+    // 5. Spawn Uvicorn process
     this.process = child_process.spawn(
       pythonPath,
       ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', this.port.toString()],
@@ -103,6 +167,12 @@ export class BackendManager {
         windowsHide: true,
       }
     );
+
+    if (this.process.pid) {
+      try {
+        fs.writeFileSync(this.pidFile, this.process.pid.toString(), 'utf8');
+      } catch (_) {}
+    }
 
     this.process.stdout?.on('data', (data) => {
       this.outputChannel.append(`[FastAPI stdout] ${data.toString()}`);
@@ -115,9 +185,14 @@ export class BackendManager {
     this.process.on('exit', (code, signal) => {
       this.outputChannel.appendLine(`[BackendManager] Process exited with code ${code}, signal ${signal}`);
       this.process = null;
+      try {
+        if (fs.existsSync(this.pidFile)) {
+          fs.unlinkSync(this.pidFile);
+        }
+      } catch (_) {}
     });
 
-    // 5. Poll health endpoint until responsive
+    // 6. Poll health endpoint until responsive
     const startTime = Date.now();
     const timeoutMs = 15000;
     while (Date.now() - startTime < timeoutMs) {
@@ -135,15 +210,23 @@ export class BackendManager {
 
   public stop(): void {
     if (this.process && this.process.pid) {
-      this.outputChannel.appendLine(`[BackendManager] Terminating backend PID: ${this.process.pid}`);
+      const pid = this.process.pid;
+      this.outputChannel.appendLine(`[BackendManager] Terminating tracked backend PID: ${pid}`);
       if (process.platform === 'win32') {
         try {
-          child_process.execSync(`taskkill /F /T /PID ${this.process.pid}`);
+          child_process.execSync(`taskkill /F /T /PID ${pid} 2>nul`);
         } catch (_) {}
       } else {
-        this.process.kill();
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch (_) {}
       }
       this.process = null;
     }
+    try {
+      if (fs.existsSync(this.pidFile)) {
+        fs.unlinkSync(this.pidFile);
+      }
+    } catch (_) {}
   }
 }

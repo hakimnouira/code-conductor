@@ -45,3 +45,39 @@ async def test_copilot_cancel_task():
     adapter = CopilotAdapter()
     cancel_res = await adapter.cancel_task("non-existent-task")
     assert cancel_res is False
+
+
+def test_copilot_permission_policy(tmp_path):
+    from pathlib import Path
+    from app.adapters.copilot import CopilotPermissionPolicy
+
+    policy = CopilotPermissionPolicy(workspace_root=tmp_path, allow_terminal=False)
+
+    # Mock request classes
+    class MockReadRequest:
+        path = str(tmp_path / "main.py")
+
+    class MockShellRequest:
+        command = "rm -rf /"
+
+    class MockOutsideWriteRequest:
+        path = "C:\\Windows\\System32\\calc.exe"
+
+    class MockInsideWriteRequest:
+        path = str(tmp_path / "output.py")
+
+    # 1. Read is approved
+    res_read = policy.evaluate(MockReadRequest(), {})
+    assert type(res_read).__name__ == "PermissionDecisionApproveOnce"
+
+    # 2. Shell is rejected by default
+    res_shell = policy.evaluate(MockShellRequest(), {})
+    assert type(res_shell).__name__ == "PermissionDecisionReject"
+
+    # 3. Outside workspace write is rejected
+    res_outside = policy.evaluate(MockOutsideWriteRequest(), {})
+    assert type(res_outside).__name__ == "PermissionDecisionReject"
+
+    # 4. Inside workspace write is approved
+    res_inside = policy.evaluate(MockInsideWriteRequest(), {})
+    assert type(res_inside).__name__ == "PermissionDecisionApproveOnce"

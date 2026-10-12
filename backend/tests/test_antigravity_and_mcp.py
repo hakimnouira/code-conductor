@@ -28,19 +28,15 @@ async def test_antigravity_availability():
 async def test_antigravity_disabled_diagnostic(monkeypatch):
     adapter = AntigravityAdapter()
     monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
-    import app.adapters.antigravity as ag_mod
-    monkeypatch.setattr(ag_mod, "CONFIG_PATH", Path("C:/nonexistent/api_keys.json"))
 
     state, diag = await adapter.check_availability()
     assert state == AvailabilityState.DISABLED
-    assert "not active" in diag.lower()
+    assert "not found" in diag.lower()
 
 @pytest.mark.asyncio
 async def test_antigravity_stream_when_disabled(monkeypatch):
     adapter = AntigravityAdapter()
     monkeypatch.setattr(adapter, "find_agentapi_bat", lambda: None)
-    import app.adapters.antigravity as ag_mod
-    monkeypatch.setattr(ag_mod, "CONFIG_PATH", Path("C:/nonexistent/api_keys.json"))
 
     req = TaskCreateRequest(prompt="Analyze architecture", agent_id="antigravity")
     events = []

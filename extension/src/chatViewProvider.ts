@@ -82,7 +82,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       this.postMessage({ type: 'taskStarted', prompt, agentId });
-      const task = await this.backendClient.createTask(prompt, agentId);
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const task = await this.backendClient.createTask(prompt, agentId, workspacePath);
       this.activeTaskId = task.task_id;
 
       const streamController = this.backendClient.streamEvents(

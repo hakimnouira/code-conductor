@@ -8,20 +8,24 @@ from app.adapters.ollama import OllamaAdapter
 from app.adapters.orchestrator import OrchestratorAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
 
+
 class AgentRegistry:
     def __init__(self):
         self._adapters: dict[str, BaseAgentAdapter] = {}
-        # Register adapters
-        self.register(OrchestratorAdapter())
+
+        # 1. Register individual real worker adapters first
         self.register(CodexAdapter())
-        self.register(MultiModelAdapter("auto"))
-        self.register(MultiModelAdapter("groq"))
         self.register(CopilotAdapter())
-        self.register(AntigravityAdapter())
         self.register(OllamaAdapter())
+        self.register(AntigravityAdapter())
+        self.register(MultiModelAdapter("groq"))
+        self.register(MultiModelAdapter("auto"))
+
+        # 2. Register multi-agent orchestrator coordinator
+        self.register(OrchestratorAdapter())
+
+        # 3. Register mock testing adapter last
         self.register(EchoMockAdapter())
-
-
 
     def register(self, adapter: BaseAgentAdapter) -> None:
         self._adapters[adapter.agent_id] = adapter
@@ -30,24 +34,59 @@ class AgentRegistry:
         return self._adapters.get(agent_id)
 
     async def list_agents(self) -> list[AgentInfo]:
-        infos: list[AgentInfo] = []
-        for adapter in self._adapters.values():
-            info = await adapter.get_info()
-            infos.append(info)
-        return infos
+        import asyncio
+        return await asyncio.gather(*[adapter.get_info() for adapter in self._adapters.values()])
 
-    async def resolve_agent(self, agent_id: str) -> BaseAgentAdapter | None:
-        if agent_id == "auto":
-            # Select the first ready non-mock adapter if available, otherwise mock
-            for adapter in self._adapters.values():
-                if adapter.agent_id != "mock":
-                    state, _ = await adapter.check_availability()
-                    if state == AvailabilityState.READY:
-                        return adapter
-            return self._adapters.get("mock")
-        return self._adapters.get(agent_id)
+    async def get_ready_workers(self) -> list[BaseAgentAdapter]:
+        """Returns all currently ready real worker adapters (excluding orchestrator and mock)."""
+        worker_ids = ["codex", "copilot", "ollama", "antigravity", "groq", "multimodel"]
+        ready_workers: list[BaseAgentAdapter] = []
+        for wid in worker_ids:
+            adapter = self._adapters.get(wid)
+            if adapter:
+                state, _ = await adapter.check_availability()
+                if state == AvailabilityState.READY:
+                    ready_workers.append(adapter)
+        return ready_workers
+
+    async def resolve_agent(self, agent_id: str, prompt: str = "") -> BaseAgentAdapter | None:
+        """
+        Capability-based agent routing:
+        - Specific agent requested: returns that adapter directly.
+        - 'auto':
+            - Discovers real worker availability first.
+            - If prompt implies multi-step decomposition ('refactor and test', 'plan and execute')
+              AND at least one real worker is ready: routes to orchestrator.
+            - Otherwise routes to the best available ready worker.
+            - If NO real provider is ready: returns None (never silently disguises mock as real).
+        """
+        if agent_id != "auto":
+            return self._adapters.get(agent_id)
+
+        ready_workers = await self.get_ready_workers()
+
+        # Check if prompt requires multi-agent orchestration
+        prompt_lower = prompt.lower()
+        needs_decomposition = any(
+            phrase in prompt_lower
+            for phrase in ["decompose", "subtasks", "orchestrate", "refactor and test", "plan and execute"]
+        )
+
+        if needs_decomposition and ready_workers:
+            orchestrator = self._adapters.get("orchestrator")
+            if orchestrator:
+                return orchestrator
+
+        # Select highest-priority ready worker
+        if ready_workers:
+            return ready_workers[0]
+
+        # No real provider is ready
+        return None
+
 
 _registry: AgentRegistry | None = None
+
 
 def get_agent_registry() -> AgentRegistry:
     global _registry

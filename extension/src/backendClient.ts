@@ -124,8 +124,12 @@ export class BackendClient {
     return this.request('GET', '/agents');
   }
 
-  public async createTask(prompt: string, agentId = 'auto'): Promise<TaskResponse> {
-    return this.request('POST', '/tasks', { prompt, agent_id: agentId });
+  public async createTask(prompt: string, agentId = 'auto', workspacePath?: string): Promise<TaskResponse> {
+    const payload: { prompt: string; agent_id: string; workspace_path?: string } = { prompt, agent_id: agentId };
+    if (workspacePath) {
+      payload.workspace_path = workspacePath;
+    }
+    return this.request('POST', '/tasks', payload);
   }
 
   public async cancelTask(taskId: string): Promise<{ task_id: string; cancelled: boolean; status: string }> {

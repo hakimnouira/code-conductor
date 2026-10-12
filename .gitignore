@@ -19,3 +19,4 @@ dist/
 .env
 api_keys.json
 *.log
+*.zip
