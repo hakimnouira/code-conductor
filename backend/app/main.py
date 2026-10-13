@@ -828,31 +828,34 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             runner = SafeTestRunner(record.request.workspace_path)
             command_key = runner.discover_runner()
             if command_key is None:
-                record.verification_status = "skipped"
+                record.verification_status = "failed"
+                record.status = TaskStatus.FAILED
+                record.error = (
+                    "Auto Verify could not establish completion: no supported test or build "
+                    "command was detected. Add a test/build script or configure a supported "
+                    "runner, then retry the task."
+                )
+                record.completed_at = time.time()
                 record.add_evidence(
-                    "automated_tests", "skipped",
-                    "No supported test command was detected; task completion is not test-verified.",
-                    details={"reason": "no_supported_test_command"},
+                    "automated_tests", "failed",
+                    record.error,
+                    details={
+                        "reason": "no_supported_test_command",
+                        "required": True,
+                        "verification_status": "failed",
+                    },
                 )
                 await record.event_queue.put(json.dumps({
-                    "task_id": record.task_id, "event_type": "log",
-                    "text": "Verification skipped: no supported test command was detected. Enable a test script or configure tests, then rerun with Auto Verify.",
-                    "timestamp": time.time(),
-                    "data": {"phase": "verification", "status": "skipped"},
+                    "task_id": record.task_id, "event_type": "error",
+                    "text": record.error,
+                    "timestamp": record.completed_at,
+                    "data": {
+                        "phase": "verification",
+                        "status": "failed",
+                        "reason": "no_supported_test_command",
+                    },
                 }))
-                browser_action, browser_verification_attempts = await _await_task_deadline(
-                    _browser_verification_gate(record, browser_verification_attempts),
-                    deadline, timeout_seconds,
-                )
-                if browser_action == "retry":
-                    continue
-                if browser_action == "failed":
-                    terminal_event_seen = True
-                    break
-                await record.event_queue.put(terminal_event.model_dump_json())
                 terminal_event_seen = True
-                record.status = TaskStatus.COMPLETED
-                record.completed_at = time.time()
                 break
 
             verification_attempt += 1
