@@ -1026,29 +1026,50 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             provider_attempts += 1
             provider_started = time.monotonic()
             provider_event_count = 0
-            async for event in _stream_task_events_with_deadline(adapter, record, deadline, timeout_seconds):
-                provider_event_count += 1
-                if event.event_type == EventType.COMPLETED:
-                    # Delay success until requested verification has completed.
-                    terminal_event = event
-                    continue
-                payload = event.model_dump_json()
-                await record.event_queue.put(payload)
-                if event.event_type in (EventType.CANCELLED, EventType.ERROR):
-                    terminal_event_seen = True
-                    if record.status != TaskStatus.CANCELLED:
-                        if event.event_type == EventType.CANCELLED:
-                            record.status = TaskStatus.CANCELLED
-                        else:
-                            record.status = TaskStatus.FAILED
-                            record.error = event.text or "Agent reported an execution error."
-                    record.completed_at = time.time()
-                    break
+            provider_stream_error: str | None = None
+            try:
+                async for event in _stream_task_events_with_deadline(adapter, record, deadline, timeout_seconds):
+                    provider_event_count += 1
+                    if event.event_type == EventType.COMPLETED:
+                        # Delay success until requested verification has completed.
+                        terminal_event = event
+                        continue
+                    payload = event.model_dump_json()
+                    await record.event_queue.put(payload)
+                    if event.event_type in (EventType.CANCELLED, EventType.ERROR):
+                        terminal_event_seen = True
+                        if record.status != TaskStatus.CANCELLED:
+                            if event.event_type == EventType.CANCELLED:
+                                record.status = TaskStatus.CANCELLED
+                            else:
+                                record.status = TaskStatus.FAILED
+                                record.error = event.text or "Agent reported an execution error."
+                        record.completed_at = time.time()
+                        break
+            except (asyncio.CancelledError, TaskExecutionTimeout):
+                # Preserve cancellation and task-deadline semantics; their outer handlers
+                # own process cleanup and terminal evidence.
+                raise
+            except Exception as provider_error:
+                # A transport exception can occur mid-stream before the normal evidence
+                # block below. Convert it into a failed attempt so disconnects remain
+                # visible in durable evidence rather than disappearing from telemetry.
+                provider_stream_error = str(provider_error)[:1000] or type(provider_error).__name__
+                record.status = TaskStatus.FAILED
+                record.error = f"Provider stream failed: {provider_stream_error}"
+                record.completed_at = time.time()
+                await record.event_queue.put(json.dumps({
+                    "task_id": record.task_id,
+                    "event_type": "error",
+                    "text": record.error,
+                    "timestamp": record.completed_at,
+                    "data": {"phase": "provider_execution", "reason": "provider_stream_error"},
+                }))
 
             provider_duration_ms = round((time.monotonic() - provider_started) * 1000.0, 2)
             provider_stream_status = (
                 "passed" if terminal_event is not None and record.status not in (TaskStatus.CANCELLED, TaskStatus.FAILED)
-                else "failed" if record.status == TaskStatus.FAILED
+                else "failed" if record.status == TaskStatus.FAILED or provider_stream_error
                 else "cancelled" if record.status == TaskStatus.CANCELLED
                 else "incomplete"
             )
@@ -1061,6 +1082,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "duration_ms": provider_duration_ms,
                     "events_received": provider_event_count,
                     "terminal_event_seen": terminal_event is not None,
+                    "error": provider_stream_error,
                 },
             )
 
