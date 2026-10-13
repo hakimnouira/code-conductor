@@ -676,11 +676,12 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             # emit stale verification evidence or let this pipeline overwrite it.
             if record.status == TaskStatus.CANCELLED:
                 break
+            check_kind = "build" if command_key == "npm_build" else "automated_tests"
             record.verification_status = "passed" if result.passed else "failed"
             record.add_evidence(
-                "automated_tests",
+                check_kind,
                 "passed" if result.passed else "failed",
-                f"{command_key} {'passed' if result.passed else 'failed'} with exit code {result.exit_code}.",
+                f"{'Build' if check_kind == 'build' else command_key} {'passed' if result.passed else 'failed'} with exit code {result.exit_code}.",
                 details={
                     "command": result.command,
                     "execution_mode": result.execution_mode,
@@ -690,6 +691,44 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "stderr_tail": result.stderr[-12000:],
                 },
             )
+            verification_result = result
+            verification_command = command_key
+            build_key = runner.discover_build_runner() if command_key != "npm_build" else None
+            if result.passed and build_key:
+                build_result = await runner.run_tests(command_key=build_key, timeout_seconds=120)
+                if record.status == TaskStatus.CANCELLED:
+                    break
+                record.add_evidence(
+                    "build",
+                    "passed" if build_result.passed else "failed",
+                    f"Project build {'passed' if build_result.passed else 'failed'} with exit code {build_result.exit_code}.",
+                    details={
+                        "command": build_result.command,
+                        "execution_mode": build_result.execution_mode,
+                        "exit_code": build_result.exit_code,
+                        "duration_ms": build_result.duration_ms,
+                        "stdout_tail": build_result.stdout[-12000:],
+                        "stderr_tail": build_result.stderr[-12000:],
+                    },
+                )
+                await record.event_queue.put(json.dumps({
+                    "task_id": record.task_id,
+                    "event_type": "log",
+                    "text": f"Build verification: {'passed' if build_result.passed else 'failed'} (exit {build_result.exit_code}).",
+                    "timestamp": time.time(),
+                    "data": {
+                        "phase": "build_verification",
+                        "status": "passed" if build_result.passed else "failed",
+                        "command": build_result.command,
+                        "exit_code": build_result.exit_code,
+                        "duration_ms": build_result.duration_ms,
+                    },
+                }))
+                if not build_result.passed:
+                    verification_result = build_result
+                    verification_command = build_key
+            verification_passed = result.passed and verification_result.passed
+            record.verification_status = "passed" if verification_passed else "failed"
             await record.event_queue.put(json.dumps({
                 "task_id": record.task_id, "event_type": "log",
                 "text": f"Verification attempt {verification_attempt}/{record.request.verification_max_attempts}: {command_key} {'passed' if result.passed else 'failed'} (exit {result.exit_code}).",
@@ -706,7 +745,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "stderr": result.stderr[-12000:],
                 },
             }))
-            if result.passed:
+            if verification_passed:
                 browser_action, browser_verification_attempts = await _browser_verification_gate(
                     record, browser_verification_attempts
                 )
@@ -723,23 +762,23 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
 
             if verification_attempt >= record.request.verification_max_attempts:
                 record.status = TaskStatus.FAILED
-                record.error = f"Verification failed after {verification_attempt} attempt(s): {command_key} exited {result.exit_code}."
+                record.error = f"Verification failed after {verification_attempt} attempt(s): {verification_command} exited {verification_result.exit_code}."
                 record.completed_at = time.time()
                 await record.event_queue.put(json.dumps({
                     "task_id": record.task_id, "event_type": "error",
                     "text": record.error,
                     "timestamp": record.completed_at,
-                    "data": {"phase": "verification", "command": result.command, "exit_code": result.exit_code},
+                    "data": {"phase": "verification", "command": verification_result.command, "exit_code": verification_result.exit_code},
                 }))
                 terminal_event_seen = True
                 break
 
             # Feed bounded diagnostics back to the same agent for a repair attempt.
-            diagnostics = (result.stdout + "\n" + result.stderr)[-12000:]
+            diagnostics = (verification_result.stdout + "\n" + verification_result.stderr)[-12000:]
             record.request.prompt += (
                 "\n\nAUTOMATED VERIFICATION FAILED. Fix the underlying issue, do not hide or "
                 "delete tests. Then summarize the repair.\n"
-                f"Command: {result.command}\nExit code: {result.exit_code}\n"
+                f"Command: {verification_result.command}\nExit code: {verification_result.exit_code}\n"
                 f"Diagnostics (truncated):\n{diagnostics}"
             )
             await record.event_queue.put(json.dumps({
