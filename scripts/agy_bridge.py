@@ -271,34 +271,83 @@ def execute_tool(name: str, args: dict) -> str:
     return f"Unknown tool: '{name}'"
 
 
+def parse_lenient_json(s: str) -> dict:
+    s = s.strip()
+    if not s:
+        return {}
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    # Normalize Windows unescaped backslashes in paths
+    try:
+        cleaned = re.sub(r'\\([a-zA-Z0-9_\-\. ])', r'/\1', s)
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    try:
+        cleaned = s.replace('\\', '/')
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    return {}
+
+
 def extract_tool_call(response_text: str) -> tuple[str | None, dict | None, str]:
-    """Parse tool call from response markdown blocks."""
-    # Pattern 1: ```tool:name ... ``` or ```tool_call {"tool": ...} ```
+    """Parse tool call from response in any format: XML, markdown, or JSON."""
+    clean_text = response_text
+
+    # Pattern 1: <tool_call><function=name>{...}</function></tool_call>
+    m_xml1 = re.search(r"<tool_call>\s*<function=([a-zA-Z0-9_]+)>\s*(.*?)\s*</function>\s*</tool_call>", response_text, re.DOTALL)
+    if m_xml1:
+        tool_name = m_xml1.group(1).strip()
+        raw_json = m_xml1.group(2).strip()
+        pre_text = response_text[: m_xml1.start()].strip()
+        args = parse_lenient_json(raw_json)
+        return tool_name, args, pre_text
+
+    # Pattern 2: <function=name>{...}</function>
+    m_xml2 = re.search(r"<function=([a-zA-Z0-9_]+)>\s*(.*?)\s*</function>", response_text, re.DOTALL)
+    if m_xml2:
+        tool_name = m_xml2.group(1).strip()
+        raw_json = m_xml2.group(2).strip()
+        pre_text = response_text[: m_xml2.start()].strip()
+        args = parse_lenient_json(raw_json)
+        return tool_name, args, pre_text
+
+    # Pattern 3: <tool_call>{ "name": "...", "arguments": {...} }</tool_call>
+    m_xml3 = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", response_text, re.DOTALL)
+    if m_xml3:
+        raw_json = m_xml3.group(1).strip()
+        data = parse_lenient_json(raw_json)
+        if isinstance(data, dict):
+            tool_name = data.get("name") or data.get("tool")
+            args = data.get("arguments") or data.get("args") or data
+            pre_text = response_text[: m_xml3.start()].strip()
+            if tool_name:
+                return tool_name, args, pre_text
+
+    # Pattern 4: ```tool:name ... ```
     m = re.search(r"```tool:([a-zA-Z0-9_]+)\s*\n(.*?)\n```", response_text, re.DOTALL)
     if m:
         tool_name = m.group(1).strip()
         raw_json = m.group(2).strip()
         pre_text = response_text[: m.start()].strip()
-        try:
-            args = json.loads(raw_json)
-            return tool_name, args, pre_text
-        except Exception:
-            pass
+        args = parse_lenient_json(raw_json)
+        return tool_name, args, pre_text
 
+    # Pattern 5: ```tool_call or ```json
     m2 = re.search(r"```(?:tool_call|json)\s*\n(.*?)\n```", response_text, re.DOTALL)
     if m2:
         raw_json = m2.group(1).strip()
-        try:
-            data = json.loads(raw_json)
-            if isinstance(data, dict) and ("tool" in data or "name" in data):
-                tool_name = data.get("tool") or data.get("name")
-                args = data.get("args") or data.get("parameters") or data
-                pre_text = response_text[: m2.start()].strip()
-                return tool_name, args, pre_text
-        except Exception:
-            pass
+        data = parse_lenient_json(raw_json)
+        if isinstance(data, dict) and ("tool" in data or "name" in data):
+            tool_name = data.get("tool") or data.get("name")
+            args = data.get("args") or data.get("parameters") or data.get("arguments") or data
+            pre_text = response_text[: m2.start()].strip()
+            return tool_name, args, pre_text
 
-    return None, None, response_text
+    return None, None, clean_text
 
 
 def emit_json(obj: dict) -> None:
@@ -316,11 +365,16 @@ The user explicitly wants you to TAKE REAL ACTION, not just describe or talk abo
 You MUST inspect files, find relevant assets/code, make edits, and verify the changes.
 If the workspace or parent directory contains related directories (e.g. sibling folders, translations, configs), inspect them to solve the problem!
 
-To execute a tool, write a block:
+To execute a tool, output XML tags:
+<tool_call>
+<function=tool_name>
+{{"param1": "value1"}}
+</function>
+</tool_call>
+
+Or markdown:
 ```tool:tool_name
-{{
-  "param1": "value1"
-}}
+{{"param1": "value1"}}
 ```
 
 Available tools:
@@ -341,7 +395,7 @@ After completing all actions, provide a clear, concise summary of the fixes you 
     ]
 
     total_steps = 0
-    max_steps = 10
+    max_steps = 12
     final_output = ""
 
     while total_steps < max_steps:
@@ -349,13 +403,15 @@ After completing all actions, provide a clear, concise summary of the fixes you 
         response = call_llm(messages, config)
         tool_name, tool_args, pre_text = extract_tool_call(response)
 
-        if pre_text:
+        # Clean any raw tool tags that might have appeared in pre_text
+        pre_text_clean = re.sub(r"<tool_call>.*", "", pre_text, flags=re.DOTALL).strip()
+        if pre_text_clean:
             emit_json({
                 "event": "step_update",
-                "step_update": {"step_type": "text", "text_delta": pre_text + "\n"},
+                "step_update": {"step_type": "text", "text_delta": pre_text_clean + "\n"},
             })
 
-        if not tool_name or not tool_args:
+        if not tool_name or tool_args is None:
             # Model decided it is done
             final_output = response
             break
@@ -386,7 +442,7 @@ After completing all actions, provide a clear, concise summary of the fixes you 
         messages.append({"role": "assistant", "content": response})
         messages.append({
             "role": "user",
-            "content": f"Tool '{tool_name}' result:\n{result}\n\nContinue with next action, or summarize and finish if done.",
+            "content": f"<tool_response>\n<function={tool_name}>\n{result}\n</function>\n</tool_response>\n\nInspect the results and continue with the next action, or summarize and finish if done.",
         })
 
     if not final_output:

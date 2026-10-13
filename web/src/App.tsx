@@ -1314,18 +1314,7 @@ export default function App() {
       } else {
         setActiveStep(0);
         const effectiveAgent = (agent === "google-antigravity" || agent === "antigravity-ide") ? "antigravity" : agent;
-        let promptToSend = originalPrompt;
-        if (selectedHistoryId && events.length > 0) {
-          const priorContext = events
-            .filter(e => (e.event_type === "log" && (e.text || "").startsWith("💬 Turn (User):")) || e.event_type === "token")
-            .slice(-10)
-            .map(e => (e.text || "").slice(0, 350))
-            .join("\n");
-          if (priorContext.trim()) {
-            promptToSend = `[Context from previous turn in this chat]:\n${priorContext}\n\n[User follow-up request]:\n${originalPrompt}`;
-          }
-        }
-        await dispatch(promptToSend, effectiveAgent, controller.signal);
+        await dispatch(originalPrompt, effectiveAgent, controller.signal);
       }
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task failed");
