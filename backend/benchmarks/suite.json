@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "Code Conductor coding-agent smoke benchmark",
+  "description": "Small, deterministic tasks used to compare provider success rate, verification quality, latency, and retry behavior. Each task is run in a fresh copy of its fixture.",
+  "tasks": [
+    {
+      "id": "python-discount",
+      "fixture": "python-discount",
+      "prompt": "Implement calculate_discount(price, percent) in discount.py. Return price after applying the percentage discount. Validate that price is non-negative and percent is between 0 and 100 inclusive; raise ValueError otherwise. Keep the API simple and make the existing pytest suite pass.",
+      "agent_id": "auto",
+      "auto_verify": true,
+      "expected_verification_status": "passed"
+    }
+  ]
+}

@@ -117,6 +117,8 @@ class TaskRecord:
         self.started_at: float | None = None
         self.completed_at: float | None = None
         self.error: str | None = None
+        self.evidence: list[dict] = []
+        self.verification_status = "not_requested"
         self.event_queue = PersistentEventQueue(self)
         if restored:
             try:
@@ -127,7 +129,59 @@ class TaskRecord:
             self.started_at = restored.get("started_at")
             self.completed_at = restored.get("completed_at")
             self.error = restored.get("error")
+            evidence = restored.get("evidence", [])
+            self.evidence = [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
+            self.verification_status = str(restored.get("verification_status") or "not_requested")
         self._persist()
+
+    def add_evidence(
+        self,
+        kind: str,
+        status: str,
+        summary: str,
+        *,
+        details: dict | None = None,
+        artifacts: list[str] | None = None,
+    ) -> dict:
+        """Attach bounded, machine-readable evidence to the task and artifact manifest."""
+        item = {
+            "evidence_id": uuid.uuid4().hex,
+            "kind": str(kind)[:80],
+            "status": str(status)[:40],
+            "summary": str(summary)[:1000],
+            "timestamp": time.time(),
+            "details": details or {},
+            "artifacts": [str(path)[:500] for path in (artifacts or [])[:20]],
+        }
+        self.evidence.append(item)
+        self.evidence = self.evidence[-200:]
+        self._persist()
+        try:
+            root = Path(self.request.workspace_path).resolve()
+            artifact_dir = root / ".code-conductor" / "artifacts" / self.task_id
+            # Resolve before creating anything: an existing symlink must not redirect
+            # directory creation outside the selected workspace.
+            resolved_dir = artifact_dir.resolve()
+            if not resolved_dir.is_relative_to(root):
+                raise ValueError("Evidence artifact directory escapes the selected workspace.")
+            resolved_dir.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "schema_version": 1,
+                "task_id": self.task_id,
+                "task_status": self.status.value,
+                "verification_status": self.verification_status,
+                "updated_at": time.time(),
+                "evidence": self.evidence,
+            }
+            target = resolved_dir / "evidence.json"
+            temporary = resolved_dir / "evidence.json.tmp"
+            temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(target)
+        except (OSError, ValueError, TypeError):
+            # The durable task database remains authoritative if workspace artifacts
+            # cannot be written (for example, a read-only workspace).
+            pass
+        return item
 
     @property
     def status(self) -> TaskStatus:
@@ -154,6 +208,8 @@ class TaskRecord:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "error": self.error,
+            "verification_status": self.verification_status,
+            "evidence": self.evidence,
         }
 
 
@@ -367,10 +423,12 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
         if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
             root = Path(record.request.workspace_path).resolve()
             artifact_dir = root / ".code-conductor" / "artifacts" / record.task_id
-            artifact_dir.mkdir(parents=True, exist_ok=True)
+            # Resolve before mkdir to prevent a pre-existing symlink from redirecting
+            # screenshot writes outside the selected workspace.
             resolved_dir = artifact_dir.resolve()
             if not resolved_dir.is_relative_to(root):
                 raise ValueError("Browser artifact directory escapes the selected workspace.")
+            resolved_dir.mkdir(parents=True, exist_ok=True)
             image_path = resolved_dir / "browser-verification.png"
             if not image_path.resolve().is_relative_to(root):
                 raise ValueError("Browser screenshot path escapes the selected workspace.")
@@ -399,6 +457,15 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "body_text_excerpt": result.get("body_text_excerpt", "")[-3000:],
             "screenshot_artifact": artifact_relative,
         }, ensure_ascii=False)
+        decoded_diagnostic = json.loads(diagnostic)
+        record.verification_status = "passed" if success else "failed"
+        record.add_evidence(
+            "browser_verification",
+            "passed" if success else "failed",
+            "Browser acceptance checks " + ("passed." if success else "failed."),
+            details=decoded_diagnostic,
+            artifacts=[artifact_relative] if artifact_relative else [],
+        )
         await record.event_queue.put(json.dumps({
             "task_id": record.task_id,
             "event_type": "log",
@@ -407,12 +474,17 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "data": {
                 "phase": "browser_verification",
                 "status": "passed" if success else "failed",
-                "result": json.loads(diagnostic),
+                "result": decoded_diagnostic,
             },
         }))
         return success, diagnostic
     except Exception as exc:
         diagnostic = f"Browser verification could not complete: {str(exc)[:500]}"
+        record.verification_status = "failed"
+        record.add_evidence(
+            "browser_verification", "error", diagnostic,
+            details={"error": str(exc)[:1000]},
+        )
         await record.event_queue.put(json.dumps({
             "task_id": record.task_id,
             "event_type": "log",
@@ -571,6 +643,12 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             runner = SafeTestRunner(record.request.workspace_path)
             command_key = runner.discover_runner()
             if command_key is None:
+                record.verification_status = "skipped"
+                record.add_evidence(
+                    "automated_tests", "skipped",
+                    "No supported test command was detected; task completion is not test-verified.",
+                    details={"reason": "no_supported_test_command"},
+                )
                 await record.event_queue.put(json.dumps({
                     "task_id": record.task_id, "event_type": "log",
                     "text": "Verification skipped: no supported test command was detected. Enable a test script or configure tests, then rerun with Auto Verify.",
@@ -594,9 +672,22 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             verification_attempt += 1
             result = await runner.run_tests(command_key=command_key, timeout_seconds=120)
             # Cancellation can arrive while the test subprocess is running. Do not
-            # emit a stale verification result or let this pipeline overwrite it.
+            # emit stale verification evidence or let this pipeline overwrite it.
             if record.status == TaskStatus.CANCELLED:
                 break
+            record.verification_status = "passed" if result.passed else "failed"
+            record.add_evidence(
+                "automated_tests",
+                "passed" if result.passed else "failed",
+                f"{command_key} {'passed' if result.passed else 'failed'} with exit code {result.exit_code}.",
+                details={
+                    "command": result.command,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                    "stdout_tail": result.stdout[-12000:],
+                    "stderr_tail": result.stderr[-12000:],
+                },
+            )
             await record.event_queue.put(json.dumps({
                 "task_id": record.task_id, "event_type": "log",
                 "text": f"Verification attempt {verification_attempt}/{record.request.verification_max_attempts}: {command_key} {'passed' if result.passed else 'failed'} (exit {result.exit_code}).",
@@ -689,6 +780,21 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
         ):
             record.completed_at = time.time()
+        if record.status == TaskStatus.COMPLETED and not any(
+            item.get("kind") == "task_completion" for item in record.evidence
+        ):
+            record.add_evidence(
+                "task_completion",
+                "completed",
+                "Agent execution reached a terminal completion event.",
+                details={
+                    "agent_id": record.agent_id,
+                    "verification_status": record.verification_status,
+                    "verification_requested": bool(
+                        record.request.auto_verify or record.request.browser_verify_url
+                    ),
+                },
+            )
         record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
@@ -853,6 +959,25 @@ async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
             detail=f"Task '{task_id}' not found.",
         )
     return record.snapshot()
+
+
+@app.get("/tasks/{task_id}/evidence")
+async def get_task_evidence(task_id: str, _: str = Depends(require_bearer_token)):
+    """Return the machine-readable evidence attached to a task."""
+    record = _tasks.get(task_id)
+    if not record:
+        # Restore persisted history for clients that reconnect after a backend restart.
+        await _restore_task_records()
+        record = _tasks.get(task_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    return {
+        "task_id": record.task_id,
+        "task_status": record.status.value,
+        "verification_status": record.verification_status,
+        "evidence": record.evidence,
+        "manifest_path": f".code-conductor/artifacts/{record.task_id}/evidence.json",
+    }
 
 
 @app.get("/tasks/{task_id}/artifacts/browser-verification.png")
