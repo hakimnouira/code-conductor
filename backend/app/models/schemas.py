@@ -233,6 +233,9 @@ class TestRunResponse(BaseModel):
 class ScheduleCreateRequest(BaseModel):
     workflow_id: str = Field(min_length=1, max_length=80)
     interval_minutes: int = Field(default=60, ge=15, le=43200)
+    cron_expression: str | None = Field(default=None, max_length=100)
+    timezone: str = Field(default="UTC", min_length=1, max_length=100)
+    misfire_policy: Literal["skip", "run_once"] = "run_once"
     max_retries: int = Field(default=1, ge=0, le=3)
     enabled: bool = True
     workspace_path: str | None = None
@@ -248,6 +251,10 @@ class ScheduleResponse(BaseModel):
     name: str
     workspace_path: str = ""
     interval_minutes: int
+    schedule_type: Literal["interval", "cron"] = "interval"
+    cron_expression: str = ""
+    timezone: str = "UTC"
+    misfire_policy: Literal["skip", "run_once"] = "run_once"
     enabled: bool
     next_run_at: float
     max_retries: int
