@@ -67,7 +67,7 @@ def test_provider_disconnect_fails_closed_and_releases_execution_lease(tmp_path,
     provider = next(item for item in record.evidence if item.get("kind") == "provider_execution")
     assert provider["status"] == "failed"
     assert provider["details"]["terminal_event_seen"] is False
-    assert claim_task_lease(record.task_id, "next-worker", now=10_000_000)
+    assert claim_task_lease(record.task_id, "next-worker")
 
 
 def test_provider_stream_ending_without_terminal_event_is_not_success(tmp_path, monkeypatch):
