@@ -244,3 +244,31 @@ async def test_browser_screenshot_artifact_endpoint_is_authenticated_and_workspa
             assert response.headers["content-type"].startswith("image/png")
     finally:
         _tasks.pop(task_id, None)
+
+
+
+@pytest.mark.asyncio
+async def test_persisted_event_history_restores_completed_task_details(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/tasks",
+            json={"prompt": "Persisted event history", "agent_id": "mock", "github_research": False},
+            headers=auth_headers,
+        )
+        assert created.status_code == 200
+        task_id = created.json()["task_id"]
+
+        for _ in range(100):
+            status_response = await client.get(f"/tasks/{task_id}", headers=auth_headers)
+            if status_response.json()["status"] in {"completed", "failed", "cancelled"}:
+                break
+            await asyncio.sleep(0.05)
+
+        history = await client.get(f"/tasks/{task_id}/event-history", headers=auth_headers)
+        assert history.status_code == 200
+        body = history.json()
+        assert body["task_id"] == task_id
+        assert body["events"]
+        ids = [event["event_id"] for event in body["events"]]
+        assert ids == sorted(ids)
+        assert any(event["event_type"] == "completed" for event in body["events"])
