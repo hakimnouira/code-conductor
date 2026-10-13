@@ -1,0 +1,85 @@
+name: Nightly Reliability Suite
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-reliability-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repeated-backend-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        iteration: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Configure Git identity for checkpoint tests
+        run: |
+          git config --global user.name "Code Conductor Reliability CI"
+          git config --global user.email "reliability-ci@example.com"
+      - name: Exercise task ownership, restart recovery, completion gates, and scheduling
+        env:
+          PYTHONPATH: backend
+        run: |
+          python -m pytest -q \
+            backend/tests/test_task_leases.py \
+            backend/tests/test_atomic_task_creation.py \
+            backend/tests/test_restart_recovery_integration.py \
+            backend/tests/test_lease_loss_stops_worker.py \
+            backend/tests/test_completion_gate.py \
+            backend/tests/test_completion_provenance_gate.py \
+            backend/tests/test_cron_scheduler.py \
+            backend/tests/test_scheduler.py \
+            --junitxml="reliability-results-${{ matrix.iteration }}.xml"
+      - name: Upload repeated reliability results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-reliability-${{ matrix.iteration }}
+          path: reliability-results-${{ matrix.iteration }}.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  real-browser-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+      - name: Run real browser verification integration tests
+        env:
+          PYTHONPATH: backend
+          CI: "true"
+        run: python -m pytest -q -m browser_integration backend/tests/test_browser_integration.py --junitxml=browser-reliability-results.xml
+      - name: Upload browser reliability results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-reliability
+          path: browser-reliability-results.xml
+          if-no-files-found: warn
+          retention-days: 14
