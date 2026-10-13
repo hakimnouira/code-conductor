@@ -286,12 +286,13 @@ async def test_task_creation_is_idempotent_and_rejects_key_reuse_with_different_
             "github_research": False,
             "idempotency_key": "test-idempotency-key-2026-10",
         }
-        first = await client.post("/tasks", json=payload, headers=auth_headers)
+        first, replay = await asyncio.gather(
+            client.post("/tasks", json=payload, headers=auth_headers),
+            client.post("/tasks", json=payload, headers=auth_headers),
+        )
         assert first.status_code == 200
-        task_id = first.json()["task_id"]
-
-        replay = await client.post("/tasks", json=payload, headers=auth_headers)
         assert replay.status_code == 200
+        task_id = first.json()["task_id"]
         assert replay.json()["task_id"] == task_id
         assert replay.json()["message"] == "Returning the existing task for this idempotency key."
 
