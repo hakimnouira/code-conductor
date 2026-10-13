@@ -37,21 +37,42 @@ async def _monitor_run(
     workflow = run["workflow"]
     attempt = int(run.get("attempt") or 0)
     task_id = str(run.get("task_id") or "")
+    dispatch_failures = 0
 
     while not stop_event.is_set():
         if not task_id:
-            attempt += 1
+            # Reuse the same attempt key when a dispatch response is lost. A backend
+            # restart after task persistence but before saving task_id must not spawn
+            # a second provider task.
+            if str(run.get("status") or "queued") != "running" or attempt <= 0:
+                attempt += 1
             update_schedule_run(run_id, status="running", attempt=attempt, started_at=time.time(), error="")
+            run["status"] = "running"
+            dispatch_payload = dict(workflow)
+            dispatch_payload["_code_conductor_idempotency_key"] = (
+                f"code-conductor:schedule:{run_id}:attempt:{attempt}"
+            )
             try:
-                task_id = await dispatch(workflow)
-                update_schedule_run(run_id, task_id=task_id, status="running", attempt=attempt)
+                task_id = await dispatch(dispatch_payload)
+                update_schedule_run(run_id, task_id=task_id, status="running", attempt=attempt, error="")
+                dispatch_failures = 0
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 error = str(exc)[:1200]
-                if attempt <= int(run.get("max_retries") or 0):
-                    update_schedule_run(run_id, status="queued", attempt=attempt, error=error)
-                    task_id = ""
-                    await asyncio.sleep(min(2 ** min(attempt, 4), 15))
-                    continue
+                dispatch_failures += 1
+                if dispatch_failures <= int(run.get("max_retries") or 0):
+                    # Keep this logical attempt running so retries/restarts reuse its
+                    # idempotency key. A new attempt is only created after a known
+                    # terminal task failure.
+                    update_schedule_run(run_id, status="running", attempt=attempt, error=error)
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(), timeout=min(2 ** min(dispatch_failures, 4), 15)
+                        )
+                        return
+                    except asyncio.TimeoutError:
+                        continue
                 update_schedule_run(
                     run_id, status="failed", completed_at=time.time(),
                     attempt=attempt, error=error,
@@ -94,6 +115,7 @@ async def _monitor_run(
             update_schedule_run(
                 run_id, status="queued", task_id="", attempt=attempt, error=error,
             )
+            run["status"] = "queued"
             task_id = ""
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=min(2 ** min(attempt, 4), 15))
