@@ -793,6 +793,24 @@ export default function App() {
     }
   };
 
+  const runScheduleNow = async (scheduleId: string) => {
+    setScheduleBusyId(scheduleId);
+    setError("");
+    try {
+      const response = await request("/schedules/" + encodeURIComponent(scheduleId) + "/run-now", {
+        method: "POST",
+      });
+      const run = await response.json() as ScheduledRun;
+      setScheduleRunDetails(old => ({ ...old, [scheduleId]: [run, ...(old[scheduleId] || []).filter(item => item.run_id !== run.run_id)] }));
+      setScheduleRunsOpenId(scheduleId);
+      setNotice("Immediate workflow run queued. Its result will appear in run history.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not queue an immediate workflow run");
+    } finally {
+      setScheduleBusyId("");
+    }
+  };
+
   const toggleScheduleRuns = async (scheduleId: string) => {
     if (scheduleRunsOpenId === scheduleId) {
       setScheduleRunsOpenId("");
@@ -3261,6 +3279,7 @@ export default function App() {
                             {schedule.enabled ? "Enabled" : "Paused"} · Next: {new Date(schedule.next_run_at * 1000).toLocaleString()} · Last run: {schedule.last_status || "Never"}{schedule.failure_streak ? ` · failure streak ${schedule.failure_streak}` : ""}
                           </span>
                         </div>
+                        <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void runScheduleNow(schedule.schedule_id)}>Run now</button>
                         <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduleRuns(schedule.schedule_id)}>Runs</button>
                         <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduledWorkflow(schedule)}>{scheduleBusyId === schedule.schedule_id ? <LoaderCircle size={13}/> : schedule.enabled ? "Pause" : "Resume"}</button>
                         <button className="icon-button" disabled={!!scheduleBusyId} onClick={() => void deleteScheduledWorkflow(schedule.schedule_id)} title="Delete schedule"><Trash2 size={14}/></button>
