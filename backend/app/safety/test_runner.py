@@ -1,10 +1,12 @@
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from app.models.schemas import TestRunResponse
@@ -15,6 +17,22 @@ class RunnerSecurityError(Exception):
 
 # Backward compatibility alias
 TestRunnerSecurityError = RunnerSecurityError
+
+
+async def _read_bounded(stream: asyncio.StreamReader, limit: int = 1_000_000) -> tuple[bytes, bool]:
+    """Drain a subprocess pipe while retaining only its final bounded byte window."""
+    retained = bytearray()
+    total = 0
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        retained.extend(chunk)
+        if len(retained) > limit:
+            del retained[:-limit]
+    return bytes(retained), total > limit
+
 
 FORBIDDEN_ARG_CHARS = {";", "&", "|", "`", "$", "<", ">", "\n", "\r"}
 
@@ -48,6 +66,67 @@ class SafeTestRunner:
             "vitest": [npx_path, "vitest", "run"],
             "node": [node_path],
         }
+
+    def _docker_sandbox_command(
+        self,
+        command_key: str,
+        extra_args: list[str],
+    ) -> tuple[list[str], str, str]:
+        """Build a fail-closed Docker command with no network and bounded resources."""
+        image = os.environ.get("CODE_CONDUCTOR_TEST_SANDBOX_IMAGE", "").strip()
+        if not image or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,200}", image):
+            raise TestRunnerSecurityError(
+                "Docker sandboxing requires CODE_CONDUCTOR_TEST_SANDBOX_IMAGE to name a valid, prebuilt image."
+            )
+        docker = shutil.which("docker")
+        if not docker:
+            raise TestRunnerSecurityError(
+                "Docker sandboxing is enabled but the Docker CLI is unavailable; refusing to run tests on the host."
+            )
+        source = self.workspace_root.as_posix()
+        if "," in source:
+            raise TestRunnerSecurityError("Workspace paths containing commas cannot be mounted safely in Docker mode.")
+        container_name = "code-conductor-test-" + uuid.uuid4().hex[:16]
+        commands = {
+            "pytest": ["python", "-m", "pytest"],
+            "unittest": ["python", "-m", "unittest"],
+            "python": ["python"],
+            "npm_test": ["npm", "test"],
+            "npm_build": ["npm", "run", "build"],
+            "vitest": ["npx", "vitest", "run"],
+            "node": ["node"],
+        }
+        inner_command = commands[command_key] + list(extra_args)
+        command = [
+            docker, "run", "--rm", "--name", container_name,
+            "--network", "none",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--pids-limit=256",
+            "--memory=2g",
+            "--cpus=2",
+            "--tmpfs", "/tmp:rw,nosuid,size=256m",
+            "--mount", f"type=bind,source={source},target=/workspace,rw",
+            "--workdir", "/workspace",
+            image,
+            *inner_command,
+        ]
+        return command, container_name, docker
+
+    @staticmethod
+    def _stop_docker_container(docker: str | None, container_name: str | None) -> None:
+        if not docker or not container_name:
+            return
+        try:
+            subprocess.run(
+                [docker, "rm", "-f", container_name],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     def discover_runner(self) -> str | None:
         """Select a likely test runner from explicit test configuration or test files.
@@ -118,11 +197,19 @@ class SafeTestRunner:
                 f"Unknown test runner '{command_key}'. Allowed: {list(runners.keys())}"
             )
 
-        base_cmd = list(runners[command_key])
         user_args = list(extra_args or [])
         self.validate_args(user_args)
-
-        full_cmd = base_cmd + user_args
+        execution_mode = os.environ.get("CODE_CONDUCTOR_TEST_SANDBOX", "host").strip().lower() or "host"
+        container_name: str | None = None
+        docker_executable: str | None = None
+        if execution_mode == "docker":
+            full_cmd, container_name, docker_executable = self._docker_sandbox_command(command_key, user_args)
+        elif execution_mode == "host":
+            full_cmd = list(runners[command_key]) + user_args
+        else:
+            raise TestRunnerSecurityError(
+                "CODE_CONDUCTOR_TEST_SANDBOX must be 'host' or 'docker'."
+            )
         cmd_display = " ".join(full_cmd)
 
         t_start = time.perf_counter()
@@ -139,19 +226,22 @@ class SafeTestRunner:
                 start_new_session=(sys.platform != "win32"),
             )
 
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(),
+            stdout_reader = asyncio.create_task(_read_bounded(proc.stdout))
+            stderr_reader = asyncio.create_task(_read_bounded(proc.stderr))
+            await asyncio.wait_for(
+                asyncio.gather(proc.wait(), stdout_reader, stderr_reader),
                 timeout=float(timeout_seconds),
             )
+            (stdout_b, stdout_truncated) = stdout_reader.result()
+            (stderr_b, stderr_truncated) = stderr_reader.result()
             duration_ms = (time.perf_counter() - t_start) * 1000.0
 
             exit_code = proc.returncode if proc.returncode is not None else 0
-            # Keep test evidence bounded even when a failing test emits huge logs.
-            stdout_str = stdout_b[-1_000_000:].decode("utf-8", errors="replace")
-            stderr_str = stderr_b[-1_000_000:].decode("utf-8", errors="replace")
-            if len(stdout_b) > 1_000_000:
+            stdout_str = stdout_b.decode("utf-8", errors="replace")
+            stderr_str = stderr_b.decode("utf-8", errors="replace")
+            if stdout_truncated:
                 stdout_str = "[earlier stdout truncated]\n" + stdout_str
-            if len(stderr_b) > 1_000_000:
+            if stderr_truncated:
                 stderr_str = "[earlier stderr truncated]\n" + stderr_str
 
             return TestRunResponse(
@@ -161,11 +251,13 @@ class SafeTestRunner:
                 stdout=stdout_str,
                 stderr=stderr_str,
                 duration_ms=round(duration_ms, 2),
+                execution_mode=execution_mode,
             )
 
         except asyncio.CancelledError:
             # Cancelling the parent task must not leave tests, browsers, or build
             # subprocesses running in the background.
+            self._stop_docker_container(docker_executable, container_name)
             if proc and proc.pid:
                 if sys.platform == "win32":
                     subprocess.run(
@@ -187,6 +279,7 @@ class SafeTestRunner:
             raise
         except asyncio.TimeoutError:
             duration_ms = (time.perf_counter() - t_start) * 1000.0
+            self._stop_docker_container(docker_executable, container_name)
             if proc and proc.pid:
                 if sys.platform == "win32":
                     subprocess.run(
@@ -215,6 +308,7 @@ class SafeTestRunner:
                 stdout="",
                 stderr=f"Test run timed out after {timeout_seconds} seconds.",
                 duration_ms=round(duration_ms, 2),
+                execution_mode=execution_mode,
             )
         except Exception as e:
             duration_ms = (time.perf_counter() - t_start) * 1000.0
@@ -225,4 +319,5 @@ class SafeTestRunner:
                 stdout="",
                 stderr=f"Execution error: {str(e)}",
                 duration_ms=round(duration_ms, 2),
+                execution_mode=execution_mode,
             )

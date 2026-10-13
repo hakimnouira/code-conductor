@@ -227,6 +227,7 @@ class TestRunResponse(BaseModel):
     stdout: str
     stderr: str
     duration_ms: float
+    execution_mode: Literal["host", "docker"] = "host"
 
 
 

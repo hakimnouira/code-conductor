@@ -683,6 +683,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 f"{command_key} {'passed' if result.passed else 'failed'} with exit code {result.exit_code}.",
                 details={
                     "command": result.command,
+                    "execution_mode": result.execution_mode,
                     "exit_code": result.exit_code,
                     "duration_ms": result.duration_ms,
                     "stdout_tail": result.stdout[-12000:],
