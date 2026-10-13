@@ -38,6 +38,25 @@ The first setup can take a few minutes and requires Python 3.11+ and Node.js/npm
 
 ---
 
+### Keep the scheduler running when the dashboard is closed (Windows)
+
+The durable scheduler lives in the backend, so the backend must stay running even when you close the browser. To start it at Windows logon and restart it after process failures, run this once from PowerShell in the repository:
+
+    .\scripts\install-background-task.ps1
+
+This registers a per-user Windows Task Scheduler task that runs only the local backend on 127.0.0.1:8765 (it does not open the dashboard). The runner supervises restarts and appends logs to %USERPROFILE%\.code-conductor\backend.log. The task runs while your Windows user is signed in; it is not a Windows service and does not run after logoff or shutdown.
+
+Remove the task with:
+
+    .\scripts\remove-background-task.ps1
+
+When this task is installed, Stop_CodeConductor.bat or cxcode stop can be followed by an automatic backend restart. Remove or stop the scheduled task first if you want the backend to remain stopped.
+
+Optional Windows toast notifications for scheduled workflow success/failure are off by default. Enable them for your Windows user with:
+
+    [Environment]::SetEnvironmentVariable("CODE_CONDUCTOR_DESKTOP_NOTIFICATIONS", "1", "User")
+
+Then restart the background task. Notifications are emitted by the backend, so they do not require the dashboard to be open. Disable them by setting the same user environment variable to an empty string or null and restarting the task.
 ## Architecture Overview
 
 1. **VS Code Extension (TypeScript)**:

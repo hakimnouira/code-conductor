@@ -420,6 +420,7 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
             claimed.append({
                 "run_id": run_id,
                 "schedule_id": schedule["schedule_id"],
+                "name": schedule["name"],
                 "workflow": schedule["workflow"],
                 "status": "queued",
                 "task_id": "",
@@ -473,13 +474,17 @@ def queue_schedule_run_now(schedule_id: str, now: float | None = None) -> tuple[
 def get_incomplete_schedule_runs(limit: int = 200) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
-            """SELECT * FROM schedule_runs WHERE status IN ('queued', 'running')
-               ORDER BY scheduled_for ASC LIMIT ?""",
+            """SELECT schedule_runs.*, scheduled_workflows.name AS schedule_name
+               FROM schedule_runs
+               LEFT JOIN scheduled_workflows ON scheduled_workflows.schedule_id = schedule_runs.schedule_id
+               WHERE schedule_runs.status IN ('queued', 'running')
+               ORDER BY schedule_runs.scheduled_for ASC LIMIT ?""",
             (min(max(1, limit), 500),),
         ).fetchall()
     result = []
     for row in rows:
         item = dict(row)
+        item["name"] = item.pop("schedule_name", None) or f"Workflow {str(item.get('schedule_id', ''))[:8]}"
         try:
             item["workflow"] = json.loads(item.pop("workflow_json"))
         except (TypeError, json.JSONDecodeError):

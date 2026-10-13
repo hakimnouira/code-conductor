@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.notifications import notify_schedule_outcome
 from app.task_store import (
     claim_due_schedules,
     get_incomplete_schedule_runs,
@@ -56,6 +57,11 @@ async def _monitor_run(
                     attempt=attempt, error=error,
                 )
                 update_schedule(schedule_id, last_run_at=time.time(), last_status="failed", failure_streak_delta=1)
+                notify_schedule_outcome(
+                    str(run.get("name") or f"Workflow {schedule_id[:8]}"),
+                    "failed",
+                    error,
+                )
                 return
 
         try:
@@ -106,6 +112,11 @@ async def _monitor_run(
             last_status=terminal_status,
             last_task_id=task_id,
             failure_streak_delta=0 if terminal_status == "completed" else 1,
+        )
+        notify_schedule_outcome(
+            str(run.get("name") or f"Workflow {schedule_id[:8]}"),
+            terminal_status,
+            error,
         )
         return
 
