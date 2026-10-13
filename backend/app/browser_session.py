@@ -44,9 +44,13 @@ class BrowserEvalPayload(BaseModel):
 
 
 class BrowserVerifyPayload(BaseModel):
-    url: str = Field(..., description="HTTP(S) URL to open and smoke-check")
+    url: str = Field(..., description="HTTP(S) URL to open and verify")
     tab_id: str | None = None
     wait_seconds: int = Field(default=2, ge=1, le=10)
+    required_text: list[str] = Field(default_factory=list, max_length=20)
+    forbidden_text: list[str] = Field(default_factory=list, max_length=20)
+    visible_selectors: list[str] = Field(default_factory=list, max_length=20)
+    hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
 
 
 def get_current_endpoint() -> str:
@@ -357,7 +361,14 @@ async def browser_automation_test(
 ) -> dict[str, Any]:
     """Run Playwright-based verification in the configured Chromium browser."""
     try:
-        return await run_browser_automation(payload.url, wait_seconds=payload.wait_seconds)
+        return await run_browser_automation(
+            payload.url,
+            wait_seconds=payload.wait_seconds,
+            required_text=payload.required_text,
+            forbidden_text=payload.forbidden_text,
+            visible_selectors=payload.visible_selectors,
+            hidden_selectors=payload.hidden_selectors,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
