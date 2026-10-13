@@ -160,9 +160,16 @@ async def test_task_list_includes_completed_task(auth_headers):
 async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, monkeypatch):
     import base64
 
-    async def fake_verify(url, wait_seconds=2):
+    async def fake_verify(url, wait_seconds=2, assertions=None):
         assert url == "http://localhost:3000"
         assert wait_seconds == 2
+        assert assertions == {
+            "expected_text": ["Dashboard"],
+            "forbidden_text": ["Application error"],
+            "required_selectors": ["main"],
+            "expected_url_contains": None,
+            "expected_title_contains": None,
+        }
         return {
             "success": True,
             "url": url,
@@ -180,6 +187,11 @@ async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, 
             prompt="verify local app",
             workspace_path=str(tmp_path),
             browser_verify_url="http://localhost:3000",
+            browser_assertions={
+                "expected_text": ["Dashboard"],
+                "forbidden_text": ["Application error"],
+                "required_selectors": ["main"],
+            },
             github_research=False,
         ),
         "mock",
