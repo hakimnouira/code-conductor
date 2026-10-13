@@ -11,7 +11,8 @@ type Health = { status: string; version: string; workspace: string; active_tasks
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
 type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };
-type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };\ntype ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
+type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
+type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
@@ -156,7 +157,12 @@ export default function App() {
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowName, setWorkflowName] = useState("");
-  const [workflowBusy, setWorkflowBusy] = useState(false);\n  const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);\n  const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);\n  const [scheduleBusyId, setScheduleBusyId] = useState("");\n  const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");\n  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);
+  const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);
+  const [scheduleBusyId, setScheduleBusyId] = useState("");
+  const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");
+  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
