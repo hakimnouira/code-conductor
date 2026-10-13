@@ -73,7 +73,11 @@ from app.scheduler import scheduler_loop
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
-from app.task_store import (\n    append_event, claim_due_schedules, delete_schedule, delete_workflow, events_after,\n    get_incomplete_schedule_runs, get_saved_tasks, get_schedule, list_schedule_runs,\n    list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,\n)
+from app.task_store import (
+    append_event, delete_schedule, delete_workflow, events_after,
+    get_saved_tasks, get_schedule, list_schedule_runs,
+    list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
+)
 
 
 
