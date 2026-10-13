@@ -274,3 +274,28 @@ async def test_persisted_event_history_restores_completed_task_details(auth_head
         ids = [event["event_id"] for event in body["events"]]
         assert ids == sorted(ids)
         assert any(event["event_type"] == "completed" for event in body["events"])
+
+
+
+@pytest.mark.asyncio
+async def test_task_creation_is_idempotent_and_rejects_key_reuse_with_different_request(auth_headers):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        payload = {
+            "prompt": "Idempotent scheduled task",
+            "agent_id": "mock",
+            "github_research": False,
+            "idempotency_key": "test-idempotency-key-2026-10",
+        }
+        first, replay = await asyncio.gather(
+            client.post("/tasks", json=payload, headers=auth_headers),
+            client.post("/tasks", json=payload, headers=auth_headers),
+        )
+        assert first.status_code == 200
+        assert replay.status_code == 200
+        task_id = first.json()["task_id"]
+        assert replay.json()["task_id"] == task_id
+        assert replay.json()["message"] == "Returning the existing task for this idempotency key."
+
+        changed = {**payload, "prompt": "Different task with same key"}
+        conflict = await client.post("/tasks", json=changed, headers=auth_headers)
+        assert conflict.status_code == 409

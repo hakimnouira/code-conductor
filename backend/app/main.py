@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import sys
 import time
@@ -115,6 +116,10 @@ class TaskRecord:
         self.task_id = task_id
         self.request = request
         self.agent_id = agent_id
+        self.request_fingerprint = str(
+            (restored or {}).get("request_fingerprint")
+            or hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
+        )
         self._status = TaskStatus.PENDING
         self.created_at = time.time()
         self.started_at: float | None = None
@@ -205,6 +210,7 @@ class TaskRecord:
             "task_id": self.task_id,
             "status": self.status.value,
             "agent_id": self.agent_id,
+            "request_fingerprint": self.request_fingerprint,
             "prompt": self.request.prompt,
             "workspace_path": self.request.workspace_path,
             "created_at": self.created_at,
@@ -217,6 +223,7 @@ class TaskRecord:
 
 
 _tasks: dict[str, TaskRecord] = {}
+_idempotency_lock = asyncio.Lock()
 _start_time = time.time()
 
 
@@ -257,6 +264,7 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
     request = TaskCreateRequest(
         prompt=str(workflow.get("prompt") or ""),
         agent_id=str(workflow.get("agent_id") or "auto"),
+        idempotency_key=str(workflow.get("_code_conductor_idempotency_key") or "") or None,
         workspace_path=str(workflow.get("workspace_path") or "") or None,
         auto_verify=bool(workflow.get("auto_verify", False)),
         browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
@@ -363,10 +371,11 @@ async def list_agents(_: str = Depends(require_bearer_token)):
     registry = get_agent_registry()
     return await registry.list_agents()
 
-@app.post("/tasks", response_model=TaskResponse)
-async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
-    if request.permission_mode == "god" and not request.god_mode_confirmed:
-        raise HTTPException(status_code=400, detail="God Mode requires explicit confirmation in the task request.")
+async def _create_task_record(
+    request: TaskCreateRequest,
+    validated_ws: Path,
+    task_id: str,
+) -> TaskResponse:
     registry = get_agent_registry()
     adapter = await registry.resolve_agent(request.agent_id, request.prompt)
     if not adapter:
@@ -375,7 +384,28 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
             detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
         )
 
-    # Validate workspace path security containment
+    record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
+    _tasks[task_id] = record
+    # Spawn background task processing that feeds the event queue.
+    asyncio.create_task(_run_task_pipeline(record, adapter))
+    return TaskResponse(
+        task_id=task_id,
+        status=TaskStatus.PENDING,
+        agent_id=adapter.agent_id,
+        prompt=request.prompt,
+        created_at=record.created_at,
+        message=f"Task assigned to '{adapter.name}'",
+        workspace_path=str(validated_ws),
+    )
+
+
+@app.post("/tasks", response_model=TaskResponse)
+async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
+    if request.permission_mode == "god" and not request.god_mode_confirmed:
+        raise HTTPException(status_code=400, detail="God Mode requires explicit confirmation in the task request.")
+
+    # Validate and canonicalize the workspace before computing an idempotency
+    # fingerprint, so equivalent requests resolve to the same task identity.
     try:
         validated_ws = validate_workspace_path(
             request.workspace_path,
@@ -388,22 +418,38 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
             detail=f"Invalid workspace path: {str(e)}",
         )
 
-    task_id = f"task-{uuid.uuid4().hex[:8]}"
-    record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
-    _tasks[task_id] = record
-
-    # Spawn background task processing that feeds the event queue
-    asyncio.create_task(_run_task_pipeline(record, adapter))
-
-    return TaskResponse(
-        task_id=task_id,
-        status=TaskStatus.PENDING,
-        agent_id=adapter.agent_id,
-        prompt=request.prompt,
-        created_at=record.created_at,
-        message=f"Task assigned to '{adapter.name}'",
-        workspace_path=str(validated_ws),
+    request_fingerprint = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
+    task_id = (
+        "task-" + hashlib.sha256(request.idempotency_key.encode("utf-8")).hexdigest()[:16]
+        if request.idempotency_key
+        else f"task-{uuid.uuid4().hex[:8]}"
     )
+
+    if request.idempotency_key:
+        # Serialize same-process duplicate requests, including the async provider
+        # lookup. The durable deterministic task ID additionally handles restarts.
+        async with _idempotency_lock:
+            if task_id not in _tasks:
+                await _restore_task_records()
+            existing = _tasks.get(task_id)
+            if existing:
+                if existing.request_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Idempotency key was already used with a different task request.",
+                    )
+                return TaskResponse(
+                    task_id=existing.task_id,
+                    status=existing.status,
+                    agent_id=existing.agent_id,
+                    prompt=request.prompt,
+                    created_at=existing.created_at,
+                    message="Returning the existing task for this idempotency key.",
+                    workspace_path=existing.request.workspace_path,
+                )
+            return await _create_task_record(request, validated_ws, task_id)
+
+    return await _create_task_record(request, validated_ws, task_id)
 
 async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
     """Run an opt-in browser smoke-check and persist its screenshot as a workspace artifact."""
