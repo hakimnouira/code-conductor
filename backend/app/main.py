@@ -200,6 +200,10 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
         workspace_path=str(workflow.get("workspace_path") or "") or None,
         auto_verify=bool(workflow.get("auto_verify", False)),
         browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
+        browser_required_text=workflow.get("browser_required_text") or [],
+        browser_forbidden_text=workflow.get("browser_forbidden_text") or [],
+        browser_visible_selectors=workflow.get("browser_visible_selectors") or [],
+        browser_hidden_selectors=workflow.get("browser_hidden_selectors") or [],
         github_research=False,
         permission_mode="safe",
     )
@@ -347,7 +351,14 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
         return True, ""
 
     try:
-        result = await run_browser_automation(target_url, wait_seconds=2)
+        result = await run_browser_automation(
+            target_url,
+            wait_seconds=2,
+            required_text=record.request.browser_required_text,
+            forbidden_text=record.request.browser_forbidden_text,
+            visible_selectors=record.request.browser_visible_selectors,
+            hidden_selectors=record.request.browser_hidden_selectors,
+        )
         screenshot_uri = result.pop("screenshot", None)
         artifact_relative = None
         if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
@@ -370,6 +381,7 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "url": result.get("url", target_url),
             "title": result.get("title", ""),
             "checks": result.get("checks", {}),
+            "acceptance_assertions": result.get("acceptance_assertions", {}),
             "main_document_status": result.get("main_document_status"),
             "page_errors": result.get("page_errors", []),
             "console_errors": result.get("console_errors", []),
@@ -700,6 +712,10 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "agent_id": workflow["agent_id"],
         "auto_verify": bool(workflow.get("auto_verify", False)),
         "browser_verify_url": workflow.get("browser_verify_url") or "",
+        "browser_required_text": workflow.get("browser_required_text") or [],
+        "browser_forbidden_text": workflow.get("browser_forbidden_text") or [],
+        "browser_visible_selectors": workflow.get("browser_visible_selectors") or [],
+        "browser_hidden_selectors": workflow.get("browser_hidden_selectors") or [],
         "workspace_path": workspace_path,
     }
     now = time.time()
@@ -779,6 +795,10 @@ async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_b
         "agent_id": req.agent_id.strip() or "auto",
         "auto_verify": req.auto_verify,
         "browser_verify_url": req.browser_verify_url or "",
+        "browser_required_text": req.browser_required_text,
+        "browser_forbidden_text": req.browser_forbidden_text,
+        "browser_visible_selectors": req.browser_visible_selectors,
+        "browser_hidden_selectors": req.browser_hidden_selectors,
         "created_at": now,
         "updated_at": now,
     }
