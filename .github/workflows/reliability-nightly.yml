@@ -46,6 +46,9 @@ jobs:
             backend/tests/test_completion_provenance_gate.py \
             backend/tests/test_cron_scheduler.py \
             backend/tests/test_scheduler.py \
+            backend/tests/test_provider_execution_evidence.py \
+            backend/tests/test_test_sandbox_policy.py \
+            backend/tests/test_docker_sandbox.py \
             --junitxml="reliability-results-${{ matrix.iteration }}.xml"
       - name: Upload repeated reliability results
         if: always()
