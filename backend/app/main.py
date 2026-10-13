@@ -1255,6 +1255,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         if lease_lost.is_set():
             lease_heartbeat.cancel()
             await asyncio.gather(lease_heartbeat, return_exceptions=True)
+            try:
+                await asyncio.wait_for(adapter.cancel_task(record.task_id), timeout=5)
+            except Exception:
+                pass
             await asyncio.to_thread(release_task_lease, record.task_id, lease_owner)
             # End this process's local stream without appending an event to the shared
             # event log or overwriting the active owner's durable task snapshot.
