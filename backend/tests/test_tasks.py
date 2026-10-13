@@ -348,3 +348,26 @@ async def test_retry_endpoint_rejects_active_task(auth_headers):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(f"/tasks/{active.task_id}/retry", headers=auth_headers)
     assert response.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_rejects_legacy_task_without_original_request(auth_headers):
+    legacy = TaskRecord(
+        "task-legacy-retry",
+        TaskCreateRequest(prompt="Mutable legacy request", agent_id="mock", github_research=False),
+        "mock",
+        restored={
+            "status": "failed",
+            "created_at": time.time(),
+            "completed_at": time.time(),
+            "error": "Backend restarted",
+            "evidence": [],
+        },
+        initial_request_json="",
+    )
+    _tasks[legacy.task_id] = legacy
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/tasks/{legacy.task_id}/retry", headers=auth_headers)
+    assert response.status_code == 409
+    assert "original request was not preserved" in response.json()["detail"].lower()
