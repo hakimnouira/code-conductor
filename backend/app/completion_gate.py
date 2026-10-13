@@ -63,8 +63,8 @@ def evaluate_completion_gate(request: Any, evidence: list[dict[str, Any]], verif
         if isinstance(details, dict) and details.get("required") is True and item.get("status") != "passed":
             failures.append(f"required_evidence_not_passed:{item.get('kind', 'unknown')}")
 
-    if verification_status == "failed":
-        failures.append("verification_status_failed")
+    if verification_requested and verification_status != "passed":
+        failures.append("verification_status_not_passed")
 
     # Preserve order while avoiding duplicate explanations.
     failures = list(dict.fromkeys(failures))
