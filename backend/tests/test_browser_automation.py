@@ -2,6 +2,7 @@
 import pytest
 
 from app.browser_automation import _validate_target_url, build_browser_report, evaluate_acceptance_assertions
+from app.browser_session import BrowserVerifyPayload
 
 
 pytestmark = pytest.mark.unit
@@ -117,3 +118,14 @@ def test_browser_report_fails_when_acceptance_assertions_fail():
     )
     assert report["success"] is False
     assert report["checks"]["acceptance_assertions_passed"] is False
+
+
+def test_browser_payload_bounds_assertion_count_and_item_length():
+    payload = BrowserVerifyPayload(
+        url="http://127.0.0.1:5173",
+        required_text=["  " + ("x" * 700) + "  ", "Dashboard"],
+    )
+    assert len(payload.required_text[0]) == 500
+    assert payload.required_text[1] == "Dashboard"
+    with pytest.raises(Exception):
+        BrowserVerifyPayload(url="http://127.0.0.1:5173", required_text=[str(i) for i in range(21)])
