@@ -42,6 +42,18 @@ def _connect() -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_task_events_task_id_event_id ON task_events(task_id, event_id)"
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS workflow_presets (
+            workflow_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            auto_verify INTEGER NOT NULL DEFAULT 0,
+            browser_verify_url TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )"""
+    )
     connection.commit()
     return connection
 
@@ -99,3 +111,52 @@ def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
         except (TypeError, json.JSONDecodeError):
             continue
     return result
+
+
+
+def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
+    with _connect() as db:
+        rows = db.execute(
+            """SELECT workflow_id, name, prompt, agent_id, auto_verify,
+                      browser_verify_url, created_at, updated_at
+               FROM workflow_presets ORDER BY updated_at DESC LIMIT ?""",
+            (min(max(1, limit), 200),),
+        ).fetchall()
+    return [
+        {
+            **dict(row),
+            "auto_verify": bool(row["auto_verify"]),
+        }
+        for row in rows
+    ]
+
+
+def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
+    now = float(workflow.get("updated_at") or __import__("time").time())
+    created_at = float(workflow.get("created_at") or now)
+    with _connect() as db:
+        db.execute(
+            """INSERT INTO workflow_presets(
+                    workflow_id, name, prompt, agent_id, auto_verify,
+                    browser_verify_url, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(workflow_id) DO UPDATE SET
+                    name=excluded.name,
+                    prompt=excluded.prompt,
+                    agent_id=excluded.agent_id,
+                    auto_verify=excluded.auto_verify,
+                    browser_verify_url=excluded.browser_verify_url,
+                    updated_at=excluded.updated_at""",
+            (
+                workflow["workflow_id"], workflow["name"], workflow["prompt"],
+                workflow.get("agent_id", "auto"), int(bool(workflow.get("auto_verify", False))),
+                workflow.get("browser_verify_url", ""), created_at, now,
+            ),
+        )
+    return next((item for item in list_workflows(200) if item["workflow_id"] == workflow["workflow_id"]), dict(workflow))
+
+
+def delete_workflow(workflow_id: str) -> bool:
+    with _connect() as db:
+        cursor = db.execute("DELETE FROM workflow_presets WHERE workflow_id = ?", (workflow_id,))
+        return cursor.rowcount > 0
