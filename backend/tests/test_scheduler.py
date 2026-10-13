@@ -16,10 +16,17 @@ async def test_schedules_are_persistent_pauseable_and_keep_run_history(tmp_path,
     headers = {"Authorization": f"Bearer {get_settings().auth_token}"}
     async with AsyncClient(transport=ASGITransport(app=__import__("app.main", fromlist=["app"]).app), base_url="http://test") as client:
         workflow = await client.post("/workflows", headers=headers, json={
-            "name": "Nightly check", "prompt": "Run tests and summarize failures", "agent_id": "auto"
+            "name": "Nightly check", "prompt": "Run tests and summarize failures", "agent_id": "auto",
+            "browser_verify_url": "http://localhost:3000",
+            "browser_assertions": {
+                "expected_text": ["Dashboard"],
+                "forbidden_text": ["Application error"],
+                "required_selectors": ["main"],
+            },
         })
         assert workflow.status_code == 200
         workflow_id = workflow.json()["workflow_id"]
+        assert workflow.json()["browser_assertions"]["expected_text"] == ["Dashboard"]
 
         unauthenticated = await client.get("/schedules")
         assert unauthenticated.status_code == 401
