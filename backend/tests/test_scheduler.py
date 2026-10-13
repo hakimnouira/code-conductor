@@ -90,6 +90,36 @@ def test_due_schedule_claim_is_atomic_and_persists_recoverable_run(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_run_now_api_requires_auth_and_returns_durable_run(tmp_path, monkeypatch):
+    from app.main import app
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-run-now-api.sqlite3"))
+    headers = {"Authorization": f"Bearer {get_settings().auth_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workflow_response = await client.post("/workflows", headers=headers, json={
+            "name": "Immediate", "prompt": "Run a real browser flow", "agent_id": "auto"
+        })
+        workflow_id = workflow_response.json()["workflow_id"]
+        schedule_response = await client.post("/schedules", headers=headers, json={
+            "workflow_id": workflow_id, "interval_minutes": 60, "max_retries": 1
+        })
+        schedule_id = schedule_response.json()["schedule_id"]
+
+        unauthorized = await client.post(f"/schedules/{schedule_id}/run-now")
+        assert unauthorized.status_code == 401
+
+        queued = await client.post(f"/schedules/{schedule_id}/run-now", headers=headers)
+        assert queued.status_code == 200
+        assert queued.json()["status"] == "queued"
+        history = await client.get(f"/schedules/{schedule_id}/runs", headers=headers)
+        assert history.status_code == 200
+        assert history.json()[0]["run_id"] == queued.json()["run_id"]
+
+        duplicate = await client.post(f"/schedules/{schedule_id}/run-now", headers=headers)
+        assert duplicate.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_scheduled_run_records_task_result(tmp_path, monkeypatch):
     import asyncio
     from app.scheduler import _monitor_run
@@ -119,6 +149,33 @@ async def test_scheduled_run_records_task_result(tmp_path, monkeypatch):
     assert history[0]["task_id"] == "task-completed"
     assert history[0]["attempt"] == 1
 
+
+
+@pytest.mark.asyncio
+async def test_run_now_is_durable_does_not_shift_cadence_and_rejects_overlap(tmp_path, monkeypatch):
+    from app.task_store import queue_schedule_run_now
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-run-now.sqlite3"))
+    now = time.time()
+    create_schedule({
+        "schedule_id": "schedule-now", "workflow_id": "workflow-now",
+        "workflow": {"prompt": "Run browser checks", "agent_id": "auto"},
+        "name": "Immediate check", "workspace_path": "", "interval_minutes": 60,
+        "enabled": False, "next_run_at": now + 3600, "max_retries": 2,
+        "created_at": now, "updated_at": now,
+    })
+    cadence_before = get_schedule("schedule-now")["next_run_at"]
+    run, conflict = queue_schedule_run_now("schedule-now", now=now + 1)
+    assert conflict is False
+    assert run is not None and run["status"] == "queued"
+    assert run["scheduled_for"] == now + 1
+    assert get_schedule("schedule-now")["next_run_at"] == cadence_before
+    assert get_incomplete_schedule_runs()[0]["run_id"] == run["run_id"]
+
+    duplicate, conflict = queue_schedule_run_now("schedule-now", now=now + 2)
+    assert duplicate is None
+    assert conflict is True
+    assert queue_schedule_run_now("missing-schedule", now=now)[0] is None
 
 
 def test_active_schedule_does_not_overlap_and_skips_missed_ticks(tmp_path, monkeypatch):
