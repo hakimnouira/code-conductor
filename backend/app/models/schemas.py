@@ -56,6 +56,25 @@ class TaskCreateRequest(BaseModel):
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
     browser_verify_url: str | None = None
 
+class WorkflowPresetRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    prompt: str = Field(min_length=1, max_length=20000)
+    agent_id: str = Field(default="auto", min_length=1, max_length=80)
+    auto_verify: bool = False
+    browser_verify_url: str | None = Field(default=None, max_length=2048)
+
+
+class WorkflowPresetResponse(BaseModel):
+    workflow_id: str
+    name: str
+    prompt: str
+    agent_id: str
+    auto_verify: bool = False
+    browser_verify_url: str = ""
+    created_at: float
+    updated_at: float
+
+
 class TaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
