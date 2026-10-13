@@ -67,6 +67,7 @@ from app.browser_session import BrowserVerifyPayload, router as browser_session_
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
+from app.scheduler_service import configure_scheduler, router as scheduler_router, start_scheduler, stop_scheduler
 from app.task_store import append_event, delete_workflow, events_after, get_saved_tasks, list_workflows, save_task, save_workflow
 
 
@@ -185,7 +186,10 @@ async def _restore_task_records() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _restore_task_records()
+    configure_scheduler(_dispatch_scheduled_task, _read_task_snapshot)
+    await start_scheduler()
     yield
+    await stop_scheduler()
     # Shutdown marks active work as interrupted; it is not silently resumed on restart.
     for task in _tasks.values():
         if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
@@ -215,6 +219,7 @@ app.include_router(browser_session_router)
 app.include_router(guided_workflow_router)
 app.include_router(openai_compat_router)
 app.include_router(git_worktrees_router)
+app.include_router(scheduler_router)
 
 # Strictly restrict CORS to local origin
 app.add_middleware(
@@ -259,6 +264,35 @@ async def preview_github_research(req: GitHubResearchRequest, _: str = Depends(r
 async def list_agents(_: str = Depends(require_bearer_token)):
     registry = get_agent_registry()
     return await registry.list_agents()
+
+async def _dispatch_scheduled_task(payload: dict) -> str:
+    """Create a normal task through the same provider and workspace validation path."""
+    request = TaskCreateRequest.model_validate(payload)
+    if request.permission_mode == "god":
+        raise ValueError("Scheduled jobs cannot use God Mode.")
+    registry = get_agent_registry()
+    adapter = await registry.resolve_agent(request.agent_id, request.prompt)
+    if not adapter:
+        raise RuntimeError(f"Scheduled agent '{request.agent_id}' is unavailable.")
+    try:
+        validated_ws = validate_workspace_path(
+            request.workspace_path,
+            default_root=get_settings().workspace_root,
+        )
+        request.workspace_path = str(validated_ws)
+    except WorkspaceValidationError as exc:
+        raise ValueError(f"Invalid scheduled workspace path: {exc}") from exc
+    task_id = f"task-{uuid.uuid4().hex[:8]}"
+    record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
+    _tasks[task_id] = record
+    asyncio.create_task(_run_task_pipeline(record, adapter))
+    return task_id
+
+
+async def _read_task_snapshot(task_id: str) -> dict | None:
+    record = _tasks.get(task_id)
+    return record.snapshot() if record else None
+
 
 @app.post("/tasks", response_model=TaskResponse)
 async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
