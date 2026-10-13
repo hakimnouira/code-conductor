@@ -237,6 +237,7 @@ export default function App() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [taskHistorySearch, setTaskHistorySearch] = useState("");
+  const [retryingTaskId, setRetryingTaskId] = useState("");
   const [sidebarHistoryQuery, setSidebarHistoryQuery] = useState("");
   const [copiedAnswer, setCopiedAnswer] = useState(false);
 
@@ -1454,6 +1455,37 @@ export default function App() {
           : entry));
       })
       .catch(() => { /* Local-only legacy history entries may not exist on the backend. */ });
+  };
+
+  const retryHistoryItem = async (item: TaskHistoryItem) => {
+    if (busy || !health || (item.status !== "failed" && item.status !== "cancelled")) return;
+    setRetryingTaskId(item.id);
+    setError("");
+    setNotice("");
+    setBusy(true);
+    setActiveStep(-1);
+    setEvents([]);
+    setHistoryDrawerOpen(false);
+    const controller = new AbortController();
+    abort.current = controller;
+    try {
+      const created = await request("/tasks/" + encodeURIComponent(item.id) + "/retry", {
+        method: "POST",
+      }).then(response => response.json()) as Task;
+      const agentName = agents.find(agentItem => agentItem.id === created.agent_id)?.name || created.agent_id;
+      setConversationPrompt(item.prompt);
+      const result = await streamTask(created, controller.signal, item.prompt, agentName);
+      setNotice(result.failed
+        ? "Retry ended without a verified successful completion. Review the task evidence before accepting changes."
+        : "Retry finished. Review its verification evidence and workspace changes before accepting them.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not retry this task");
+    } finally {
+      setBusy(false);
+      abort.current = null;
+      latestTaskId.current = null;
+      setRetryingTaskId("");
+    }
   };
 
   const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
@@ -3151,6 +3183,17 @@ export default function App() {
                       <button className="primary-button" style={{ padding: "4px 10px", fontSize: "11px" }} onClick={() => loadHistoryItem(item)}>
                         Load into Dashboard
                       </button>
+                      {(item.status === "failed" || item.status === "cancelled") && (
+                        <button
+                          className="outline-button"
+                          style={{ padding: "4px 8px", fontSize: "11px" }}
+                          disabled={busy || retryingTaskId === item.id}
+                          title="Create a new task from the original request, without reusing appended failure diagnostics"
+                          onClick={() => void retryHistoryItem(item)}
+                        >
+                          <RefreshCw size={12}/> {retryingTaskId === item.id ? "Retrying…" : "Retry original"}
+                        </button>
+                      )}
                       <button className="outline-button" style={{ padding: "4px 8px", fontSize: "11px" }} onClick={async () => {
                         if (item.output) {
                           await navigator.clipboard.writeText(item.output);
