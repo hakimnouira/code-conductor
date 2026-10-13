@@ -232,6 +232,7 @@ class TaskRecord:
             "original_request_available": self.original_request_available,
             "retry_of": self.request.retry_of,
             "prompt": self.request.prompt,
+            "acceptance_criteria": self.request.acceptance_criteria,
             "workspace_path": self.request.workspace_path,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -371,6 +372,7 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
         idempotency_key=str(workflow.get("_code_conductor_idempotency_key") or "") or None,
         workspace_path=str(workflow.get("workspace_path") or "") or None,
         auto_verify=bool(workflow.get("auto_verify", False)),
+        acceptance_criteria=workflow.get("acceptance_criteria") or [],
         browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
         browser_required_text=workflow.get("browser_required_text") or [],
         browser_forbidden_text=workflow.get("browser_forbidden_text") or [],
@@ -857,6 +859,20 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
     lease_heartbeat = asyncio.create_task(renew_lease(), name=f"task-lease-{record.task_id}")
     record.status = TaskStatus.RUNNING
     record.started_at = time.time()
+    if record.request.acceptance_criteria:
+        criteria_text = "\\n".join(f"- {criterion}" for criterion in record.request.acceptance_criteria)
+        record.request.prompt += (
+            "\\n\\nEXPLICIT ACCEPTANCE CRITERIA (all must pass):\\n"
+            + criteria_text
+            + "\\nImplement these criteria and ensure automated tests/build checks validate them. Do not claim completion if any criterion is unmet."
+        )
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "log",
+            "text": f"Loaded {len(record.request.acceptance_criteria)} explicit acceptance criterion/criteria; automated verification is required.",
+            "timestamp": time.time(),
+            "data": {"phase": "acceptance_criteria", "count": len(record.request.acceptance_criteria)},
+        }))
     timeout_seconds = _task_timeout_seconds()
     deadline = time.monotonic() + timeout_seconds
     terminal_event_seen = False
@@ -949,7 +965,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             if terminal_event is None:
                 break
 
-            if not record.request.auto_verify:
+            if not (record.request.auto_verify or record.request.acceptance_criteria):
                 browser_action, browser_verification_attempts = await _await_task_deadline(
                     _browser_verification_gate(record, browser_verification_attempts),
                     deadline, timeout_seconds,
@@ -1299,6 +1315,7 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "prompt": workflow["prompt"],
         "agent_id": workflow["agent_id"],
         "auto_verify": bool(workflow.get("auto_verify", False)),
+        "acceptance_criteria": workflow.get("acceptance_criteria") or [],
         "browser_verify_url": workflow.get("browser_verify_url") or "",
         "browser_required_text": workflow.get("browser_required_text") or [],
         "browser_forbidden_text": workflow.get("browser_forbidden_text") or [],
@@ -1421,6 +1438,7 @@ async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_b
         "prompt": prompt_text,
         "agent_id": req.agent_id.strip() or "auto",
         "auto_verify": req.auto_verify,
+        "acceptance_criteria": req.acceptance_criteria,
         "browser_verify_url": req.browser_verify_url or "",
         "browser_required_text": req.browser_required_text,
         "browser_forbidden_text": req.browser_forbidden_text,
