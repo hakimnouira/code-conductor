@@ -130,6 +130,7 @@ class ParallelOrchestrator:
                     or lower.endswith((".pem", ".key", ".pfx", ".p12", ".pkcs12"))
                     or any(token in segments for token in ("credentials", "secrets"))
                     or any("api_keys" in segment for segment in segments)
+                    or any(segments[index:index + 2] == [".code-conductor", "artifacts"] for index in range(len(segments) - 1))
                 ):
                     blocked.append(raw_path)
                     continue
