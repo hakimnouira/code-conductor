@@ -694,12 +694,13 @@ async def stream_task_events(
             raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer.")
 
     async def event_generator() -> AsyncIterator[dict]:
+        event_cursor = cursor
         terminal_idle_polls = 0
         while True:
-            batch = events_after(task_id, cursor, limit=200)
+            batch = events_after(task_id, event_cursor, limit=200)
             for item in batch:
-                cursor = int(item["event_id"])
-                yield {"id": str(cursor), "event": "message", "data": item["payload"]}
+                event_cursor = int(item["event_id"])
+                yield {"id": str(event_cursor), "event": "message", "data": item["payload"]}
             if batch:
                 terminal_idle_polls = 0
                 continue
