@@ -199,23 +199,6 @@ async def run_browser_automation(
             title = await page.title()
             ready_state = await page.evaluate("document.readyState")
             body_text = await page.locator("body").inner_text(timeout=3000)
-            selector_visibility: dict[str, dict[str, Any]] = {}
-            for selector in dict.fromkeys(visible_selectors + hidden_selectors):
-                try:
-                    locator = page.locator(selector)
-                    count = await locator.count()
-                    visible = bool(count and await locator.first.is_visible())
-                    selector_visibility[selector] = {"visible": visible}
-                except Exception as selector_error:
-                    selector_visibility[selector] = {"visible": False, "error": str(selector_error)[:300]}
-            assertions = evaluate_acceptance_assertions(
-                body_text=body_text,
-                required_text=required_text,
-                forbidden_text=forbidden_text,
-                visible_selectors=visible_selectors,
-                hidden_selectors=hidden_selectors,
-                selector_visibility=selector_visibility,
-            )
         except Exception as exc:
             page_errors.append(f"Navigation or page inspection failed: {str(exc)[:500]}")
             try:
@@ -225,8 +208,27 @@ async def run_browser_automation(
                 body_text = await page.locator("body").inner_text(timeout=1000)
             except Exception:
                 pass
+        selector_visibility: dict[str, dict[str, Any]] = {}
+        for selector in dict.fromkeys(visible_selectors + hidden_selectors):
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+                visible = bool(count and await locator.first.is_visible())
+                selector_visibility[selector] = {"visible": visible}
+            except Exception as selector_error:
+                selector_visibility[selector] = {"visible": False, "error": str(selector_error)[:300]}
+        assertions = evaluate_acceptance_assertions(
+            body_text=body_text,
+            required_text=required_text,
+            forbidden_text=forbidden_text,
+            visible_selectors=visible_selectors,
+            hidden_selectors=hidden_selectors,
+            selector_visibility=selector_visibility,
+        )
         try:
             image = await page.screenshot(type="png", full_page=True, animations="disabled", timeout=5000)
+            if len(image) > 8 * 1024 * 1024:
+                image = await page.screenshot(type="png", full_page=False, animations="disabled", timeout=5000)
             screenshot_uri = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
         except Exception as exc:
             console_errors.append(f"Screenshot capture failed: {str(exc)[:300]}")
