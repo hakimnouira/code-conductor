@@ -4,7 +4,7 @@ import time
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
-from app.main import TaskRecord, _browser_verification_gate, _verify_browser_for_task, _tasks, app
+from app.main import TaskRecord, _browser_verification_gate, _run_task_pipeline, _verify_browser_for_task, _tasks, app
 from app.models.schemas import TaskCreateRequest, TaskStatus
 
 pytestmark = pytest.mark.mocked_integration
@@ -371,3 +371,40 @@ async def test_retry_endpoint_rejects_legacy_task_without_original_request(auth_
         response = await client.post(f"/tasks/{legacy.task_id}/retry", headers=auth_headers)
     assert response.status_code == 409
     assert "original request was not preserved" in response.json()["detail"].lower()
+
+
+
+@pytest.mark.asyncio
+async def test_task_execution_deadline_fails_silent_provider_with_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "task-timeout.sqlite3"))
+    monkeypatch.setattr("app.main._task_timeout_seconds", lambda: 0.02)
+    request = TaskCreateRequest(
+        prompt="Wait forever",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+        github_research=False,
+    )
+    record = TaskRecord("task-timeout-test", request, "mock")
+
+    class SilentAdapter:
+        async def stream_task(self, task_id, task_request):
+            await asyncio.sleep(1)
+            if False:
+                yield None
+
+    await _run_task_pipeline(record, SilentAdapter())
+
+    assert record.status == TaskStatus.FAILED
+    assert "execution deadline" in (record.error or "").lower()
+    timeout_evidence = next(item for item in record.evidence if item["kind"] == "execution_timeout")
+    assert timeout_evidence["status"] == "failed"
+    assert timeout_evidence["details"]["timeout_seconds"] == 0.02
+
+    queued = []
+    while not record.event_queue.queue.empty():
+        queued.append(record.event_queue.queue.get_nowait())
+    timeout_events = [
+        json.loads(item) for item in queued
+        if isinstance(item, str) and '"task_timeout"' in item
+    ]
+    assert timeout_events

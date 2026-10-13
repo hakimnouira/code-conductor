@@ -370,3 +370,8 @@ The backend creates or reuses the per-user token in `%USERPROFILE%\.aihub_token`
 ## Portable local paths
 
 The web-model configuration is stored in the checkout's `.web_models.json` by default, so moving or cloning the repository does not require editing a drive-specific path. Set `CODE_CONDUCTOR_WEB_MODELS_PATH` to override it. The Windows launcher resolves the project directory relative to its own location; set `CODE_CONDUCTOR_CLOAK_EXE` to use a non-default CloakBrowser executable.
+
+
+## Task execution deadline
+
+Tasks have a configurable wall-clock deadline via `CODE_CONDUCTOR_TASK_TIMEOUT_SECONDS` (default `3600`, bounded to 60–86,400 seconds). A timeout cancels the pending provider or verification operation, marks the task failed, and records `execution_timeout` evidence instead of leaving it running indefinitely.
