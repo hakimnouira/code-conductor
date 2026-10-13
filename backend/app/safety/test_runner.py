@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -135,6 +136,7 @@ class SafeTestRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=creationflags,
+                start_new_session=(sys.platform != "win32"),
             )
 
             stdout_b, stderr_b = await asyncio.wait_for(
@@ -144,8 +146,13 @@ class SafeTestRunner:
             duration_ms = (time.perf_counter() - t_start) * 1000.0
 
             exit_code = proc.returncode if proc.returncode is not None else 0
-            stdout_str = stdout_b.decode("utf-8", errors="replace")
-            stderr_str = stderr_b.decode("utf-8", errors="replace")
+            # Keep test evidence bounded even when a failing test emits huge logs.
+            stdout_str = stdout_b[-1_000_000:].decode("utf-8", errors="replace")
+            stderr_str = stderr_b[-1_000_000:].decode("utf-8", errors="replace")
+            if len(stdout_b) > 1_000_000:
+                stdout_str = "[earlier stdout truncated]\n" + stdout_str
+            if len(stderr_b) > 1_000_000:
+                stderr_str = "[earlier stderr truncated]\n" + stderr_str
 
             return TestRunResponse(
                 command=cmd_display,
@@ -166,9 +173,18 @@ class SafeTestRunner:
                     )
                 else:
                     try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                        # Kill the whole POSIX process group, not just the direct
+                        # test runner, so spawned browser/build children do not leak.
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except (asyncio.TimeoutError, OSError):
+                    pass
 
             return TestRunResponse(
                 command=cmd_display,
