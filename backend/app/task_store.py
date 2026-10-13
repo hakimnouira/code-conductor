@@ -388,6 +388,46 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
     return claimed
 
 
+def queue_schedule_run_now(schedule_id: str, now: float | None = None) -> tuple[dict[str, Any] | None, bool]:
+    """Persist an immediate run; return (run, active_conflict), without moving the cadence."""
+    scheduled_for = float(now if now is not None else time.time())
+    with _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        schedule = db.execute(
+            "SELECT schedule_id, workflow_json, max_retries FROM scheduled_workflows WHERE schedule_id = ?",
+            (schedule_id,),
+        ).fetchone()
+        if not schedule:
+            db.rollback()
+            return None, False
+        active = db.execute(
+            "SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND status IN ('queued', 'running') LIMIT 1",
+            (schedule_id,),
+        ).fetchone()
+        if active:
+            db.rollback()
+            return None, True
+        try:
+            workflow = json.loads(schedule["workflow_json"])
+        except (TypeError, json.JSONDecodeError):
+            db.rollback()
+            raise ValueError("Saved schedule contains invalid workflow JSON.")
+        run_id = uuid.uuid4().hex
+        max_retries = int(schedule["max_retries"])
+        db.execute(
+            """INSERT INTO schedule_runs(
+                run_id, schedule_id, workflow_json, scheduled_for, started_at,
+                completed_at, status, task_id, attempt, max_retries, error
+            ) VALUES (?, ?, ?, ?, NULL, NULL, 'queued', '', 0, ?, '')""",
+            (run_id, schedule_id, json.dumps(workflow, ensure_ascii=False), scheduled_for, max_retries),
+        )
+        db.commit()
+    return {
+        "run_id": run_id, "schedule_id": schedule_id, "scheduled_for": scheduled_for,
+        "status": "queued", "task_id": "", "attempt": 0, "max_retries": max_retries,
+    }, False
+
+
 def get_incomplete_schedule_runs(limit: int = 200) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
