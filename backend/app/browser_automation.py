@@ -131,6 +131,7 @@ def build_browser_report(
     verification_errors: list[str] | None = None,
     screenshot_scope: str = "full_page",
     action_results: list[dict[str, Any]] | None = None,
+    verification_engine: str = "playwright-cdp",
 ) -> dict[str, Any]:
     """Build a stable, testable verification report from captured browser evidence."""
     text = body_text[:12000]
@@ -171,12 +172,36 @@ def build_browser_report(
         "screenshot_scope": screenshot_scope,
         "body_text_excerpt": text[:6000],
         "screenshot": screenshot,
-        "verification_engine": "playwright-cdp",
+        "verification_engine": verification_engine,
         "limitations": [
             "This is browser-observed evidence, not a proof of application correctness or security.",
             "Failed subresource requests are reported separately and do not alone fail the check.",
         ],
     }
+
+
+async def connect_or_launch_browser(playwright: Any, endpoint: str) -> tuple[Any, Any, str, bool]:
+    """Prefer the configured browser session, then fall back to an isolated headless Chromium.
+
+    Returns (browser, context, engine, owns_browser). The caller must close only a
+    browser it launched; a connected user's browser must remain open.
+    """
+    try:
+        browser = await playwright.chromium.connect_over_cdp(endpoint, timeout=5000)
+    except Exception as cdp_error:
+        try:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context()
+            return browser, context, "playwright-managed-chromium", True
+        except Exception as launch_error:
+            raise RuntimeError(
+                "Could not connect to the configured CDP browser or launch managed Chromium. "
+                "Install the Playwright browser with 'python -m playwright install chromium', "
+                "or start Chrome with remote debugging and configure its endpoint. "
+                f"CDP error: {str(cdp_error)[:250]}; launch error: {str(launch_error)[:250]}"
+            ) from launch_error
+    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+    return browser, context, "playwright-cdp", False
 
 
 async def run_browser_automation(
@@ -215,10 +240,12 @@ async def run_browser_automation(
     screenshot_scope = "full_page"
     action_results: list[dict[str, Any]] = []
     page = None
+    browser = None
+    owns_browser = False
+    verification_engine = "playwright-cdp"
     playwright = await async_playwright().start()
     try:
-        browser = await playwright.chromium.connect_over_cdp(endpoint, timeout=5000)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        browser, context, verification_engine, owns_browser = await connect_or_launch_browser(playwright, endpoint)
         page = await context.new_page()
         page.set_default_timeout(7000)
         page.on("pageerror", lambda exc: page_errors.append(str(exc)[:500]))
@@ -327,6 +354,7 @@ async def run_browser_automation(
             verification_errors=verification_errors,
             screenshot_scope=screenshot_scope,
             action_results=action_results,
+            verification_engine=verification_engine,
         )
     finally:
         if page is not None:
@@ -334,5 +362,10 @@ async def run_browser_automation(
                 await page.close()
             except Exception:
                 pass
-        # Stop the Playwright client without shutting down the user's browser.
+        # Close only a browser launched by this run; never shut down the user's CDP browser.
+        if owns_browser and browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
         await playwright.stop()
