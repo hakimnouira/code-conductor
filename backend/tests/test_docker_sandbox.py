@@ -25,9 +25,20 @@ def test_docker_sandbox_command_is_networkless_and_resource_limited(tmp_path, mo
     assert "--cap-drop=ALL" in command
     assert "--pids-limit=256" in command
     assert "--memory=2g" in command
+    assert "--memory-swap=2g" in command
     assert "--cpus=2" in command
+    assert "--pull=never" in command
+    assert "--ulimit" in command
+    assert command[command.index("--ulimit") + 1] == "nofile=1024:1024"
+    assert "--env-file" not in command
+    assert not any("docker.sock" in item for item in command)
+    assert command[command.index("--env") + 1] == "HOME=/tmp"
+    assert "TMPDIR=/tmp" in command
+    assert "CI=1" in command
+    assert "npm_config_cache=/tmp/npm-cache" in command
     assert command[-3:] == ["python", "-m", "pytest"] or command[-4:] == ["python", "-m", "pytest", "-q"]
     assert str(tmp_path.resolve()).replace("\\", "/") in command[command.index("--mount") + 1]
+    # The workspace is the only host bind mount; host home and environment are not forwarded.
 
 
 def test_docker_sandbox_fails_closed_when_image_is_missing(tmp_path, monkeypatch):
