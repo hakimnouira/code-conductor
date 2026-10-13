@@ -260,7 +260,6 @@ async def run_browser_automation(
                 result["passed"] = True
             except Exception as exc:
                 result["error"] = str(exc)[:500]
-                verification_errors.append(f"Browser action {index + 1} ({action}) failed: {str(exc)[:300]}")
             result["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
             action_results.append(result)
             if not result["passed"]:
