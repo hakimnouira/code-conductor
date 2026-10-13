@@ -391,3 +391,36 @@ def test_browser_assertion_schema_requires_valid_expected_values():
         BrowserActionStep(action="assert_count", selector=".row", value="-1")
     with pytest.raises(Exception):
         BrowserActionStep(action="assert_count", selector=".row", value="many")
+
+def test_browser_report_fails_closed_when_main_document_status_is_unknown():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard rendered",
+        main_document_status=None,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot="data:image/png;base64,ZmFrZQ==",
+    )
+    assert report["success"] is False
+    assert report["checks"]["main_document_http_ok"] is False
+
+
+def test_browser_report_rejects_invalid_main_document_status_values():
+    for status in (0, -1, 400, 503):
+        report = build_browser_report(
+            url="http://localhost:5173/",
+            title="Dashboard",
+            ready_state="complete",
+            body_text="Dashboard rendered",
+            main_document_status=status,
+            page_errors=[],
+            console_errors=[],
+            http_errors=[],
+            failed_requests=[],
+            screenshot="data:image/png;base64,ZmFrZQ==",
+        )
+        assert report["checks"]["main_document_http_ok"] is False
