@@ -65,3 +65,20 @@ def test_non_git_workspace_fingerprint_includes_file_mode(tmp_path):
     assert before["snapshot_complete"] is True
     assert after["snapshot_complete"] is True
     assert before["snapshot_sha256"] != after["snapshot_sha256"]
+
+
+def test_non_git_workspace_fingerprint_excludes_self_generated_evidence_artifacts(tmp_path):
+    (tmp_path / "src.py").write_text("value = 1\\n", encoding="utf-8")
+    artifacts = tmp_path / ".code-conductor" / "artifacts" / "task-1"
+    artifacts.mkdir(parents=True)
+    manifest = artifacts / "evidence.json"
+    manifest.write_text('{"status":"running"}', encoding="utf-8")
+
+    first = collect_workspace_provenance(tmp_path)
+    manifest.write_text('{"status":"completed","new":"evidence"}', encoding="utf-8")
+    second = collect_workspace_provenance(tmp_path)
+
+    assert first["snapshot_complete"] is True
+    assert second["snapshot_complete"] is True
+    assert first["snapshot_sha256"] == second["snapshot_sha256"]
+    assert ".code-conductor/artifacts/**" in first["excluded_paths"]
