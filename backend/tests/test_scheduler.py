@@ -236,3 +236,51 @@ async def test_transient_status_lookup_error_does_not_dispatch_duplicate_task(tm
     await _monitor_run(run, dispatch, status_lookup, asyncio.Event())
     assert calls == {"dispatch": 1, "status": 2}
     assert list_schedule_runs("schedule-transient")[0]["status"] == "completed"
+
+
+
+@pytest.mark.asyncio
+async def test_uncertain_dispatch_retry_reuses_same_idempotency_key(tmp_path, monkeypatch):
+    import asyncio
+    from app.scheduler import _monitor_run
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-idempotency.sqlite3"))
+    now = time.time()
+    workflow = {"prompt": "Run tests", "agent_id": "auto", "workspace_path": ""}
+    create_schedule({
+        "schedule_id": "schedule-idempotency", "workflow_id": "workflow-idempotency",
+        "workflow": workflow, "name": "Idempotency test", "workspace_path": "",
+        "interval_minutes": 15, "enabled": True, "next_run_at": now + 900,
+        "max_retries": 1, "created_at": now, "updated_at": now,
+    })
+    run = claim_due_schedules(now + 901)[0]
+    observed_keys = []
+    created_tasks = {}
+
+    async def dispatch(payload):
+        key = payload["_code_conductor_idempotency_key"]
+        observed_keys.append(key)
+        # Simulate task persistence succeeding but the HTTP/dispatch response being lost.
+        task_id = created_tasks.setdefault(key, "task-created-once")
+        if len(observed_keys) == 1:
+            raise RuntimeError("dispatch response lost")
+        return task_id
+
+    async def status_lookup(task_id):
+        assert task_id == "task-created-once"
+        return {"status": "completed", "error": None}
+
+    async def fast_wait_for(awaitable, timeout):
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr("app.scheduler.asyncio.wait_for", fast_wait_for)
+    await _monitor_run(run, dispatch, status_lookup, asyncio.Event())
+
+    assert len(observed_keys) == 2
+    assert observed_keys[0] == observed_keys[1]
+    assert len(created_tasks) == 1
+    history = list_schedule_runs("schedule-idempotency")
+    assert history[0]["status"] == "completed"
+    assert history[0]["attempt"] == 1
