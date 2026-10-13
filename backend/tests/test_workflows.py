@@ -56,3 +56,7 @@ async def test_workflow_library_rejects_blank_name_and_unsafe_browser_scheme(tmp
             "name": "Browser check", "prompt": "Check page", "browser_verify_url": "file:///etc/passwd"
         })
         assert unsafe.status_code == 422
+        credentials = await client.post("/workflows", headers=headers, json={
+            "name": "Credential URL", "prompt": "Check page", "browser_verify_url": "https://user:password@example.com"
+        })
+        assert credentials.status_code == 422
