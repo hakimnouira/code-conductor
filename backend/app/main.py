@@ -87,7 +87,7 @@ from app.task_store import (
     get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
     set_scheduler_paused,
     list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
-    queue_schedule_run_now,
+    queue_schedule_run_now, create_task_if_absent,
 )
 
 
@@ -154,7 +154,18 @@ class TaskRecord:
             evidence = restored.get("evidence", [])
             self.evidence = [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
             self.verification_status = str(restored.get("verification_status") or "not_requested")
-        self._persist()
+        if restored is not None:
+            # Restoring history must be read-only; persisting a stale snapshot here
+            # could overwrite a live worker's newer status.
+            self.initial_persisted = True
+        else:
+            # INSERT OR IGNORE makes the first durable writer authoritative when
+            # two backend processes receive the same idempotency key concurrently.
+            self.initial_persisted = create_task_if_absent(
+                self.snapshot(),
+                self.request.model_dump_json(),
+                self.initial_request_json,
+            )
 
     def add_evidence(
         self,
@@ -560,6 +571,40 @@ async def _create_task_record(
         )
 
     record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
+    if not record.initial_persisted:
+        # Another process atomically created this deterministic task ID first. Never
+        # replace its request or status with this process's duplicate in-memory record.
+        saved = get_saved_task(task_id)
+        if saved is None:
+            raise HTTPException(status_code=503, detail="Task creation raced with another worker; durable state could not be read.")
+        saved_snapshot = saved["snapshot"]
+        existing_request = TaskCreateRequest.model_validate(saved["request"])
+        saved_fingerprint = saved_snapshot.get("request_fingerprint") or hashlib.sha256(
+            existing_request.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if saved_fingerprint != record.request_fingerprint:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used with a different task request.")
+        existing = TaskRecord(
+            task_id=task_id,
+            request=existing_request,
+            agent_id=str(saved_snapshot.get("agent_id") or existing_request.agent_id),
+            restored=saved_snapshot,
+            initial_request_json=(
+                json.dumps(saved.get("initial_request") or {}, ensure_ascii=False)
+                if saved.get("initial_request_available", False) else ""
+            ),
+        )
+        _tasks[task_id] = existing
+        return TaskResponse(
+            task_id=existing.task_id,
+            status=existing.status,
+            agent_id=existing.agent_id,
+            prompt=existing.request.prompt,
+            created_at=existing.created_at,
+            message="Returning the task atomically created by another backend worker.",
+            workspace_path=existing.request.workspace_path,
+        )
+
     _tasks[task_id] = record
     # Spawn background task processing that feeds the event queue.
     asyncio.create_task(_run_task_pipeline(record, adapter))
