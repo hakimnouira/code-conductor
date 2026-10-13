@@ -10,6 +10,22 @@
       "agent_id": "auto",
       "auto_verify": true,
       "expected_verification_status": "passed"
+    },
+    {
+      "id": "python-merge-intervals",
+      "fixture": "python-merge-intervals",
+      "prompt": "Implement merge_intervals(intervals) in merge_intervals.py. Return a new list sorted by start, merging all overlapping or touching intervals (so [1,3] and [3,5] become [1,5]). Handle empty input and negative values. Keep the function API simple and make the existing pytest suite pass.",
+      "agent_id": "auto",
+      "auto_verify": true,
+      "expected_verification_status": "passed"
+    },
+    {
+      "id": "javascript-slugify",
+      "fixture": "javascript-slugify",
+      "prompt": "Implement slugify(value) in slugify.js. Convert input to a string, lowercase it, replace every run of non-ASCII letters/digits with one hyphen, and remove leading/trailing hyphens. Preserve digits. Punctuation-only input should return an empty string. Do not change the tests; make the existing Node test suite pass.",
+      "agent_id": "auto",
+      "auto_verify": true,
+      "expected_verification_status": "passed"
     }
   ]
 }
