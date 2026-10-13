@@ -314,6 +314,18 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
         ).fetchall()
         for row in rows:
             schedule = _schedule_row(row)
+            active = db.execute(
+                "SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND status IN ('queued', 'running') LIMIT 1",
+                (schedule["schedule_id"],),
+            ).fetchone()
+            if active:
+                # Skip missed ticks while this workflow is still running; never
+                # overlap two executions of the same schedule.
+                db.execute(
+                    "UPDATE scheduled_workflows SET next_run_at = ?, updated_at = ? WHERE schedule_id = ?",
+                    (now + int(schedule["interval_minutes"]) * 60, now, schedule["schedule_id"]),
+                )
+                continue
             run_id = uuid.uuid4().hex
             # Skip missed intervals instead of flooding the machine after a long shutdown.
             next_run = now + int(schedule["interval_minutes"]) * 60
