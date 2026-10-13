@@ -25,6 +25,7 @@ DEFAULT_PROFILE_DIR = Path(r"D:\work\code-conductor\.cloak_profile")
 
 CLOAK_CANDIDATE_PATHS = [
     Path(r"D:\Downloads\cloakbrowser-windows-x64\chrome.exe"),
+    Path(os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-1243\chrome-win64\chrome.exe")),
     Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
     Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
     Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")),
@@ -77,6 +78,7 @@ async def launch_cloakbrowser(
     args = [
         str(exe),
         f"--remote-debugging-port={port}",
+        "--remote-allow-origins=*",
         f"--user-data-dir={target_profile}",
         "--no-first-run",
         "--no-default-browser-check",
