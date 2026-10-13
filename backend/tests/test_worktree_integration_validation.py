@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 
 from app import git_worktrees
-from app.git_worktrees import WorktreeValidateRequest
+from app.git_worktrees import WorktreeValidateRequest, validate_worktree_integration
 
 
 def _git(path: Path, *args: str) -> str:
