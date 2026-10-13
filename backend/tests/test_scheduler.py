@@ -85,7 +85,6 @@ def test_due_schedule_claim_is_atomic_and_persists_recoverable_run(tmp_path, mon
 async def test_scheduled_run_records_task_result(tmp_path, monkeypatch):
     import asyncio
     from app.scheduler import _monitor_run
-    from app.task_store import update_schedule_run
 
     monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-run.sqlite3"))
     now = time.time()
@@ -96,7 +95,6 @@ async def test_scheduled_run_records_task_result(tmp_path, monkeypatch):
         "enabled": True, "next_run_at": now + 900, "max_retries": 0,
         "created_at": now, "updated_at": now,
     })
-    update_schedule_run  # Keep the persistence API explicitly imported for this lifecycle test.
     from app.task_store import claim_due_schedules
     run = claim_due_schedules(now + 901)[0]
 
