@@ -42,6 +42,7 @@ class _VerificationHandler(BaseHTTPRequestHandler):
       Submit
     </button>
     <p id="result">Waiting</p>
+    <div id="missing-alert" hidden>Hidden alert</div>
   </main>
   <script>
     fetch('/missing.json').catch(() => {});
