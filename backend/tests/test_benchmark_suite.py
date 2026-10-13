@@ -25,3 +25,13 @@ def test_benchmark_suite_has_unique_cases_and_executable_acceptance_tests():
             assert list(fixture.glob("*.test.js")), case["id"]
         else:
             assert list(fixture.glob("test_*.py")), case["id"]
+
+def test_suite_contains_a_multi_file_regression_case():
+    suite = json.loads(SUITE.read_text(encoding="utf-8"))
+    case = next(item for item in suite["tasks"] if item["id"] == "python-inventory-multifile")
+    fixture = ROOT / "backend" / "benchmarks" / "fixtures" / case["fixture"]
+    assert (fixture / "models.py").is_file()
+    assert (fixture / "service.py").is_file()
+    assert (fixture / "test_inventory.py").is_file()
+    assert case["auto_verify"] is True
+    assert "without changing tests" in case["prompt"]

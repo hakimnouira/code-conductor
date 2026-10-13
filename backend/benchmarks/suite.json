@@ -26,6 +26,14 @@
       "agent_id": "auto",
       "auto_verify": true,
       "expected_verification_status": "passed"
+    },
+    {
+      "id": "python-inventory-multifile",
+      "fixture": "python-inventory",
+      "prompt": "Implement the inventory service across models.py and service.py. Inventory.add(sku, quantity) must trim and uppercase SKU values, reject blank SKUs and quantities that are not positive integers (booleans are invalid), and accumulate stock for an existing SKU. Inventory.remove(sku, quantity) must reject invalid quantities, unknown SKUs, and attempts to remove more than available; it must leave stock unchanged on failure. Inventory.available(sku) returns the quantity for a normalized SKU or 0 if unknown. Preserve the public API and make the existing pytest suite pass without changing tests.",
+      "agent_id": "auto",
+      "auto_verify": true,
+      "expected_verification_status": "passed"
     }
   ]
 }
