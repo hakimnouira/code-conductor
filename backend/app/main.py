@@ -80,6 +80,7 @@ from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
 from app.task_leases import claim_task_lease, renew_task_lease, release_task_lease
+from app.completion_gate import evaluate_completion_gate
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
     get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
@@ -710,6 +711,42 @@ async def _stream_task_events_with_deadline(adapter, record: TaskRecord, deadlin
         yield event
 
 
+async def _finalize_task_completion(record: TaskRecord, terminal_event) -> bool:
+    """Make completion contingent on the verification the request actually required."""
+    gate = evaluate_completion_gate(
+        record.request,
+        record.evidence,
+        record.verification_status,
+    )
+    if not gate["passed"]:
+        record.status = TaskStatus.FAILED
+        record.error = "Completion gate rejected the task: " + ", ".join(gate["failures"])
+        record.completed_at = time.time()
+        record.add_evidence(
+            "completion_gate", "failed",
+            "Task completion was rejected because required verification evidence is missing or failed.",
+            details=gate,
+        )
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "error",
+            "text": record.error,
+            "timestamp": record.completed_at,
+            "data": {"phase": "completion_gate", **gate},
+        }))
+        return False
+
+    record.status = TaskStatus.COMPLETED
+    record.completed_at = time.time()
+    record.add_evidence(
+        "completion_gate", "passed",
+        "All verification checks required by this task have passing evidence.",
+        details=gate,
+    )
+    await record.event_queue.put(terminal_event.model_dump_json())
+    return True
+
+
 async def _run_task_pipeline(record: TaskRecord, adapter):
     # Status is authoritative: a provider stream must never resurrect a cancelled
     # task or leave a task permanently RUNNING when it closes without a terminal event.
@@ -843,10 +880,8 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 if browser_action == "failed":
                     terminal_event_seen = True
                     break
-                await record.event_queue.put(terminal_event.model_dump_json())
+                await _finalize_task_completion(record, terminal_event)
                 terminal_event_seen = True
-                record.status = TaskStatus.COMPLETED
-                record.completed_at = time.time()
                 break
 
             runner = SafeTestRunner(record.request.workspace_path)
@@ -973,10 +1008,8 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 if browser_action == "failed":
                     terminal_event_seen = True
                     break
-                await record.event_queue.put(terminal_event.model_dump_json())
+                await _finalize_task_completion(record, terminal_event)
                 terminal_event_seen = True
-                record.status = TaskStatus.COMPLETED
-                record.completed_at = time.time()
                 break
 
             if verification_attempt >= record.request.verification_max_attempts:
@@ -1110,6 +1143,17 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             {},
         )
         provenance_details = provenance_evidence.get("details") or {}
+        # Tie the completion decision to the final workspace snapshot captured after
+        # verification. This is an integrity fingerprint, not proof of code correctness.
+        completion_gate_evidence = next(
+            (item for item in reversed(record.evidence) if item.get("kind") == "completion_gate"),
+            None,
+        )
+        if completion_gate_evidence is not None:
+            gate_details = completion_gate_evidence.setdefault("details", {})
+            gate_details["workspace_snapshot_sha256"] = provenance_details.get("snapshot_sha256")
+            gate_details["workspace_snapshot_complete"] = provenance_details.get("snapshot_complete", False)
+            gate_details["workspace_head_commit"] = provenance_details.get("head_commit")
         if record.status == TaskStatus.COMPLETED and not any(
             item.get("kind") == "task_completion" for item in record.evidence
         ):
