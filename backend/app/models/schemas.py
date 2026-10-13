@@ -82,6 +82,18 @@ class TaskCreateRequest(BaseModel):
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
+    # Used by durable dispatchers to make retries/restarts return the same task.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_idempotency_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Idempotency key must not be blank.")
+        return cleaned
 
     @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
