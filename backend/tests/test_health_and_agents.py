@@ -94,3 +94,28 @@ async def test_auto_detect_provider(auth_headers, monkeypatch, tmp_path):
         p_list = p_res.json()
         assert any(p["id"] == "groq" for p in p_list)
 
+
+
+
+@pytest.mark.asyncio
+async def test_runtime_diagnostics_are_authenticated_and_secret_safe(auth_headers):
+    import json
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.get("/diagnostics")
+        assert unauthorized.status_code == 401
+
+        response = await client.get("/diagnostics", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] in {"healthy", "degraded"}
+        assert data["database"]["status"] == "healthy"
+        assert data["scheduler"]["status"] in {"healthy", "stale", "stopped"}
+        assert "counts_by_status" in data["tasks"]
+        assert "verification_counts" in data["tasks"]
+        assert "counts_by_status" in data["schedules"]["runs"]
+        # Diagnostics are operational metadata only, not a second endpoint for
+        # exposing prompts, provider output, or raw exception text.
+        serialized = json.dumps(data)
+        assert "prompt" not in serialized.lower()
+        assert "api_key" not in serialized.lower()
