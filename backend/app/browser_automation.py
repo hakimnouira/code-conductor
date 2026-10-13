@@ -35,6 +35,7 @@ def build_browser_report(
     http_errors: list[dict[str, Any]],
     failed_requests: list[dict[str, Any]],
     screenshot: str | None,
+    application_assertions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a stable, testable verification report from captured browser evidence."""
     text = body_text[:12000]
@@ -45,12 +46,14 @@ def build_browser_report(
             "uncaught exception", "failed to compile", "vite error",
         ) if marker in lower_text
     ]
+    assertion_results = application_assertions or []
     checks = {
         "page_loaded": ready_state in ("interactive", "complete"),
         "main_document_http_ok": main_document_status is None or main_document_status < 400,
         "no_uncaught_page_errors": not page_errors,
         "no_console_errors": not console_errors,
         "no_common_error_markers": not error_markers,
+        "application_assertions_passed": all(item.get("passed", False) for item in assertion_results),
     }
     return {
         "success": all(checks.values()),
@@ -63,6 +66,7 @@ def build_browser_report(
         "console_errors": console_errors[:30],
         "http_errors": http_errors[:50],
         "failed_requests": failed_requests[:50],
+        "application_assertions": assertion_results[:100],
         "error_markers": error_markers,
         "body_text_excerpt": text[:6000],
         "screenshot": screenshot,
@@ -74,7 +78,11 @@ def build_browser_report(
     }
 
 
-async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, Any]:
+async def run_browser_automation(
+    url: str,
+    wait_seconds: int = 2,
+    assertions: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Navigate a fresh tab, collect runtime/network evidence, and capture a screenshot."""
     _validate_target_url(url)
     from playwright.async_api import async_playwright
@@ -145,6 +153,36 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
                 body_text = await page.locator("body").inner_text(timeout=1000)
             except Exception:
                 pass
+        config = assertions if isinstance(assertions, dict) else {}
+        application_assertions: list[dict[str, Any]] = []
+        body_lower = body_text.casefold()
+        for expected in config.get("expected_text", [])[:30] if isinstance(config.get("expected_text", []), list) else []:
+            if isinstance(expected, str):
+                value = expected[:500]
+                application_assertions.append({"kind": "expected_text", "value": value, "passed": value.casefold() in body_lower})
+        for forbidden in config.get("forbidden_text", [])[:30] if isinstance(config.get("forbidden_text", []), list) else []:
+            if isinstance(forbidden, str):
+                value = forbidden[:500]
+                application_assertions.append({"kind": "forbidden_text", "value": value, "passed": value.casefold() not in body_lower})
+        for selector in config.get("required_selectors", [])[:30] if isinstance(config.get("required_selectors", []), list) else []:
+            if not isinstance(selector, str):
+                continue
+            value = selector[:500]
+            try:
+                locator = page.locator(value)
+                count = await locator.count()
+                visible = count > 0 and await locator.first.is_visible()
+                application_assertions.append({"kind": "required_selector", "value": value, "count": count, "visible": visible, "passed": visible})
+            except Exception as exc:
+                application_assertions.append({"kind": "required_selector", "value": value, "passed": False, "error": str(exc)[:250]})
+        expected_url = config.get("expected_url_contains")
+        if isinstance(expected_url, str) and expected_url.strip():
+            value = expected_url[:512]
+            application_assertions.append({"kind": "expected_url", "value": value, "passed": value in actual_url})
+        expected_title = config.get("expected_title_contains")
+        if isinstance(expected_title, str) and expected_title.strip():
+            value = expected_title[:512]
+            application_assertions.append({"kind": "expected_title", "value": value, "passed": value.casefold() in title.casefold()})
         try:
             image = await page.screenshot(type="png", full_page=True, animations="disabled", timeout=5000)
             screenshot_uri = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
@@ -161,6 +199,7 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
             http_errors=http_errors,
             failed_requests=failed_requests,
             screenshot=screenshot_uri,
+            application_assertions=application_assertions,
         )
     finally:
         if page is not None:
