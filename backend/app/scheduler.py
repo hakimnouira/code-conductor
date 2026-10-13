@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -57,7 +58,19 @@ async def _monitor_run(
                 update_schedule(schedule_id, last_run_at=time.time(), last_status="failed", failure_streak_delta=1)
                 return
 
-        state = await status_lookup(task_id)
+        try:
+            state = await status_lookup(task_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A transient database or in-memory status lookup error must not cause
+            # the scheduler to dispatch a duplicate task or abandon the run.
+            update_schedule_run(run_id, error=f"Temporary task status lookup failure: {str(exc)[:500]}")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
         if state is None:
             terminal_status, error = "failed", f"Task {task_id} was not found after scheduling."
         else:
@@ -117,13 +130,21 @@ async def scheduler_loop(
         task.add_done_callback(lambda finished, key=run_id: monitors.pop(key, None) if monitors.get(key) is finished else None)
 
     try:
-        for run in get_incomplete_schedule_runs():
-            attach(run)
+        logger = logging.getLogger(__name__)
         while True:
-            for run in claim_due_schedules(time.time(), limit=20):
-                attach(run)
-            for run in get_incomplete_schedule_runs():
-                attach(run)
+            try:
+                # Re-read incomplete runs on each tick. A temporary SQLite lock
+                # during startup must not permanently disable autonomous workflows.
+                for run in get_incomplete_schedule_runs():
+                    attach(run)
+                for run in claim_due_schedules(time.time(), limit=20):
+                    attach(run)
+                for run in get_incomplete_schedule_runs():
+                    attach(run)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Scheduled workflow polling failed; retrying next tick")
             await asyncio.sleep(max(1.0, poll_seconds))
     except asyncio.CancelledError:
         stop_event.set()
