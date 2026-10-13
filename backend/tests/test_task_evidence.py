@@ -7,7 +7,7 @@ import pytest
 
 from app.main import TaskRecord
 from app.models.schemas import TaskCreateRequest, TaskStatus
-from app.task_store import get_saved_tasks
+from app.task_store import get_saved_task, get_saved_tasks
 from app.provenance import collect_workspace_provenance
 
 
@@ -181,3 +181,27 @@ def test_original_request_column_migrates_existing_task_database(tmp_path, monke
     assert saved[0]["initial_request"]["prompt"] == "Legacy task"
     assert saved[0]["initial_request_available"] is False
     assert saved[0]["request"]["prompt"] == "Legacy task"
+
+
+
+def test_exact_task_lookup_is_not_limited_by_recent_history_window(tmp_path, monkeypatch):
+    database = tmp_path / "many-tasks.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, initial_request_json TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"
+        )
+        for index in range(501):
+            task_id = "task-target" if index == 0 else f"task-{index:04d}"
+            request = json.dumps({"prompt": task_id})
+            snapshot = json.dumps({"task_id": task_id, "status": "failed", "created_at": float(index)})
+            db.execute(
+                "INSERT INTO tasks(task_id, request_json, snapshot_json, initial_request_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (task_id, request, snapshot, request, float(index)),
+            )
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(database))
+    recent = get_saved_tasks(limit=500)
+    assert all(item["snapshot"]["task_id"] != "task-target" for item in recent)
+    exact = get_saved_task("task-target")
+    assert exact is not None
+    assert exact["snapshot"]["task_id"] == "task-target"
