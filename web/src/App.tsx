@@ -8,6 +8,29 @@ import {
 
 type Agent = { id: string; name: string; description: string; state: string; diagnostic?: string; capabilities?: { supported_models?: string[] } };
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
+type RuntimeDiagnostics = {
+  status: string;
+  captured_at: number;
+  uptime_seconds: number;
+  database: { status: string; error_type?: string | null };
+  scheduler: { status: string; running: boolean; last_tick_age_seconds?: number | null };
+  tasks: {
+    persisted_sample_size: number;
+    counts_by_status: Record<string, number>;
+    verification_counts: Record<string, number>;
+    active_in_memory: number;
+    stale_threshold_seconds: number;
+    stale_tasks: { task_id: string; agent_id: string; age_seconds: number }[];
+  };
+  schedules: {
+    sample_size: number;
+    enabled: number;
+    runs: {
+      counts_by_status: Record<string, number>;
+      recent_runs: { run_id: string; schedule_id: string; name: string; scheduled_for: number; status: string; task_id: string; attempt: number }[];
+    };
+  };
+};
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
 type BrowserActionStep = { action: "click" | "fill" | "check" | "uncheck" | "select_option" | "press" | "wait_for_selector"; selector: string; value?: string; timeout_ms?: number };
@@ -145,6 +168,9 @@ export default function App() {
   });
   const [workspace, setWorkspace] = useState(() => localStorage.getItem("cc_workspace") || "");
   const [health, setHealth] = useState<Health | null>(null);
+  const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agent, setAgent] = useState("auto");
   const [prompt, setPrompt] = useState("");
@@ -440,6 +466,23 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Connection failed");
     }
   }, [base, token, request]);
+
+  const refreshDiagnostics = useCallback(async () => {
+    setDiagnosticsBusy(true);
+    try {
+      const snapshot = await request("/diagnostics").then(response => response.json()) as RuntimeDiagnostics;
+      setDiagnostics(snapshot);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load runtime diagnostics");
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  }, [request]);
+
+  const openDiagnostics = () => {
+    setDiagnosticsOpen(true);
+    void refreshDiagnostics();
+  };
 
   useEffect(() => { if (token.trim()) void connect(); }, []);
   useEffect(() => { if (events.length) responseRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [events.length]);
@@ -1827,6 +1870,9 @@ export default function App() {
             <button className={"status-chip " + (historyDrawerOpen ? "active" : "")} title="View all task and chat history" onClick={() => setHistoryDrawerOpen(v => !v)}>
               <History size={13}/> History ({taskHistory.length})
             </button>
+            <button className={"status-chip " + (diagnosticsOpen ? "active" : "")} title="Runtime health, scheduler heartbeat, verification and stale tasks" onClick={openDiagnostics}>
+              <Activity size={13}/> Ops
+            </button>
             <button className="icon-button" title={"Toggle theme (current: " + theme + ")"} onClick={toggleTheme}>
               {theme === "dark" ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
@@ -3121,6 +3167,79 @@ export default function App() {
             <div className="modal-actions bottom-actions">
               <button className="outline-button" onClick={() => { setToken(""); sessionStorage.removeItem("cc_token"); localStorage.removeItem("cc_token"); setHealth(null); setAgents([]); }}>Clear token</button>
               <button className="primary-button" onClick={() => { setSettings(false); sessionStorage.setItem("cc_api", base); sessionStorage.setItem("cc_token", token.trim()); void connect(); }}>Save & connect <ArrowUpRight size={14}/></button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {diagnosticsOpen && (
+        <div className="modal-backdrop" onClick={() => setDiagnosticsOpen(false)}>
+          <section className="settings-modal task-history-modal" role="dialog" aria-modal="true" aria-labelledby="runtime-diagnostics-title" onClick={e => e.stopPropagation()}>
+            <div className="settings-modal-head">
+              <div>
+                <h2 id="runtime-diagnostics-title">Runtime Diagnostics</h2>
+                <p>Operational health only; prompts and raw provider diagnostics are not shown.</p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <button className="subtle-button" disabled={diagnosticsBusy} onClick={() => void refreshDiagnostics()}>
+                  <RefreshCw size={13}/> {diagnosticsBusy ? "Refreshing…" : "Refresh"}
+                </button>
+                <button className="icon-button" onClick={() => setDiagnosticsOpen(false)}><X size={17}/></button>
+              </div>
+            </div>
+            <div className="task-history-body" style={{ padding: "18px", display: "grid", gap: "14px" }}>
+              {diagnosticsBusy && !diagnostics && <p>Loading runtime diagnostics…</p>}
+              {!diagnosticsBusy && !diagnostics && <p>Diagnostics are unavailable. Check the local backend connection and token, then refresh.</p>}
+              {diagnostics && (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "10px" }}>
+                    <div className="provider-item"><div><b>Overall</b><span>{diagnostics.status.toUpperCase()}</span></div></div>
+                    <div className="provider-item"><div><b>Database</b><span>{diagnostics.database.status}</span></div></div>
+                    <div className="provider-item"><div><b>Scheduler</b><span>{diagnostics.scheduler.status}{diagnostics.scheduler.last_tick_age_seconds != null ? " · tick " + diagnostics.scheduler.last_tick_age_seconds + "s ago" : ""}</span></div></div>
+                    <div className="provider-item"><div><b>Active tasks</b><span>{diagnostics.tasks.active_in_memory}</span></div></div>
+                    <div className="provider-item"><div><b>Schedules</b><span>{diagnostics.schedules.enabled} enabled / {diagnostics.schedules.sample_size} loaded</span></div></div>
+                  </div>
+
+                  <div>
+                    <h3 style={{ margin: "4px 0 8px" }}>Task states</h3>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                      {Object.entries(diagnostics.tasks.counts_by_status).map(([status, count]) => <span className="status-chip" key={status}>{status}: {count}</span>)}
+                    </div>
+                    <h3 style={{ margin: "14px 0 8px" }}>Verification states</h3>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                      {Object.entries(diagnostics.tasks.verification_counts).map(([status, count]) => <span className="status-chip" key={status}>{status}: {count}</span>)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 style={{ margin: "4px 0 8px" }}>Stale running tasks</h3>
+                    {diagnostics.tasks.stale_tasks.length === 0
+                      ? <p style={{ color: "var(--muted)", margin: 0 }}>No in-memory task has exceeded the {Math.round(diagnostics.tasks.stale_threshold_seconds / 60)}-minute threshold.</p>
+                      : diagnostics.tasks.stale_tasks.map(task => (
+                        <div className="provider-item" key={task.task_id}>
+                          <div><b>{task.task_id}</b><span>{task.agent_id} · {Math.round(task.age_seconds / 60)} minutes</span></div>
+                        </div>
+                      ))}
+                  </div>
+
+                  <div>
+                    <h3 style={{ margin: "4px 0 8px" }}>Recent scheduled runs</h3>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+                      {Object.entries(diagnostics.schedules.runs.counts_by_status).map(([status, count]) => <span className="status-chip" key={status}>{status}: {count}</span>)}
+                    </div>
+                    {diagnostics.schedules.runs.recent_runs.length === 0
+                      ? <p style={{ color: "var(--muted)", margin: 0 }}>No scheduled runs recorded yet.</p>
+                      : diagnostics.schedules.runs.recent_runs.slice(0, 10).map(run => (
+                        <div className="provider-item" key={run.run_id}>
+                          <div><b>{run.name || run.schedule_id}</b><span>{run.status} · attempt {run.attempt} · {new Date(run.scheduled_for * 1000).toLocaleString()}</span></div>
+                        </div>
+                      ))}
+                  </div>
+                  <p style={{ color: "var(--muted)", fontSize: "11px", margin: 0 }}>
+                    Uptime {Math.floor(diagnostics.uptime_seconds / 60)}m · {diagnostics.tasks.persisted_sample_size} persisted task records sampled · captured {new Date(diagnostics.captured_at * 1000).toLocaleTimeString()}
+                  </p>
+                </>
+              )}
             </div>
           </section>
         </div>
