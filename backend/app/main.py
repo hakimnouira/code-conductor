@@ -388,6 +388,8 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "http_errors": result.get("http_errors", []),
             "failed_requests": result.get("failed_requests", []),
             "verification_engine": result.get("verification_engine", "unknown"),
+            "verification_errors": result.get("verification_errors", []),
+            "screenshot_scope": result.get("screenshot_scope", "full_page"),
             "limitations": result.get("limitations", []),
             "error_markers": result.get("error_markers", []),
             "body_text_excerpt": result.get("body_text_excerpt", "")[-3000:],
