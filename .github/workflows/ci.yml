@@ -88,7 +88,10 @@ jobs:
           $files = @(
             "scripts/install-cxcode.ps1",
             "scripts/setup.ps1",
-            "scripts/test.ps1"
+            "scripts/test.ps1",
+            "scripts/run-background-backend.ps1",
+            "scripts/install-background-task.ps1",
+            "scripts/remove-background-task.ps1"
           )
           foreach ($file in $files) {
             $tokens = $null
