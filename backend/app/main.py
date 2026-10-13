@@ -344,7 +344,16 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
 
     try:
         result = await verify_browser_page(
-            BrowserVerifyPayload(url=target_url, wait_seconds=2),
+            BrowserVerifyPayload(
+                url=target_url,
+                wait_seconds=2,
+                assertions=BrowserAssertions(
+                    expected_text=record.request.browser_expected_text,
+                    forbidden_text=record.request.browser_forbidden_text,
+                    required_selectors=record.request.browser_required_selectors,
+                    expected_url_contains=record.request.browser_expected_url_contains,
+                ),
+            ),
             None,
         )
         screenshot_uri = result.pop("screenshot", None)
