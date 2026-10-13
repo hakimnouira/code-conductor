@@ -172,7 +172,7 @@ def build_browser_report(
     action_results = action_results or []
     checks = {
         "page_loaded": ready_state in ("interactive", "complete"),
-        "main_document_http_ok": main_document_status is None or main_document_status < 400,
+        "main_document_http_ok": main_document_status is not None and 100 <= main_document_status < 400,
         "no_uncaught_page_errors": not page_errors,
         "no_console_errors": not console_errors,
         "no_common_error_markers": not error_markers,
