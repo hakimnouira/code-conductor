@@ -13,7 +13,7 @@ type RuntimeDiagnostics = {
   captured_at: number;
   uptime_seconds: number;
   database: { status: string; error_type?: string | null };
-  scheduler: { status: string; running: boolean; last_tick_age_seconds?: number | null };
+  scheduler: { status: string; running: boolean; paused?: boolean | null; last_tick_age_seconds?: number | null };
   tasks: {
     persisted_sample_size: number;
     counts_by_status: Record<string, number>;
@@ -482,6 +482,21 @@ export default function App() {
   const openDiagnostics = () => {
     setDiagnosticsOpen(true);
     void refreshDiagnostics();
+  };
+
+  const toggleSchedulePause = async () => {
+    if (!diagnostics || diagnostics.scheduler.paused == null) return;
+    setDiagnosticsBusy(true);
+    try {
+      const path = diagnostics.scheduler.paused ? "/scheduler/resume" : "/scheduler/pause";
+      await request(path, { method: "POST" });
+      const snapshot = await request("/diagnostics").then(response => response.json()) as RuntimeDiagnostics;
+      setDiagnostics(snapshot);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change scheduler pause state");
+    } finally {
+      setDiagnosticsBusy(false);
+    }
   };
 
   useEffect(() => { if (token.trim()) void connect(); }, []);
@@ -3184,6 +3199,13 @@ export default function App() {
                 <button className="subtle-button" disabled={diagnosticsBusy} onClick={() => void refreshDiagnostics()}>
                   <RefreshCw size={13}/> {diagnosticsBusy ? "Refreshing…" : "Refresh"}
                 </button>
+                <button
+                  className="subtle-button"
+                  disabled={diagnosticsBusy || !diagnostics || diagnostics.scheduler.paused == null}
+                  onClick={() => void toggleSchedulePause()}
+                >
+                  {diagnostics?.scheduler.paused ? "Resume schedules" : "Pause schedules"}
+                </button>
                 <button className="icon-button" onClick={() => setDiagnosticsOpen(false)}><X size={17}/></button>
               </div>
             </div>
@@ -3196,6 +3218,7 @@ export default function App() {
                     <div className="provider-item"><div><b>Overall</b><span>{diagnostics.status.toUpperCase()}</span></div></div>
                     <div className="provider-item"><div><b>Database</b><span>{diagnostics.database.status}</span></div></div>
                     <div className="provider-item"><div><b>Scheduler</b><span>{diagnostics.scheduler.status}{diagnostics.scheduler.last_tick_age_seconds != null ? " · tick " + diagnostics.scheduler.last_tick_age_seconds + "s ago" : ""}</span></div></div>
+                    <div className="provider-item"><div><b>Scheduled dispatch</b><span>{diagnostics.scheduler.paused ? "paused" : diagnostics.scheduler.paused === false ? "enabled" : "unknown"}</span></div></div>
                     <div className="provider-item"><div><b>Active tasks</b><span>{diagnostics.tasks.active_in_memory}</span></div></div>
                     <div className="provider-item"><div><b>Schedules</b><span>{diagnostics.schedules.enabled} enabled / {diagnostics.schedules.sample_size} loaded</span></div></div>
                   </div>
