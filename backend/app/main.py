@@ -80,7 +80,7 @@ from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
-    get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
+    get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
     list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
     queue_schedule_run_now,
 )
@@ -242,9 +242,12 @@ _idempotency_lock = asyncio.Lock()
 _start_time = time.time()
 
 
-async def _restore_task_records() -> None:
+async def _restore_task_records(task_id: str | None = None) -> None:
     """Restore history and mark interrupted tasks instead of pretending they resumed."""
-    for item in get_saved_tasks(limit=500):
+    saved_items = [get_saved_task(task_id)] if task_id else get_saved_tasks(limit=500)
+    for item in saved_items:
+        if item is None:
+            continue
         snapshot = item["snapshot"]
         task_id = snapshot.get("task_id")
         if not task_id or task_id in _tasks:
@@ -517,7 +520,7 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
         # lookup. The durable deterministic task ID additionally handles restarts.
         async with _idempotency_lock:
             if task_id not in _tasks:
-                await _restore_task_records()
+                await _restore_task_records(task_id=task_id)
             existing = _tasks.get(task_id)
             if existing:
                 if existing.request_fingerprint != request_fingerprint:
@@ -1217,7 +1220,7 @@ async def retry_task(task_id: str, _: str = Depends(require_bearer_token)):
     """Create a new task from the immutable original request of a failed/cancelled task."""
     record = _tasks.get(task_id)
     if record is None:
-        await _restore_task_records()
+        await _restore_task_records(task_id=task_id)
         record = _tasks.get(task_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
