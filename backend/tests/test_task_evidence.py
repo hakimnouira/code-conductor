@@ -126,3 +126,24 @@ def test_workspace_provenance_marks_non_git_workspace_partial(tmp_path):
     assert result["workspace_kind"] == "non_git"
     assert result["snapshot_complete"] is False
     assert result["reason"] == "not_a_git_repository"
+
+
+
+def test_original_task_request_survives_mutable_execution_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "original-request.sqlite3"))
+    request = TaskCreateRequest(
+        prompt="Original user instruction",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+        github_research=False,
+    )
+    task = TaskRecord("task-original-request", request, "mock")
+    task.request.prompt += "\n\nTemporary repair diagnostics added during execution."
+    task._persist()
+
+    saved = next(
+        item for item in get_saved_tasks()
+        if item["snapshot"]["task_id"] == "task-original-request"
+    )
+    assert saved["initial_request"]["prompt"] == "Original user instruction"
+    assert "Temporary repair diagnostics" in saved["request"]["prompt"]
