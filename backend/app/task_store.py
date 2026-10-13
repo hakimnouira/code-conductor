@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -132,7 +133,7 @@ def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
-    now = float(workflow.get("updated_at") or __import__("time").time())
+    now = float(workflow.get("updated_at") or time.time())
     created_at = float(workflow.get("created_at") or now)
     with _connect() as db:
         db.execute(
