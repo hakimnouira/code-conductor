@@ -654,6 +654,9 @@ export default function App() {
     setSelectedHistoryId(created.task_id);
 
     const previousHistory = taskHistory.find(item => item.id === created.task_id);
+    const collectedEvents: Ev[] = [];
+    let taskOutput = "";
+    let taskFailed = false;
     let lastEventId = Math.max(0, ...(previousHistory?.events || []).map(event => event.event_id || 0));
     let reconnectAttempts = 0;
     let streamDone = false;
