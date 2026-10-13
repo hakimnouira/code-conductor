@@ -18,12 +18,20 @@ async def test_workflow_library_create_list_delete_is_persistent(tmp_path, monke
             "agent_id": "auto",
             "auto_verify": True,
             "browser_verify_url": "http://localhost:3000",
+            "browser_required_text": ["Dashboard", "Tasks"],
+            "browser_forbidden_text": ["Application error"],
+            "browser_visible_selectors": ["main", "[data-testid='task-list']"],
+            "browser_hidden_selectors": ["[role='alert']"],
         })
         assert created.status_code == 200
         item = created.json()
         assert item["name"] == "Fix and verify"
         assert item["auto_verify"] is True
         assert item["browser_verify_url"] == "http://localhost:3000"
+        assert item["browser_required_text"] == ["Dashboard", "Tasks"]
+        assert item["browser_forbidden_text"] == ["Application error"]
+        assert item["browser_visible_selectors"] == ["main", "[data-testid='task-list']"]
+        assert item["browser_hidden_selectors"] == ["[role='alert']"]
 
         listing = await client.get("/workflows", headers=headers)
         assert listing.status_code == 200
