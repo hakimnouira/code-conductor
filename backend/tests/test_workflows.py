@@ -68,3 +68,29 @@ async def test_workflow_library_rejects_blank_name_and_unsafe_browser_scheme(tmp
             "name": "Credential URL", "prompt": "Check page", "browser_verify_url": "https://user:password@example.com"
         })
         assert credentials.status_code == 422
+
+
+def test_existing_workflow_database_is_migrated_without_losing_presets(tmp_path, monkeypatch):
+    import sqlite3
+    from app.task_store import list_workflows
+
+    database = tmp_path / "legacy-workflows.sqlite3"
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(database))
+    with sqlite3.connect(database) as db:
+        db.execute(
+            """CREATE TABLE workflow_presets (
+                workflow_id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
+                agent_id TEXT NOT NULL, auto_verify INTEGER NOT NULL DEFAULT 0,
+                browser_verify_url TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            )"""
+        )
+        db.execute(
+            "INSERT INTO workflow_presets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-workflow", "Legacy", "Keep this preset", "auto", 0, "", 1.0, 1.0),
+        )
+    rows = list_workflows()
+    assert len(rows) == 1
+    assert rows[0]["workflow_id"] == "legacy-workflow"
+    assert rows[0]["browser_required_text"] == []
+    assert rows[0]["browser_visible_selectors"] == []
