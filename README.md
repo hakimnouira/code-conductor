@@ -190,6 +190,7 @@ The local daemon listens on `http://127.0.0.1:8765` with `Authorization: Bearer 
 | `GET` | `/agents` | List all discovered agents with availability state and diagnostics. |
 | `POST` | `/tasks` | Create an execution task (`prompt`, `agent_id`, `workspace_path`). |
 | `GET` | `/tasks/{id}/events` | Server-Sent Events (SSE) token and status stream. |
+| `GET` | `/tasks/{id}/evidence` | Machine-readable verification evidence and outcome status. |
 | `POST` | `/tasks/{id}/cancel` | Immediately cancel in-flight process and child trees. |
 | `POST` | `/orchestrator/plan` | Decompose prompt into dependency DAG and disjoint parallel batches. |
 | `GET` | `/orchestrator/history` | List immutable audit records of all multi-agent runs and review verdicts. |
@@ -278,6 +279,16 @@ API endpoints (Bearer token required):
 - `PUT /schedules/{schedule_id}` — pause/resume.
 - `DELETE /schedules/{schedule_id}` — remove a schedule (historical run records are retained).
 - `GET /schedules/{schedule_id}/runs` — inspect recent runs.
+
+### Evidence attached to task outcomes
+
+Every task that reaches a completed state records a machine-readable `task_completion` evidence entry in its persisted task snapshot. Automated test runs and browser verification append their own evidence entries with status, timestamps, bounded diagnostics, and artifact references. The manifest is written atomically to:
+
+```text
+.code-conductor/artifacts/{task_id}/evidence.json
+```
+
+Retrieve the current evidence through authenticated `GET /tasks/{task_id}/evidence`. The response distinguishes task completion from verification: `verification_status` is `passed`, `failed`, `skipped`, or `not_requested`. A completed task is therefore not automatically represented as verified. When no supported test command exists, Auto Verify records an explicit skipped result rather than implying tests passed. Evidence is also retained in the local SQLite task snapshot if the workspace artifact cannot be written.
 
 ### Playwright-backed browser verification
 When a task has `browser_verify_url` configured, Code Conductor attaches Playwright to the configured Chromium DevTools Protocol endpoint (default `http://127.0.0.1:9222`) and opens a separate tab. It captures:
