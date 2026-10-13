@@ -1055,22 +1055,25 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 # block below. Convert it into a failed attempt so disconnects remain
                 # visible in durable evidence rather than disappearing from telemetry.
                 provider_stream_error = str(provider_error)[:1000] or type(provider_error).__name__
-                record.status = TaskStatus.FAILED
-                record.error = f"Provider stream failed: {provider_stream_error}"
-                record.completed_at = time.time()
-                await record.event_queue.put(json.dumps({
-                    "task_id": record.task_id,
-                    "event_type": "error",
-                    "text": record.error,
-                    "timestamp": record.completed_at,
-                    "data": {"phase": "provider_execution", "reason": "provider_stream_error"},
-                }))
+                # Cancellation is authoritative even if the provider transport also
+                # disconnects while the adapter is being stopped.
+                if record.status != TaskStatus.CANCELLED:
+                    record.status = TaskStatus.FAILED
+                    record.error = f"Provider stream failed: {provider_stream_error}"
+                    record.completed_at = time.time()
+                    await record.event_queue.put(json.dumps({
+                        "task_id": record.task_id,
+                        "event_type": "error",
+                        "text": record.error,
+                        "timestamp": record.completed_at,
+                        "data": {"phase": "provider_execution", "reason": "provider_stream_error"},
+                    }))
 
             provider_duration_ms = round((time.monotonic() - provider_started) * 1000.0, 2)
             provider_stream_status = (
                 "passed" if terminal_event is not None and record.status not in (TaskStatus.CANCELLED, TaskStatus.FAILED)
-                else "failed" if record.status == TaskStatus.FAILED or provider_stream_error
                 else "cancelled" if record.status == TaskStatus.CANCELLED
+                else "failed" if record.status == TaskStatus.FAILED or provider_stream_error
                 else "incomplete"
             )
             record.add_evidence(
