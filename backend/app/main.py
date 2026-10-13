@@ -731,7 +731,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             }
             await record.event_queue.put(json.dumps(research_event))
             try:
-                research = await _await_task_deadline(\n                    research_github(record.request.prompt, record.request.workspace_path, clone_best=True),\n                    deadline, timeout_seconds,\n                )
+                research = await _await_task_deadline(
+                    research_github(record.request.prompt, record.request.workspace_path, clone_best=True),
+                    deadline, timeout_seconds,
+                )
                 status_text = research.get("status", "unavailable")
                 repos = research.get("repositories", [])
                 if status_text == "complete" and repos:
@@ -853,7 +856,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 break
 
             verification_attempt += 1
-            result = await _await_task_deadline(\n                runner.run_tests(command_key=command_key, timeout_seconds=120),\n                deadline, timeout_seconds,\n            )
+            result = await _await_task_deadline(
+                runner.run_tests(command_key=command_key, timeout_seconds=120),
+                deadline, timeout_seconds,
+            )
             # Cancellation can arrive while the test subprocess is running. Do not
             # emit stale verification evidence or let this pipeline overwrite it.
             if record.status == TaskStatus.CANCELLED:
@@ -877,7 +883,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             verification_command = command_key
             build_key = runner.discover_build_runner() if command_key != "npm_build" else None
             if result.passed and build_key:
-                build_result = await _await_task_deadline(\n                    runner.run_tests(command_key=build_key, timeout_seconds=120),\n                    deadline, timeout_seconds,\n                )
+                build_result = await _await_task_deadline(
+                    runner.run_tests(command_key=build_key, timeout_seconds=120),
+                    deadline, timeout_seconds,
+                )
                 if record.status == TaskStatus.CANCELLED:
                     break
                 record.add_evidence(
