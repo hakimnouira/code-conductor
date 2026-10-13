@@ -84,6 +84,17 @@ class TaskCreateRequest(BaseModel):
     browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
     # Used by durable dispatchers to make retries/restarts return the same task.
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    retry_of: str | None = Field(default=None, max_length=100)
+
+    @field_validator("retry_of")
+    @classmethod
+    def normalize_retry_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Retry origin must not be blank.")
+        return cleaned
 
     @field_validator("idempotency_key")
     @classmethod
