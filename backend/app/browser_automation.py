@@ -23,6 +23,52 @@ def _validate_target_url(url: str) -> None:
         raise ValueError("Verification URL must be HTTP(S), include a host, and contain no embedded credentials.")
 
 
+async def execute_browser_steps(page: Any, steps: list[Any]) -> list[dict[str, Any]]:
+    """Execute a bounded, selector-only sequence and stop at the first failure."""
+    results: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(steps[:20]):
+        step = raw_step.model_dump() if hasattr(raw_step, "model_dump") else dict(raw_step)
+        action = str(step.get("action") or "")
+        selector = str(step.get("selector") or "").strip()
+        value = step.get("value")
+        timeout_ms = min(max(int(step.get("timeout_ms") or 5000), 100), 10000)
+        started = time.monotonic()
+        result: dict[str, Any] = {
+            "index": index,
+            "action": action,
+            "selector": selector[:500],
+            "passed": False,
+        }
+        try:
+            if not selector:
+                raise ValueError("Selector must not be blank.")
+            locator = page.locator(selector).first
+            if action == "click":
+                await locator.click(timeout=timeout_ms)
+            elif action == "fill":
+                await locator.fill(str(value or ""), timeout=timeout_ms)
+            elif action == "check":
+                await locator.check(timeout=timeout_ms)
+            elif action == "uncheck":
+                await locator.uncheck(timeout=timeout_ms)
+            elif action == "select_option":
+                await locator.select_option(str(value), timeout=timeout_ms)
+            elif action == "press":
+                await locator.press(str(value), timeout=timeout_ms)
+            elif action == "wait_for_selector":
+                await locator.wait_for(state="visible", timeout=timeout_ms)
+            else:
+                raise ValueError(f"Unsupported browser action: {action}")
+            result["passed"] = True
+        except Exception as exc:
+            result["error"] = str(exc)[:500]
+        result["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
+        results.append(result)
+        if not result["passed"]:
+            break
+    return results
+
+
 def evaluate_acceptance_assertions(
     *,
     body_text: str,
@@ -223,48 +269,7 @@ async def run_browser_automation(
                 body_text = await page.locator("body").inner_text(timeout=1000)
             except Exception:
                 pass
-        # Only bounded selector-based actions are accepted; arbitrary JavaScript is never run.
-        for index, raw_step in enumerate((steps or [])[:20]):
-            step = raw_step.model_dump() if hasattr(raw_step, "model_dump") else dict(raw_step)
-            action = str(step.get("action") or "")
-            selector = str(step.get("selector") or "").strip()
-            value = step.get("value")
-            timeout_ms = min(max(int(step.get("timeout_ms") or 5000), 100), 10000)
-            started = time.monotonic()
-            result: dict[str, Any] = {
-                "index": index,
-                "action": action,
-                "selector": selector[:500],
-                "passed": False,
-            }
-            try:
-                if not selector:
-                    raise ValueError("Selector must not be blank.")
-                locator = page.locator(selector).first
-                if action == "click":
-                    await locator.click(timeout=timeout_ms)
-                elif action == "fill":
-                    await locator.fill(str(value or ""), timeout=timeout_ms)
-                elif action == "check":
-                    await locator.check(timeout=timeout_ms)
-                elif action == "uncheck":
-                    await locator.uncheck(timeout=timeout_ms)
-                elif action == "select_option":
-                    await locator.select_option(str(value), timeout=timeout_ms)
-                elif action == "press":
-                    await locator.press(str(value), timeout=timeout_ms)
-                elif action == "wait_for_selector":
-                    await locator.wait_for(state="visible", timeout=timeout_ms)
-                else:
-                    raise ValueError(f"Unsupported browser action: {action}")
-                result["passed"] = True
-            except Exception as exc:
-                result["error"] = str(exc)[:500]
-            result["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
-            action_results.append(result)
-            if not result["passed"]:
-                # Stop at the first failure; later actions may be unsafe against an unknown state.
-                break
+        action_results = await execute_browser_steps(page, steps or [])
 
         selector_visibility: dict[str, dict[str, Any]] = {}
         for selector in dict.fromkeys(visible_selectors + hidden_selectors):
