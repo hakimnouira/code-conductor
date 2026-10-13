@@ -66,3 +66,47 @@ def test_subresource_failures_are_reported_without_false_failure():
 def test_browser_verification_rejects_unsafe_urls(url):
     with pytest.raises(ValueError):
         _validate_target_url(url)
+
+
+
+def test_application_assertion_failure_blocks_browser_success():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard loaded",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot="data:image/png;base64,AA==",
+        application_assertions=[
+            {"kind": "expected_text", "value": "Signed in", "passed": False},
+            {"kind": "required_selector", "value": "main", "passed": True},
+        ],
+    )
+    assert report["success"] is False
+    assert report["checks"]["application_assertions_passed"] is False
+    assert report["application_assertions"][0]["value"] == "Signed in"
+
+
+def test_application_assertions_are_reported_without_masking_runtime_failures():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard loaded",
+        main_document_status=200,
+        page_errors=["TypeError: app crashed"],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        application_assertions=[
+            {"kind": "expected_text", "value": "Dashboard", "passed": True},
+        ],
+    )
+    assert report["success"] is False
+    assert report["checks"]["application_assertions_passed"] is True
+    assert report["checks"]["no_uncaught_page_errors"] is False
