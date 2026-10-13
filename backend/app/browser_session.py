@@ -15,7 +15,7 @@ import urllib.parse
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.security import require_bearer_token
 from app.browser_automation import run_browser_automation
@@ -51,6 +51,11 @@ class BrowserVerifyPayload(BaseModel):
     forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("required_text", "forbidden_text", "visible_selectors", "hidden_selectors")
+    @classmethod
+    def bound_assertion_values(cls, values: list[str]) -> list[str]:
+        return [value.strip()[:500] for value in values if value.strip()][:20]
 
 
 def get_current_endpoint() -> str:
