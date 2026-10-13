@@ -92,6 +92,7 @@ def run_suite(args: argparse.Namespace) -> int:
         latest_status: dict[str, str] = {}
         test_runs: list[dict[str, Any]] = []
         build_runs: list[dict[str, Any]] = []
+        provider_runs: list[dict[str, Any]] = []
         for item in evidence_items:
             kind = str(item.get("kind") or "")
             if kind:
@@ -101,6 +102,8 @@ def run_suite(args: argparse.Namespace) -> int:
                 test_runs.append(details)
             elif kind == "build":
                 build_runs.append(details)
+            elif kind == "provider_execution":
+                provider_runs.append(details)
         provenance = next(
             (item for item in reversed(evidence_items) if item.get("kind") == "workspace_provenance"),
             {},
@@ -109,6 +112,9 @@ def run_suite(args: argparse.Namespace) -> int:
         test_build_duration_ms = sum(
             float(details.get("duration_ms") or 0)
             for details in [*test_runs, *build_runs]
+        )
+        provider_stream_duration_ms = sum(
+            float(details.get("duration_ms") or 0) for details in provider_runs
         )
         result = {
             "suite": suite.get("name", "unnamed"),
@@ -121,6 +127,9 @@ def run_suite(args: argparse.Namespace) -> int:
             "passed": verified,
             "duration_seconds": round(time.monotonic() - started, 3),
             "verification_duration_ms": round(test_build_duration_ms, 3),
+            "provider_stream_duration_ms": round(provider_stream_duration_ms, 3),
+            "provider_attempts": len(provider_runs),
+            "provider_events_received": sum(int(details.get("events_received") or 0) for details in provider_runs),
             "test_attempts": len(test_runs),
             "build_attempts": len(build_runs),
             "browser_verification_status": latest_status.get("browser_verification", "not_requested"),
