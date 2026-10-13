@@ -12,7 +12,6 @@ from app.adapters.base import BaseAgentAdapter
 from app.models.schemas import (
     AgentCapabilities,
     AgentEvent,
-    AgentInfo,
     AvailabilityState,
     EventType,
     TaskCreateRequest,
@@ -28,10 +27,10 @@ def load_api_config() -> dict:
 
 class DualModelAdapter(BaseAgentAdapter):
     """
-    Dual-Model Consultation & Synthesis Adapter.
-    Queries two independent AI models simultaneously (e.g. Groq + APMix / CodeCraft),
-    compares both perspectives, synthesizes a conclusive answer, and formulates
-    concrete follow-up actions based on that conclusion.
+    Dual-Model Consultation & Synthesis Engine.
+    Queries two independent AI models simultaneously (with random pairing across Qwen 27B,
+    GPT-OSS 120B, Claude, GPT-6 Luna, etc.), compares both perspectives side-by-side,
+    and synthesizes a conclusive, actionable recommendation.
     """
 
     def __init__(self):
@@ -43,13 +42,13 @@ class DualModelAdapter(BaseAgentAdapter):
 
     @property
     def name(self) -> str:
-        return "Dual Model Compare & Conclude (Groq + APMix)"
+        return "Dual Model Compare & Conclude (Random Dual AI)"
 
     @property
     def description(self) -> str:
         return (
-            "Queries 2 independent models in parallel, compares both answers, "
-            "and generates a synthesized conclusion and actionable recommendation."
+            "Queries 2 independent models in parallel (Qwen, GPT-OSS 120B, Claude, etc.), "
+            "compares their answers, and delivers a synthesized conclusion and action plan."
         )
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
@@ -63,19 +62,18 @@ class DualModelAdapter(BaseAgentAdapter):
         groq_keys = cfg.get("groq", {}).get("keys", [])
         apmix_keys = cfg.get("apmix", {}).get("keys", [])
         cc_keys = cfg.get("codecraft", {}).get("keys", [])
-        xpl_keys = cfg.get("experientiallabs", {}).get("keys", [])
         thk_keys = cfg.get("tokenharbor", {}).get("keys", [])
 
-        ready_count = sum(1 for k in [groq_keys, apmix_keys, cc_keys, xpl_keys, thk_keys] if len(k) > 0)
-        if ready_count < 2:
+        total_keys = len(groq_keys) + len(apmix_keys) + len(cc_keys) + len(thk_keys)
+        if total_keys == 0:
             return (
-                AvailabilityState.DEGRADED,
-                "Dual consultation requires at least 2 active providers configured in api_keys.json.",
+                AvailabilityState.UNAUTHENTICATED,
+                "No API keys configured in api_keys.json.",
             )
 
         return (
             AvailabilityState.READY,
-            f"Dual consultation engine ready with {ready_count} providers available.",
+            f"Dual consultation engine ready with {len(groq_keys)} fast keys across multiple frontier models.",
         )
 
     async def get_capabilities(self) -> AgentCapabilities:
@@ -84,14 +82,18 @@ class DualModelAdapter(BaseAgentAdapter):
             supports_code_edits=False,
             supports_terminal_execution=False,
             supports_subagents=False,
-            supported_models=["dual-groq-apmix", "dual-random-pair"],
+            supported_models=[
+                "dual-random-pair",
+                "qwen-vs-gptoss120b",
+                "qwen-vs-claude",
+            ],
         )
 
     async def stream_task(
         self, task_id: str, request: TaskCreateRequest
     ) -> AsyncIterator[AgentEvent]:
         state, diag = await self.check_availability()
-        if state not in (AvailabilityState.READY, AvailabilityState.DEGRADED):
+        if state != AvailabilityState.READY:
             yield AgentEvent(
                 task_id=task_id,
                 event_type=EventType.ERROR,
@@ -113,7 +115,6 @@ class DualModelAdapter(BaseAgentAdapter):
         cfg = load_api_config()
         prompt = request.prompt
 
-        # Run dual queries asynchronously in worker thread
         try:
             dual_result = await asyncio.to_thread(self._run_dual_and_synthesize, cfg, prompt, cancel_event)
         except Exception as e:
@@ -126,7 +127,6 @@ class DualModelAdapter(BaseAgentAdapter):
             self._active_cancels.pop(task_id, None)
             return
 
-        # Stream formatted markdown output
         words = dual_result.split(" ")
         for i, word in enumerate(words):
             if cancel_event.is_set():
@@ -145,7 +145,7 @@ class DualModelAdapter(BaseAgentAdapter):
                 text=word + (" " if i < len(words) - 1 else ""),
                 timestamp=time.time(),
             )
-            await asyncio.sleep(0.008)
+            await asyncio.sleep(0.006)
 
         yield AgentEvent(
             task_id=task_id,
@@ -161,7 +161,7 @@ class DualModelAdapter(BaseAgentAdapter):
             return True
         return False
 
-    def _post_json(self, url: str, payload: dict, headers: dict, timeout: int = 12) -> dict:
+    def _post_json(self, url: str, payload: dict, headers: dict, timeout: int = 6) -> dict:
         ctx = ssl.create_default_context()
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -176,149 +176,167 @@ class DualModelAdapter(BaseAgentAdapter):
         with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def _query_provider(self, prov: str, config: dict, prompt: str, system: str) -> dict:
-        """Queries a single provider with key rotation and failover."""
-        if prov == "groq":
-            cfg = config.get("groq", {})
-            keys = cfg.get("keys", [])
-            url = f"{cfg.get('base_url', 'https://api.groq.com/openai/v1')}/chat/completions"
-            model = cfg.get("default_model", "qwen/qwen3.8-27b")
+    def _query_model(self, model_spec: dict, config: dict, prompt: str, system: str) -> dict:
+        provider = model_spec["provider"]
+        model_id = model_spec["model_id"]
+        display_name = model_spec["display_name"]
+
+        if provider == "groq":
+            groq_cfg = config.get("groq", {})
+            keys = groq_cfg.get("keys", [])
+            url = f"{groq_cfg.get('base_url', 'https://api.groq.com/openai/v1')}/chat/completions"
             for k in keys:
                 try:
                     res = self._post_json(
                         url,
                         {
-                            "model": model,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                            "model": model_id,
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "max_tokens": 1500,
+                        },
+                        {"Authorization": f"Bearer {k}"},
+                        timeout=12,
+                    )
+                    content = res["choices"][0]["message"].get("content", "").strip()
+                    if content:
+                        return {"name": display_name, "content": content}
+                except Exception:
+                    continue
+
+        elif provider == "apmix":
+            apmix_cfg = config.get("apmix", {})
+            keys = apmix_cfg.get("keys", [])
+            url = f"{apmix_cfg.get('base_url', 'https://api.apmix.ai/v1')}/chat/completions"
+            for k in keys:
+                try:
+                    res = self._post_json(
+                        url,
+                        {
+                            "model": model_id,
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": prompt},
+                            ],
                             "max_tokens": 1500,
                         },
                         {"Authorization": f"Bearer {k}"},
                         timeout=10,
                     )
                     content = res["choices"][0]["message"].get("content", "").strip()
-                    return {"name": f"Groq ({model})", "content": content}
+                    if content:
+                        return {"name": display_name, "content": content}
                 except Exception:
                     continue
 
-        elif prov == "apmix":
-            cfg = config.get("apmix", {})
-            keys = cfg.get("keys", [])
-            url = f"{cfg.get('base_url', 'https://api.apmix.ai/v1')}/chat/completions"
-            model = "claude-sonnet-4-6-free"
+        elif provider == "tokenharbor":
+            th_cfg = config.get("tokenharbor", {})
+            keys = th_cfg.get("keys", [])
+            url = f"{th_cfg.get('base_url', 'https://api.tokenharbor.ai/v1')}/chat/completions"
             for k in keys:
                 try:
                     res = self._post_json(
                         url,
                         {
-                            "model": model,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                            "model": model_id,
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": prompt},
+                            ],
                             "max_tokens": 1500,
                         },
                         {"Authorization": f"Bearer {k}"},
                         timeout=10,
                     )
                     content = res["choices"][0]["message"].get("content", "").strip()
-                    return {"name": f"APMix ({model})", "content": content}
+                    if content:
+                        return {"name": display_name, "content": content}
                 except Exception:
                     continue
 
-        elif prov == "codecraft":
-            cfg = config.get("codecraft", {})
-            keys = cfg.get("keys", [])
-            url = f"{cfg.get('base_url', 'https://codecraftapi.com/v1')}/chat/completions"
-            model = cfg.get("default_model", "gemma-2-2b")
-            for k in keys:
-                try:
-                    res = self._post_json(
-                        url,
-                        {
-                            "model": model,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                            "max_tokens": 1024,
-                        },
-                        {"Authorization": f"Bearer {k}"},
-                        timeout=10,
-                    )
-                    content = res["choices"][0]["message"].get("content", "").strip()
-                    return {"name": f"CodeCraft ({model})", "content": content}
-                except Exception:
-                    continue
-
-        elif prov == "experientiallabs":
-            cfg = config.get("experientiallabs", {})
-            keys = cfg.get("keys", [])
-            url = f"{cfg.get('base_url', 'https://api.experientiallabs.ai/v1')}/chat/completions"
-            model = "aion-3.0-mini"
-            for k in keys:
-                try:
-                    res = self._post_json(
-                        url,
-                        {
-                            "model": model,
-                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                            "max_tokens": 1024,
-                        },
-                        {"Authorization": f"Bearer {k}"},
-                        timeout=10,
-                    )
-                    content = res["choices"][0]["message"].get("content", "").strip()
-                    return {"name": f"Experiential Labs ({model})", "content": content}
-                except Exception:
-                    continue
-
-        return {"name": prov, "content": f"Unable to reach {prov}."}
+        return {"name": display_name, "content": f"Provider {provider} ({model_id}) temporarily unreachable."}
 
     def _run_dual_and_synthesize(self, config: dict, prompt: str, cancel_event: asyncio.Event) -> str:
-        # Choose two distinct candidate providers
-        all_candidates = ["groq", "apmix", "codecraft", "experientiallabs"]
-        # Filter by configured keys
-        configured = [c for c in all_candidates if config.get(c, {}).get("keys")]
-        if len(configured) >= 2:
-            random.shuffle(configured)
-            p1, p2 = configured[0], configured[1]
-        else:
-            p1, p2 = "groq", "apmix"
+        # Dynamic pool of models across providers
+        model_pool = [
+            {"provider": "groq", "model_id": "qwen/qwen3.8-27b", "display_name": "Qwen 3.8 (27B)"},
+            {"provider": "groq", "model_id": "openai/gpt-oss-120b", "display_name": "GPT-OSS (120B Frontier)"},
+            {"provider": "groq", "model_id": "openai/gpt-oss-20b", "display_name": "GPT-OSS (20B Speed)"},
+            {"provider": "groq", "model_id": "canopylabs/orpheus-v1-english", "display_name": "Orpheus v1"},
+            {"provider": "apmix", "model_id": "claude-sonnet-4-6-free", "display_name": "Claude Sonnet 4.6"},
+            {"provider": "tokenharbor", "model_id": "claude-haiku-5.5-free", "display_name": "Claude Haiku 5.5"},
+        ]
+
+        # Shuffle and select 2 distinct models
+        random.shuffle(model_pool)
+        model_a = model_pool[0]
+        # Ensure model_b is distinct
+        model_b = next((m for m in model_pool[1:] if m["model_id"] != model_a["model_id"]), model_pool[1])
 
         system = "You are a senior software engineering specialist providing concise, rigorous, and direct technical answers."
 
-        res1 = self._query_provider(p1, config, prompt, system)
+        res1 = self._query_model(model_a, config, prompt, system)
         if cancel_event.is_set():
             return "Cancelled"
-        res2 = self._query_provider(p2, config, prompt, system)
+
+        # If model_a failed, pick another from pool
+        if "unreachable" in res1["content"]:
+            for alt in model_pool:
+                if alt["model_id"] not in (model_a["model_id"], model_b["model_id"]):
+                    res1 = self._query_model(alt, config, prompt, system)
+                    if "unreachable" not in res1["content"]:
+                        model_a = alt
+                        break
+
+        res2 = self._query_model(model_b, config, prompt, system)
         if cancel_event.is_set():
             return "Cancelled"
+
+        # If model_b failed, pick another from pool
+        if "unreachable" in res2["content"]:
+            for alt in model_pool:
+                if alt["model_id"] not in (model_a["model_id"], model_b["model_id"]):
+                    res2 = self._query_model(alt, config, prompt, system)
+                    if "unreachable" not in res2["content"]:
+                        model_b = alt
+                        break
 
         model_a_name = res1["name"]
         model_a_text = res1["content"]
         model_b_name = res2["name"]
         model_b_text = res2["content"]
 
-        # Run synthesis prompt
-        synthesis_prompt = f"""You are an expert AI arbiter. Two independent models answered the user request:
+        # Run synthesis arbitration prompt with the frontier model
+        synthesis_prompt = f"""You are a senior technical arbiter. Two independent AI models answered the user prompt:
 
 [USER PROMPT]:
 {prompt}
 
-[MODEL A: {model_a_name}]:
+[MODEL A ({model_a_name})]:
 {model_a_text}
 
-[MODEL B: {model_b_name}]:
+[MODEL B ({model_b_name})]:
 {model_b_text}
 
 Task:
-1. Provide a quick 2-bullet comparison (points of agreement vs difference).
-2. Produce a clear, decisive FINAL CONCLUSION that takes the best parts of both.
+1. Provide a concise 2-bullet comparison (points of agreement vs differences).
+2. Produce a clear, decisive FINAL CONCLUSION taking the best of both.
 3. Formulate the concrete next action to take based on that conclusion.
 
-Keep the response organized with clear markdown headers."""
+Use clear markdown headers."""
 
-        synth_res = self._query_provider(p1, config, synthesis_prompt, "You are a concise, decisive AI technical arbiter.")
+        # Synthesize with Qwen or GPT-OSS
+        synth_spec = {"provider": "groq", "model_id": "qwen/qwen3.8-27b", "display_name": "Synthesizer"}
+        synth_res = self._query_model(synth_spec, config, synthesis_prompt, "You are a decisive technical arbiter.")
         synth_text = synth_res.get("content", "")
-        if not synth_text or "Unable to reach" in synth_text:
-            synth_res = self._query_provider(p2, config, synthesis_prompt, "You are a concise, decisive AI technical arbiter.")
+        if not synth_text or "unreachable" in synth_text:
+            synth_spec = {"provider": "groq", "model_id": "openai/gpt-oss-120b", "display_name": "Synthesizer"}
+            synth_res = self._query_model(synth_spec, config, synthesis_prompt, "You are a decisive technical arbiter.")
             synth_text = synth_res.get("content", "")
 
-        output = f"""# ⚖️ Dual-Model Consultation & Synthesis
+        return f"""# ⚖️ Dual-Model Consultation & Synthesis
 
 ### 🤖 Model A: {model_a_name}
 {model_a_text}
@@ -330,7 +348,6 @@ Keep the response organized with clear markdown headers."""
 
 ---
 
-### 🎯 Arbitration, Conclusion & Action Plan
+### 🎯 Arbitration, Comparison & Final Conclusion
 {synth_text}
 """
-        return output

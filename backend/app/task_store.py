@@ -654,3 +654,19 @@ def is_scheduler_paused() -> bool:
 def set_scheduler_paused(paused: bool) -> bool:
     set_runtime_control("scheduler_paused", "true" if paused else "false")
     return paused
+
+
+def delete_task(task_id: str) -> bool:
+    """Deletes a task and its recorded events from the database."""
+    with _connect() as db:
+        db.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        cur = db.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+        return cur.rowcount > 0
+
+
+def clear_tasks() -> int:
+    """Clears all historical task records and events from the database."""
+    with _connect() as db:
+        db.execute("DELETE FROM task_events")
+        cur = db.execute("DELETE FROM tasks")
+        return cur.rowcount

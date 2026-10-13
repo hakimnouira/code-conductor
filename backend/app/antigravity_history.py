@@ -267,3 +267,30 @@ async def get_conversation(
         workspace_path=ws_path,
         project_name=proj_name,
     )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, _: str = Depends(require_bearer_token)):
+    """Deletes or archives an Antigravity IDE conversation from disk."""
+    import shutil
+    brain = get_brain_directory()
+    target = brain / conversation_id
+    if target.exists() and target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
+        return {"id": conversation_id, "deleted": True}
+    return {"id": conversation_id, "deleted": False}
+
+
+@router.delete("/clear")
+async def clear_conversations(_: str = Depends(require_bearer_token)):
+    """Clears all historical conversations from the Antigravity IDE brain store."""
+    import shutil
+    brain = get_brain_directory()
+    deleted = 0
+    if brain.exists() and brain.is_dir():
+        for d in brain.iterdir():
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+                deleted += 1
+    return {"cleared": True, "count": deleted}
+

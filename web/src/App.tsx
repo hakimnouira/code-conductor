@@ -1132,36 +1132,55 @@ export default function App() {
     return { output: taskOutput, failed: taskFailed };
   };
 
-  // Hydrate task summaries from the backend so history survives browser-profile changes.
+  // Hydrate task and Antigravity chat summaries so history is unified and survives reloads.
   useEffect(() => {
     if (!health) return;
     let ignore = false;
-    void request("/tasks?limit=250").then(r => r.json()).then((rows: {
-      task_id: string; status: string; agent_id: string; prompt: string; created_at: number;
-    }[]) => {
-      if (ignore || !Array.isArray(rows)) return;
+    Promise.all([
+      request("/tasks?limit=250").then(r => r.json()).catch(() => []),
+      request("/antigravity/history/conversations").then(r => r.json()).catch(() => [])
+    ]).then(([taskRows, antigravityRows]: [any[], any[]]) => {
+      if (ignore) return;
       setTaskHistory(old => {
         const merged = new Map<string, TaskHistoryItem>(old.map(item => [item.id, item] as const));
-        for (const row of rows) {
-          const prior = merged.get(row.task_id);
-          const status: TaskHistoryItem["status"] =
-            row.status === "completed" ? "completed" :
-            row.status === "failed" ? "failed" :
-            row.status === "cancelled" ? "cancelled" : "running";
-          merged.set(row.task_id, {
-            id: row.task_id,
-            timestamp: row.created_at * 1000,
-            prompt: row.prompt || prior?.prompt || "Task",
-            agentId: row.agent_id,
-            agentName: agents.find(a => a.id === row.agent_id)?.name || prior?.agentName || row.agent_id,
-            status,
-            output: prior?.output || "",
-            events: prior?.events || [],
-          });
+        if (Array.isArray(taskRows)) {
+          for (const row of taskRows) {
+            const prior = merged.get(row.task_id);
+            const status: TaskHistoryItem["status"] =
+              row.status === "completed" ? "completed" :
+              row.status === "failed" ? "failed" :
+              row.status === "cancelled" ? "cancelled" : "running";
+            merged.set(row.task_id, {
+              id: row.task_id,
+              timestamp: (row.created_at || Date.now() / 1000) * 1000,
+              prompt: row.prompt || prior?.prompt || "Task",
+              agentId: row.agent_id,
+              agentName: agents.find(a => a.id === row.agent_id)?.name || prior?.agentName || row.agent_id,
+              status,
+              output: prior?.output || "",
+              events: prior?.events || [],
+            });
+          }
         }
-        return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 250);
+        if (Array.isArray(antigravityRows)) {
+          for (const conv of antigravityRows) {
+            if (!merged.has(conv.id)) {
+              merged.set(conv.id, {
+                id: conv.id,
+                timestamp: (conv.updated_at || Date.now() / 1000) * 1000,
+                prompt: conv.first_prompt || conv.title || "Antigravity Chat",
+                agentId: "antigravity",
+                agentName: "Antigravity IDE",
+                status: "completed",
+                output: "",
+                events: [],
+              });
+            }
+          }
+        }
+        return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 300);
       });
-    }).catch(() => { /* Backend may be upgrading or temporarily unavailable. */ });
+    }).catch(() => {});
     return () => { ignore = true; };
   }, [health?.status, base, token, agents]);
 
@@ -1502,22 +1521,50 @@ export default function App() {
     setHistoryDrawerOpen(false);
 
     // Browser storage only has a task summary after reload. Rehydrate the event
-    // timeline from the backend's durable event log for completed and failed tasks.
+    // timeline from the backend's durable event log, or Antigravity conversation transcript.
     void request("/tasks/" + encodeURIComponent(item.id) + "/event-history?limit=1000")
       .then(response => response.json())
       .then((body: { events?: Ev[] }) => {
-        if (historyLoadRequest.current !== loadId || !Array.isArray(body.events)) return;
-        const restoredEvents = body.events;
-        const output = restoredEvents
-          .filter(event => event.event_type === "token")
-          .map(event => event.text || "")
-          .join("");
-        setEvents(restoredEvents);
-        setTaskHistory(old => old.map(entry => entry.id === item.id
-          ? { ...entry, events: restoredEvents, output: output || entry.output }
-          : entry));
+        if (historyLoadRequest.current !== loadId) return;
+        if (Array.isArray(body.events) && body.events.length > 0) {
+          const restoredEvents = body.events;
+          const output = restoredEvents
+            .filter(event => event.event_type === "token")
+            .map(event => event.text || "")
+            .join("");
+          setEvents(restoredEvents);
+          setTaskHistory(old => old.map(entry => entry.id === item.id
+            ? { ...entry, events: restoredEvents, output: output || entry.output }
+            : entry));
+        } else {
+          // Fall back to Antigravity conversation endpoint
+          void request("/antigravity/history/conversations/" + encodeURIComponent(item.id))
+            .then(res => res.json())
+            .then((conv: { messages?: { role: string; content: string }[] }) => {
+              if (historyLoadRequest.current !== loadId || !Array.isArray(conv.messages)) return;
+              const convEvents: Ev[] = conv.messages.map(m => ({
+                event_type: m.role === "assistant" ? "token" : "log",
+                text: m.content,
+                timestamp: Date.now(),
+              }));
+              setEvents(convEvents);
+            }).catch(() => {});
+        }
       })
-      .catch(() => { /* Local-only legacy history entries may not exist on the backend. */ });
+      .catch(() => {
+        // Fall back to Antigravity conversation endpoint on error
+        void request("/antigravity/history/conversations/" + encodeURIComponent(item.id))
+          .then(res => res.json())
+          .then((conv: { messages?: { role: string; content: string }[] }) => {
+            if (historyLoadRequest.current !== loadId || !Array.isArray(conv.messages)) return;
+            const convEvents: Ev[] = conv.messages.map(m => ({
+              event_type: m.role === "assistant" ? "token" : "log",
+              text: m.content,
+              timestamp: Date.now(),
+            }));
+            setEvents(convEvents);
+          }).catch(() => {});
+      });
   };
 
   const retryHistoryItem = async (item: TaskHistoryItem) => {
@@ -1551,18 +1598,33 @@ export default function App() {
     }
   };
 
+  const startNewChat = () => {
+    setSelectedHistoryId(null);
+    setConversationPrompt("");
+    setEvents([]);
+    setTask(null);
+    setPlan(null);
+    setPrompt("");
+    setNotice("Started a fresh conversation.");
+  };
+
   const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     setTaskHistory(old => old.filter(item => item.id !== id));
     if (selectedHistoryId === id) {
-      setSelectedHistoryId(null);
+      startNewChat();
     }
+    // Delete from backend SQLite task store & Antigravity brain
+    void request("/tasks/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
+    void request("/antigravity/history/conversations/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
   };
 
   const clearAllHistory = () => {
-    if (window.confirm("Clear all task history?")) {
+    if (window.confirm("Clear all chat and task history? This removes both task and Antigravity chat logs.")) {
       setTaskHistory([]);
-      setSelectedHistoryId(null);
+      startNewChat();
+      void request("/tasks", { method: "DELETE" }).catch(() => {});
+      void request("/antigravity/history/clear", { method: "DELETE" }).catch(() => {});
     }
   };
 
@@ -1798,6 +1860,10 @@ export default function App() {
             )}
           </div>
 
+          <button type="button" className="new-chat-button" onClick={startNewChat} title="Start a new blank conversation">
+            <Plus size={14} /> New Chat
+          </button>
+
           {taskHistory.length > 2 && (
             <div className="rail-history-search-wrap">
               <Search size={12} className="search-icon" />
@@ -1885,6 +1951,9 @@ export default function App() {
             <ChevronDown size={14}/>
           </div>
           <div className="top-actions">
+            <button className="status-chip add-api-chip" title="Start a fresh chat" onClick={startNewChat}>
+              <Plus size={13}/> New Chat
+            </button>
             <button className="status-chip add-api-chip" title="Connect any AI Provider automatically" onClick={() => setSmartAddOpen(true)}>
               <KeyRound size={13}/> + Add API
             </button>
@@ -2084,22 +2153,22 @@ export default function App() {
                   placeholder="Ask Conductor to explore, plan, debug, or build something… (Press Enter to send, Shift+Enter for newline)"
                   rows={3}
                 />
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "8px 0", maxWidth: "520px" }}>
-                  <Globe size={15} />
-                  <input
-                    type="url"
-                    aria-label="Optional browser verification URL"
-                    value={browserVerifyUrl}
-                    onChange={e => {
-                      setBrowserVerifyUrl(e.target.value);
-                      localStorage.setItem("cc_browser_verify_url", e.target.value);
-                    }}
-                    placeholder="Optional app URL to smoke-check (http://localhost:3000)"
-                    style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
-                  />
-                </div>
                 <details style={{ marginTop: "8px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: "8px" }}>
-                  <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--muted)" }}>Browser acceptance assertions (optional, max 20 per field)</summary>
+                  <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--muted)" }}>Browser verification & assertions (optional)</summary>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "10px 0 8px", maxWidth: "520px" }}>
+                    <Globe size={15} />
+                    <input
+                      type="url"
+                      aria-label="Optional browser verification URL"
+                      value={browserVerifyUrl}
+                      onChange={e => {
+                        setBrowserVerifyUrl(e.target.value);
+                        localStorage.setItem("cc_browser_verify_url", e.target.value);
+                      }}
+                      placeholder="Optional app URL to smoke-check (http://localhost:3000)"
+                      style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
+                    />
+                  </div>
                   <p style={{ color: "var(--muted)", fontSize: "11px", margin: "8px 0" }}>These checks run after navigation. Use one expected phrase or CSS selector per line. Selector checks only inspect visibility; they do not click controls or submit forms.</p>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
                     <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px" }}>Required text

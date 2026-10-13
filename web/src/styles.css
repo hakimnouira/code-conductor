@@ -1407,6 +1407,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 10px;
   font-weight: 700;
 }
+.new-chat-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.new-chat-button:hover {
+  background: var(--line-strong);
+  border-color: var(--primary);
+  color: var(--primary);
+}
 .rail-history-search-wrap {
   display: flex;
   align-items: center;

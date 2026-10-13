@@ -1675,6 +1675,22 @@ async def search_task_history(
     return scored_results[:limit]
 
 
+@app.delete("/tasks/{task_id}")
+async def remove_task(task_id: str, _: str = Depends(require_bearer_token)):
+    from app.task_store import delete_task
+    _tasks.pop(task_id, None)
+    deleted = delete_task(task_id)
+    return {"task_id": task_id, "deleted": deleted}
+
+
+@app.delete("/tasks")
+async def clear_all_tasks(_: str = Depends(require_bearer_token)):
+    from app.task_store import clear_tasks
+    _tasks.clear()
+    count = clear_tasks()
+    return {"cleared": True, "count": count}
+
+
 @app.get("/tasks/{task_id}")
 async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
     """Return authoritative task state so clients can recover after losing an SSE stream."""
