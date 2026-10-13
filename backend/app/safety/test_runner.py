@@ -172,8 +172,26 @@ class SafeTestRunner:
                 scripts = package.get("scripts", {})
                 if isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and scripts["test"].strip():
                     return "npm_test"
+                if isinstance(scripts, dict) and isinstance(scripts.get("build"), str) and scripts["build"].strip():
+                    return "npm_build"
             except (OSError, UnicodeError, json.JSONDecodeError):
                 return None
+        return None
+
+    def discover_build_runner(self) -> str | None:
+        """Discover a separately configured build check for JavaScript projects."""
+        import json
+
+        package_file = self.workspace_root / "package.json"
+        if not package_file.is_file():
+            return None
+        try:
+            package = json.loads(package_file.read_text(encoding="utf-8"))
+            scripts = package.get("scripts", {})
+            if isinstance(scripts, dict) and isinstance(scripts.get("build"), str) and scripts["build"].strip():
+                return "npm_build"
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
         return None
 
     def validate_args(self, args: list[str]) -> None:
