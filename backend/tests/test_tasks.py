@@ -280,13 +280,14 @@ async def test_persisted_event_history_restores_completed_task_details(auth_head
 
 @pytest.mark.asyncio
 async def test_task_creation_is_idempotent_and_rejects_key_reuse_with_different_request(auth_headers, tmp_path, monkeypatch):
+    import uuid
     monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "idempotency.sqlite3"))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         payload = {
             "prompt": "Idempotent scheduled task",
             "agent_id": "mock",
             "github_research": False,
-            "idempotency_key": "test-idempotency-key-2026-10",
+            "idempotency_key": f"test-idempotency-key-{uuid.uuid4().hex[:12]}",
         }
         first, replay = await asyncio.gather(
             client.post("/tasks", json=payload, headers=auth_headers),
