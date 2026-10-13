@@ -60,6 +60,7 @@ from app.safety.workspace import (
 )
 from app.safety.git_guard import GitGuard
 from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
+from app.safety.security_scan import scan_recent_secrets
 from app.orchestrator.history import AuditHistoryTracker
 from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
 from app.orchestrator.planner import PlanDecomposer
@@ -821,6 +822,35 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
         ):
             record.completed_at = time.time()
+        if record.status == TaskStatus.COMPLETED and not any(
+            item.get("kind") == "security_scan" for item in record.evidence
+        ):
+            try:
+                scan_result = await asyncio.to_thread(
+                    scan_recent_secrets, record.request.workspace_path, record.started_at
+                )
+                scan_status = scan_result.get("status", "skipped")
+                if scan_status == "warning":
+                    record.verification_status = "needs_attention"
+                    scan_summary = "High-confidence secret patterns were found in files changed during this task; review before sharing."
+                elif scan_status == "passed":
+                    scan_summary = "No high-confidence secret patterns were found in the bounded scan of recent text changes."
+                else:
+                    scan_summary = "Secret scan skipped because no recent text-file changes were detected."
+                record.add_evidence(
+                    "security_scan",
+                    scan_status,
+                    scan_summary,
+                    details=scan_result,
+                )
+            except Exception as scan_error:
+                record.verification_status = "needs_attention"
+                record.add_evidence(
+                    "security_scan",
+                    "error",
+                    "The secret scan could not complete; manual review is needed.",
+                    details={"error": str(scan_error)[:500]},
+                )
         if record.status == TaskStatus.COMPLETED and not any(
             item.get("kind") == "task_completion" for item in record.evidence
         ):
