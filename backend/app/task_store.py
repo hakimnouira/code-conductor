@@ -170,6 +170,29 @@ def save_task(
         )
 
 
+def create_task_if_absent(
+    snapshot: dict[str, Any],
+    request_json: str,
+    initial_request_json: str | None = None,
+) -> bool:
+    """Atomically create a task only if its deterministic ID is still unused."""
+    initial_json = request_json if initial_request_json is None else initial_request_json
+    with _connect() as db:
+        cursor = db.execute(
+            """INSERT OR IGNORE INTO tasks(
+                   task_id, request_json, snapshot_json, initial_request_json, updated_at
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                snapshot["task_id"],
+                request_json,
+                json.dumps(snapshot, ensure_ascii=False),
+                initial_json,
+                snapshot.get("completed_at") or snapshot.get("started_at") or snapshot["created_at"],
+            ),
+        )
+        return cursor.rowcount == 1
+
+
 def append_event(task_id: str, payload: str, created_at: float) -> int:
     with _connect() as db:
         cursor = db.execute(
