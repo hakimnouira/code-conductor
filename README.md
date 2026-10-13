@@ -321,3 +321,32 @@ The backend creates or reuses the per-user token in `%USERPROFILE%\.aihub_token`
 ## Portable local paths
 
 The web-model configuration is stored in the checkout's `.web_models.json` by default, so moving or cloning the repository does not require editing a drive-specific path. Set `CODE_CONDUCTOR_WEB_MODELS_PATH` to override it. The Windows launcher resolves the project directory relative to its own location; set `CODE_CONDUCTOR_CLOAK_EXE` to use a non-default CloakBrowser executable.
+
+
+## Evidence-based browser verification
+
+Tasks and saved workflows can include optional `browser_assertions` alongside `browser_verify_url`. Supported checks are:
+
+- `expected_text`: every phrase must appear in the visible page text.
+- `forbidden_text`: none of these phrases may appear.
+- `required_selectors`: every CSS selector must match a visible element.
+- `expected_url_contains` and `expected_title_contains`: verify the resulting route and document title.
+
+Example task payload fragment:
+
+```json
+{
+  "browser_verify_url": "http://localhost:3000",
+  "browser_assertions": {
+    "expected_text": ["Dashboard", "Signed in"],
+    "forbidden_text": ["Application error"],
+    "required_selectors": ["main", "[data-testid='app-ready']"],
+    "expected_url_contains": "/dashboard",
+    "expected_title_contains": "My App"
+  }
+}
+```
+
+Browser verification attaches to the configured local Chromium/CDP session and records runtime exceptions, console errors, the main-document HTTP status, failed requests, explicit assertion results, and a screenshot artifact. Failed subresource requests are retained as evidence but do not automatically fail a run. These checks improve confidence; they are not a proof of correctness or security.
+
+The recurring scheduler persists schedules and run records in SQLite, recovers queued/running runs after a backend restart, retries failed dispatches or tasks according to the configured retry count, prevents overlapping executions of the same schedule, and exposes run history through `GET /schedules/{schedule_id}/runs`. The local backend must be running for schedules to execute.
