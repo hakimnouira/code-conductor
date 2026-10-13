@@ -61,6 +61,7 @@ from app.safety.workspace import (
 from app.safety.git_guard import GitGuard
 from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
 from app.safety.security_scan import scan_recent_secrets
+from app.provenance import collect_workspace_provenance
 from app.orchestrator.history import AuditHistoryTracker
 from app.orchestrator.models import ExecutionPlan, OrchestrationAuditRecord
 from app.orchestrator.planner import PlanDecomposer
@@ -851,6 +852,27 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "The secret scan could not complete; manual review is needed.",
                     details={"error": str(scan_error)[:500]},
                 )
+        if not any(item.get("kind") == "workspace_provenance" for item in record.evidence):
+            try:
+                provenance = await asyncio.to_thread(
+                    collect_workspace_provenance, record.request.workspace_path
+                )
+            except Exception as provenance_error:
+                provenance = {
+                    "status": "error",
+                    "snapshot_complete": False,
+                    "reason": str(provenance_error)[:200],
+                }
+            provenance_status = str(provenance.get("status") or "error")
+            provenance_summary = (
+                "Captured a bounded Git revision and working-tree fingerprint."
+                if provenance_status == "captured"
+                else "Workspace provenance is partial or unavailable; do not treat it as a complete source snapshot."
+            )
+            record.add_evidence(
+                "workspace_provenance", provenance_status, provenance_summary,
+                details=provenance,
+            )
         if record.status == TaskStatus.COMPLETED and not any(
             item.get("kind") == "task_completion" for item in record.evidence
         ):

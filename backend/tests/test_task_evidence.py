@@ -1,11 +1,13 @@
 """Machine-readable task evidence and artifact manifest tests."""
 import json
+import subprocess
 
 import pytest
 
 from app.main import TaskRecord
 from app.models.schemas import TaskCreateRequest, TaskStatus
 from app.task_store import get_saved_tasks
+from app.provenance import collect_workspace_provenance
 
 
 pytestmark = pytest.mark.unit
@@ -76,3 +78,51 @@ def test_evidence_manifest_does_not_follow_workspace_escape(tmp_path, monkeypatc
     task.add_evidence("automated_tests", "passed", "test")
     assert not (outside / "artifacts" / "task-escape" / "evidence.json").exists()
     assert task.snapshot()["evidence"][0]["kind"] == "automated_tests"
+
+
+
+def test_workspace_provenance_fingerprints_revision_tracked_and_untracked_changes(tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.name", "Code Conductor Tests")
+    git("config", "user.email", "tests@example.invalid")
+    tracked = workspace / "app.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    git("add", "app.py")
+    git("commit", "-m", "initial")
+    head = git("rev-parse", "HEAD").stdout.strip()
+
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    untracked = workspace / "new_module.py"
+    untracked.write_text("token = 'never-return-this-value'\n", encoding="utf-8")
+
+    first = collect_workspace_provenance(workspace)
+    assert first["status"] == "captured"
+    assert first["head_commit"] == head
+    assert first["dirty"] is True
+    assert first["snapshot_complete"] is True
+    assert first["snapshot_sha256"]
+    assert first["untracked_files_hashed"] == 1
+    assert "never-return-this-value" not in json.dumps(first)
+
+    untracked.write_text("token = 'changed-value'\n", encoding="utf-8")
+    second = collect_workspace_provenance(workspace)
+    assert second["snapshot_sha256"] != first["snapshot_sha256"]
+
+
+def test_workspace_provenance_marks_non_git_workspace_partial(tmp_path):
+    result = collect_workspace_provenance(tmp_path)
+    assert result["status"] == "partial"
+    assert result["workspace_kind"] == "non_git"
+    assert result["snapshot_complete"] is False
+    assert result["reason"] == "not_a_git_repository"
