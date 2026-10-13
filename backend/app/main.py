@@ -1009,6 +1009,11 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 "workspace_provenance", provenance_status, provenance_summary,
                 details=provenance,
             )
+        provenance_evidence = next(
+            (item for item in reversed(record.evidence) if item.get("kind") == "workspace_provenance"),
+            {},
+        )
+        provenance_details = provenance_evidence.get("details") or {}
         if record.status == TaskStatus.COMPLETED and not any(
             item.get("kind") == "task_completion" for item in record.evidence
         ):
@@ -1023,6 +1028,10 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                         record.request.auto_verify or record.request.browser_verify_url
                     ),
                     "retry_of": record.request.retry_of,
+                    "workspace_provenance_status": provenance_evidence.get("status"),
+                    "workspace_head_commit": provenance_details.get("head_commit"),
+                    "workspace_snapshot_sha256": provenance_details.get("snapshot_sha256"),
+                    "workspace_snapshot_complete": provenance_details.get("snapshot_complete", False),
                 },
             )
         record._persist()
