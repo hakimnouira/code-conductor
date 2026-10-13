@@ -371,13 +371,19 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
                 "SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND status IN ('queued', 'running') LIMIT 1",
                 (schedule["schedule_id"],),
             ).fetchone()
-            interval_seconds = int(schedule["interval_minutes"]) * 60
-            overdue_by = max(0.0, now - float(schedule["next_run_at"]))
-            next_run = (
-                next_cron_occurrence(schedule["cron_expression"], schedule["timezone"], now)
-                if schedule.get("schedule_type") == "cron"
-                else now + interval_seconds
-            )
+            scheduled_for = float(schedule["next_run_at"])
+            overdue_by = max(0.0, now - scheduled_for)
+            if schedule.get("schedule_type") == "cron":
+                next_scheduled = next_cron_occurrence(
+                    schedule["cron_expression"], schedule["timezone"], scheduled_for
+                )
+                interval_seconds = max(60.0, next_scheduled - scheduled_for)
+                next_run = next_cron_occurrence(
+                    schedule["cron_expression"], schedule["timezone"], now
+                )
+            else:
+                interval_seconds = int(schedule["interval_minutes"]) * 60
+                next_run = now + interval_seconds
             if active:
                 # Never overlap executions of one workflow; move the next occurrence
                 # forward rather than accumulating a backlog.
