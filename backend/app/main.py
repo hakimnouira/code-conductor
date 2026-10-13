@@ -204,6 +204,7 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
         browser_forbidden_text=workflow.get("browser_forbidden_text") or [],
         browser_visible_selectors=workflow.get("browser_visible_selectors") or [],
         browser_hidden_selectors=workflow.get("browser_hidden_selectors") or [],
+        browser_steps=workflow.get("browser_steps") or [],
         github_research=False,
         permission_mode="safe",
     )
@@ -358,6 +359,7 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             forbidden_text=record.request.browser_forbidden_text,
             visible_selectors=record.request.browser_visible_selectors,
             hidden_selectors=record.request.browser_hidden_selectors,
+            steps=record.request.browser_steps,
         )
         screenshot_uri = result.pop("screenshot", None)
         artifact_relative = None
@@ -382,6 +384,7 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "title": result.get("title", ""),
             "checks": result.get("checks", {}),
             "acceptance_assertions": result.get("acceptance_assertions", {}),
+            "action_results": result.get("action_results", []),
             "main_document_status": result.get("main_document_status"),
             "page_errors": result.get("page_errors", []),
             "console_errors": result.get("console_errors", []),
@@ -718,6 +721,7 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "browser_forbidden_text": workflow.get("browser_forbidden_text") or [],
         "browser_visible_selectors": workflow.get("browser_visible_selectors") or [],
         "browser_hidden_selectors": workflow.get("browser_hidden_selectors") or [],
+        "browser_steps": workflow.get("browser_steps") or [],
         "workspace_path": workspace_path,
     }
     now = time.time()
@@ -801,6 +805,7 @@ async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_b
         "browser_forbidden_text": req.browser_forbidden_text,
         "browser_visible_selectors": req.browser_visible_selectors,
         "browser_hidden_selectors": req.browser_hidden_selectors,
+        "browser_steps": [step.model_dump() for step in req.browser_steps],
         "created_at": now,
         "updated_at": now,
     }

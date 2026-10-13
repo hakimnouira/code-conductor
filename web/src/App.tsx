@@ -10,7 +10,8 @@ type Agent = { id: string; name: string; description: string; state: string; dia
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
-type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; browser_required_text?: string[]; browser_forbidden_text?: string[]; browser_visible_selectors?: string[]; browser_hidden_selectors?: string[]; created_at: number; updated_at: number };
+type BrowserActionStep = { action: "click" | "fill" | "check" | "uncheck" | "select_option" | "press" | "wait_for_selector"; selector: string; value?: string; timeout_ms?: number };
+type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; browser_required_text?: string[]; browser_forbidden_text?: string[]; browser_visible_selectors?: string[]; browser_hidden_selectors?: string[]; browser_steps?: BrowserActionStep[]; created_at: number; updated_at: number };
 type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
 type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
@@ -113,6 +114,24 @@ const REVERSE_ENGINEER_PROMPT = "Reverse-engineer this repository before making 
 const SAMPLE_GUIDED_PROMPT = "Build a beautiful project management dashboard";
 const label = (value: string) => value.replace(/_/g, " ");
 const clock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const parseBrowserSteps = (raw: string): BrowserActionStep[] => {
+  if (!raw.trim()) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error("Browser interaction steps must be valid JSON."); }
+  if (!Array.isArray(parsed) || parsed.length > 20) throw new Error("Browser steps must be a JSON array containing at most 20 actions.");
+  const allowed = new Set(["click", "fill", "check", "uncheck", "select_option", "press", "wait_for_selector"]);
+  return parsed.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Browser step " + (index + 1) + " must be an object.");
+    const step = item as Record<string, unknown>;
+    if (typeof step.action !== "string" || !allowed.has(step.action)) throw new Error("Browser step " + (index + 1) + " has an unsupported action.");
+    if (typeof step.selector !== "string" || !step.selector.trim() || step.selector.length > 500) throw new Error("Browser step " + (index + 1) + " needs a selector of 1–500 characters.");
+    if (["fill", "select_option", "press"].includes(step.action) && typeof step.value !== "string") throw new Error("Browser step " + (index + 1) + " requires a string value.");
+    const timeout = step.timeout_ms === undefined ? 5000 : Number(step.timeout_ms);
+    if (!Number.isInteger(timeout) || timeout < 100 || timeout > 10000) throw new Error("Browser step " + (index + 1) + " timeout must be 100–10000 ms.");
+    return { action: step.action as BrowserActionStep["action"], selector: step.selector.trim(), ...(typeof step.value === "string" ? { value: step.value.slice(0, 1000) } : {}), timeout_ms: timeout };
+  });
+};
 const DEFAULT_TOKEN = import.meta.env.VITE_AI_HUB_TOKEN || "";
 
 export default function App() {
@@ -157,6 +176,7 @@ export default function App() {
   const [browserForbiddenText, setBrowserForbiddenText] = useState(() => localStorage.getItem("cc_browser_forbidden_text") || "");
   const [browserVisibleSelectors, setBrowserVisibleSelectors] = useState(() => localStorage.getItem("cc_browser_visible_selectors") || "");
   const [browserHiddenSelectors, setBrowserHiddenSelectors] = useState(() => localStorage.getItem("cc_browser_hidden_selectors") || "");
+  const [browserStepsText, setBrowserStepsText] = useState(() => localStorage.getItem("cc_browser_steps") || "");
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
@@ -735,6 +755,7 @@ export default function App() {
           browser_forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
           browser_visible_selectors: browserVisibleSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
           browser_hidden_selectors: browserHiddenSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+          browser_steps: parseBrowserSteps(browserStepsText),
         }),
       });
       const saved = await response.json() as WorkflowPreset;
@@ -851,6 +872,8 @@ export default function App() {
     setBrowserForbiddenText((workflow.browser_forbidden_text || []).join("\n"));
     setBrowserVisibleSelectors((workflow.browser_visible_selectors || []).join("\n"));
     setBrowserHiddenSelectors((workflow.browser_hidden_selectors || []).join("\n"));
+    setBrowserStepsText(JSON.stringify(workflow.browser_steps || [], null, 2));
+    localStorage.setItem("cc_browser_steps", JSON.stringify(workflow.browser_steps || [], null, 2));
     localStorage.setItem("cc_auto_verify", String(workflow.auto_verify));
     localStorage.setItem("cc_browser_verify_url", workflow.browser_verify_url || "");
     localStorage.setItem("cc_browser_required_text", (workflow.browser_required_text || []).join("\n"));
@@ -1105,7 +1128,8 @@ export default function App() {
         browser_required_text: browserRequiredText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
         browser_forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
         browser_visible_selectors: browserVisibleSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
-        browser_hidden_selectors: browserHiddenSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20)
+        browser_hidden_selectors: browserHiddenSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+        browser_steps: parseBrowserSteps(browserStepsText)
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal, taskPrompt, agentName);
@@ -1965,6 +1989,15 @@ export default function App() {
                       <textarea aria-label="Hidden browser selectors" value={browserHiddenSelectors} onChange={e => { setBrowserHiddenSelectors(e.target.value); localStorage.setItem("cc_browser_hidden_selectors", e.target.value); }} placeholder={"[role='alert']"} rows={3} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}/>
                     </label>
                   </div>
+                  <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px", marginTop: "12px" }}>
+                    Browser interaction steps (JSON, optional; max 20)
+                    <textarea aria-label="Browser interaction steps JSON" value={browserStepsText} onChange={e => { setBrowserStepsText(e.target.value); localStorage.setItem("cc_browser_steps", e.target.value); }} placeholder={`[
+  {"action":"fill","selector":"input[name='search']","value":"hello"},
+  {"action":"click","selector":"button[type='submit']"},
+  {"action":"wait_for_selector","selector":"[data-testid='results']"}
+]`} rows={5} spellCheck={false} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)", fontFamily: "monospace", fontSize: "12px" }}/>
+                    <span style={{ color: "var(--muted)", fontSize: "11px" }}>Explicit actions run in order before assertions. Supported: click, fill, check, uncheck, select_option, press, wait_for_selector. Actions may submit forms or change app data; use only on a test environment. Arbitrary JavaScript is not supported.</span>
+                  </label>
                 </details>
                 <div className="composer-bottom">
                   <div className="composer-tools">

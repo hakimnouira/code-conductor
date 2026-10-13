@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.security import require_bearer_token
+from app.models.schemas import BrowserActionStep
 from app.browser_automation import run_browser_automation
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class BrowserVerifyPayload(BaseModel):
     forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+    steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
 
     @field_validator("required_text", "forbidden_text", "visible_selectors", "hidden_selectors")
     @classmethod
@@ -373,6 +375,7 @@ async def browser_automation_test(
             forbidden_text=payload.forbidden_text,
             visible_selectors=payload.visible_selectors,
             hidden_selectors=payload.hidden_selectors,
+            steps=payload.steps,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

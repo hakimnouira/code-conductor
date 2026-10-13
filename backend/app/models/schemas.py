@@ -1,7 +1,7 @@
 import time
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class AgentId(str, Enum):
     AUTO = "auto"
@@ -42,6 +42,28 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class BrowserActionStep(BaseModel):
+    """A bounded, selector-based browser action; arbitrary JavaScript is not accepted."""
+    action: Literal["click", "fill", "check", "uncheck", "select_option", "press", "wait_for_selector"]
+    selector: str = Field(min_length=1, max_length=500)
+    value: str | None = Field(default=None, max_length=1000)
+    timeout_ms: int = Field(default=5000, ge=100, le=10000)
+
+    @field_validator("selector")
+    @classmethod
+    def selector_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Browser action selector must not be blank.")
+        return cleaned
+
+    @model_validator(mode="after")
+    def require_action_value(self):
+        if self.action in ("fill", "select_option", "press") and self.value is None:
+            raise ValueError(f"Browser action '{self.action}' requires a value.")
+        return self
+
+
 class TaskCreateRequest(BaseModel):
     prompt: str
     agent_id: str = "auto"
@@ -59,6 +81,7 @@ class TaskCreateRequest(BaseModel):
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+    browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
 
     @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
@@ -76,6 +99,7 @@ class WorkflowPresetRequest(BaseModel):
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+    browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
 
     @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
@@ -94,6 +118,7 @@ class WorkflowPresetResponse(BaseModel):
     browser_forbidden_text: list[str] = Field(default_factory=list)
     browser_visible_selectors: list[str] = Field(default_factory=list)
     browser_hidden_selectors: list[str] = Field(default_factory=list)
+    browser_steps: list[BrowserActionStep] = Field(default_factory=list)
     created_at: float
     updated_at: float
 

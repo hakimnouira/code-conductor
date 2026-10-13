@@ -1,8 +1,9 @@
 """Unit tests for evidence-based Playwright verification reports."""
 import pytest
 
-from app.browser_automation import _validate_target_url, build_browser_report, evaluate_acceptance_assertions
+from app.browser_automation import _validate_target_url, build_browser_report, evaluate_acceptance_assertions, execute_browser_steps
 from app.browser_session import BrowserVerifyPayload
+from app.models.schemas import BrowserActionStep
 
 
 pytestmark = pytest.mark.unit
@@ -129,6 +130,109 @@ def test_browser_payload_bounds_assertion_count_and_item_length():
     assert payload.required_text[1] == "Dashboard"
     with pytest.raises(Exception):
         BrowserVerifyPayload(url="http://127.0.0.1:5173", required_text=[str(i) for i in range(21)])
+
+
+@pytest.mark.asyncio
+async def test_browser_step_runner_executes_actions_in_order_with_bounded_timeouts():
+    calls = []
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        async def fill(self, value, timeout):
+            calls.append(("fill", value, timeout))
+
+        async def click(self, timeout):
+            calls.append(("click", timeout))
+
+        async def wait_for(self, state, timeout):
+            calls.append(("wait_for", state, timeout))
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(("locator", selector))
+            return FakeLocator()
+
+    results = await execute_browser_steps(FakePage(), [
+        {"action": "fill", "selector": "#query", "value": "hello", "timeout_ms": 250},
+        {"action": "click", "selector": "#submit"},
+        {"action": "wait_for_selector", "selector": "#results"},
+    ])
+
+    assert [item["passed"] for item in results] == [True, True, True]
+    assert calls == [
+        ("locator", "#query"), ("fill", "hello", 250),
+        ("locator", "#submit"), ("click", 5000),
+        ("locator", "#results"), ("wait_for", "visible", 5000),
+    ]
+    assert all(item["duration_ms"] >= 0 for item in results)
+
+
+@pytest.mark.asyncio
+async def test_browser_step_runner_stops_after_first_failed_action():
+    calls = []
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        async def click(self, timeout):
+            calls.append("click")
+            raise RuntimeError("element did not become actionable")
+
+        async def fill(self, value, timeout):
+            calls.append("fill")
+
+    class FakePage:
+        def locator(self, selector):
+            calls.append(selector)
+            return FakeLocator()
+
+    results = await execute_browser_steps(FakePage(), [
+        {"action": "click", "selector": "#submit"},
+        {"action": "fill", "selector": "#next", "value": "should not run"},
+    ])
+    assert len(results) == 1
+    assert results[0]["passed"] is False
+    assert "actionable" in results[0]["error"]
+    assert calls == ["#submit", "click"]
+
+
+def test_browser_actions_are_included_in_verification_evidence():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        action_results=[
+            {"index": 0, "action": "fill", "selector": "#search", "passed": True, "duration_ms": 12},
+            {"index": 1, "action": "click", "selector": "#submit", "passed": False, "error": "timeout"},
+        ],
+    )
+    assert report["success"] is False
+    assert report["checks"]["browser_actions_passed"] is False
+    assert report["action_results"][1]["error"] == "timeout"
+
+
+def test_browser_action_schema_is_bounded_and_requires_values():
+    step = BrowserActionStep(action="fill", selector="  input[name='q']  ", value="hello")
+    assert step.selector == "input[name='q']"
+    assert step.timeout_ms == 5000
+    with pytest.raises(Exception):
+        BrowserActionStep(action="fill", selector="input[name='q']")
+    with pytest.raises(Exception):
+        BrowserActionStep(action="click", selector="button", timeout_ms=20000)
+    with pytest.raises(Exception):
+        BrowserActionStep(action="click", selector="   ")
 
 
 def test_browser_report_fails_and_labels_screenshot_infrastructure_errors():

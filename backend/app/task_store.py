@@ -93,6 +93,7 @@ def _connect() -> sqlite3.Connection:
             browser_forbidden_text TEXT NOT NULL DEFAULT '[]',
             browser_visible_selectors TEXT NOT NULL DEFAULT '[]',
             browser_hidden_selectors TEXT NOT NULL DEFAULT '[]',
+            browser_steps TEXT NOT NULL DEFAULT '[]',
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )"""
@@ -101,7 +102,7 @@ def _connect() -> sqlite3.Connection:
     existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(workflow_presets)").fetchall()}
     for column in (
         "browser_required_text", "browser_forbidden_text",
-        "browser_visible_selectors", "browser_hidden_selectors",
+        "browser_visible_selectors", "browser_hidden_selectors", "browser_steps",
     ):
         if column not in existing_columns:
             connection.execute(f"ALTER TABLE workflow_presets ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
@@ -180,7 +181,7 @@ def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
         rows = db.execute(
             """SELECT workflow_id, name, prompt, agent_id, auto_verify,
                       browser_verify_url, browser_required_text, browser_forbidden_text,
-                      browser_visible_selectors, browser_hidden_selectors, created_at, updated_at
+                      browser_visible_selectors, browser_hidden_selectors, browser_steps, created_at, updated_at
                FROM workflow_presets ORDER BY updated_at DESC LIMIT ?""",
             (min(max(1, limit), 200),),
         ).fetchall()
@@ -190,6 +191,11 @@ def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
         item["auto_verify"] = bool(item["auto_verify"])
         for field in ("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors"):
             item[field] = _decode_json_list(item[field])
+        try:
+            steps = json.loads(item.get("browser_steps") or "[]")
+            item["browser_steps"] = [step for step in steps if isinstance(step, dict)][:20] if isinstance(steps, list) else []
+        except (TypeError, json.JSONDecodeError):
+            item["browser_steps"] = []
         result.append(item)
     return result
 
@@ -202,8 +208,8 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
             """INSERT INTO workflow_presets(
                     workflow_id, name, prompt, agent_id, auto_verify,
                     browser_verify_url, browser_required_text, browser_forbidden_text,
-                    browser_visible_selectors, browser_hidden_selectors, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    browser_visible_selectors, browser_hidden_selectors, browser_steps, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(workflow_id) DO UPDATE SET
                     name=excluded.name,
                     prompt=excluded.prompt,
@@ -214,6 +220,7 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
                     browser_forbidden_text=excluded.browser_forbidden_text,
                     browser_visible_selectors=excluded.browser_visible_selectors,
                     browser_hidden_selectors=excluded.browser_hidden_selectors,
+                    browser_steps=excluded.browser_steps,
                     updated_at=excluded.updated_at""",
             (
                 workflow["workflow_id"], workflow["name"], workflow["prompt"],
@@ -223,6 +230,7 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(_decode_json_list(workflow.get("browser_forbidden_text", [])), ensure_ascii=False),
                 json.dumps(_decode_json_list(workflow.get("browser_visible_selectors", [])), ensure_ascii=False),
                 json.dumps(_decode_json_list(workflow.get("browser_hidden_selectors", [])), ensure_ascii=False),
+                json.dumps([step for step in workflow.get("browser_steps", []) if isinstance(step, dict)][:20], ensure_ascii=False),
                 created_at, now,
             ),
         )
