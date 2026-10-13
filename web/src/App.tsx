@@ -1991,7 +1991,11 @@ export default function App() {
                   </div>
                   <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px", marginTop: "12px" }}>
                     Browser interaction steps (JSON, optional; max 20)
-                    <textarea aria-label="Browser interaction steps JSON" value={browserStepsText} onChange={e => { setBrowserStepsText(e.target.value); localStorage.setItem("cc_browser_steps", e.target.value); }} placeholder={'[\\n  {"action":"fill","selector":"input[name=\\'search\\']","value":"hello"},\\n  {"action":"click","selector":"button[type=\\'submit\\']"},\\n  {"action":"wait_for_selector","selector":"[data-testid=\\'results\\']"}\\n]'} rows={5} spellCheck={false} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)", fontFamily: "monospace", fontSize: "12px" }}/>
+                    <textarea aria-label="Browser interaction steps JSON" value={browserStepsText} onChange={e => { setBrowserStepsText(e.target.value); localStorage.setItem("cc_browser_steps", e.target.value); }} placeholder={`[
+  {"action":"fill","selector":"input[name='search']","value":"hello"},
+  {"action":"click","selector":"button[type='submit']"},
+  {"action":"wait_for_selector","selector":"[data-testid='results']"}
+]} rows={5} spellCheck={false} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)", fontFamily: "monospace", fontSize: "12px" }}/>
                     <span style={{ color: "var(--muted)", fontSize: "11px" }}>Explicit actions run in order before assertions. Supported: click, fill, check, uncheck, select_option, press, wait_for_selector. Actions may submit forms or change app data; use only on a test environment. Arbitrary JavaScript is not supported.</span>
                   </label>
                 </details>
