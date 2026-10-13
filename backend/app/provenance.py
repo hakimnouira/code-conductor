@@ -136,6 +136,10 @@ def _collect_filesystem_provenance(root: Path, captured_at: float) -> dict[str, 
             digest.update(relative.encode("utf-8", errors="surrogateescape"))
             digest.update(b"\\0")
             try:
+                metadata = entry.stat(follow_symlinks=False)
+                digest.update(b"mode\\0")
+                digest.update(str(metadata.st_mode).encode("ascii"))
+                digest.update(b"\\0")
                 if entry.is_symlink():
                     digest.update(b"symlink\\0")
                     digest.update(os.fsencode(os.readlink(path)))
@@ -149,7 +153,7 @@ def _collect_filesystem_provenance(root: Path, captured_at: float) -> dict[str, 
                     complete = False
                     continue
 
-                size = entry.stat(follow_symlinks=False).st_size
+                size = metadata.st_size
                 digest.update(b"file\\0")
                 digest.update(str(size).encode("ascii"))
                 digest.update(b"\\0")
@@ -168,6 +172,14 @@ def _collect_filesystem_provenance(root: Path, captured_at: float) -> dict[str, 
                         digest.update(chunk)
                         remaining -= len(chunk)
                         scanned_bytes += len(chunk)
+                after = path.stat(follow_symlinks=False)
+                if (
+                    after.st_size != metadata.st_size
+                    or after.st_mtime_ns != metadata.st_mtime_ns
+                    or after.st_mode != metadata.st_mode
+                ):
+                    complete = False
+                    digest.update(b"file_changed_during_scan\\0")
                 scanned_files += 1
             except OSError:
                 complete = False
