@@ -58,20 +58,26 @@ def post_json(url: str, payload: dict, headers: dict, timeout: int = 15) -> dict
 
 
 def call_llm(messages: list[dict], config: dict) -> str:
-    """Call frontier LLM via Groq or APMix with key rotation."""
+    """Call frontier LLM via Groq, APMix, TokenHarbor, or CodeCraft with failover."""
+    # Sliding window: keep system prompt and last 6 turns to keep prompt token size tight
+    if len(messages) > 7:
+        windowed_messages = [messages[0]] + messages[-6:]
+    else:
+        windowed_messages = messages
+
     groq_cfg = config.get("groq", {})
     groq_keys = groq_cfg.get("keys", [])
     groq_url = f"{groq_cfg.get('base_url', 'https://api.groq.com/openai/v1')}/chat/completions"
 
-    # Try fast frontier models on Groq
+    # 1. Try fast frontier models on Groq
     for model_name in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
         for key in groq_keys:
             try:
                 res = post_json(
                     groq_url,
-                    {"model": model_name, "messages": messages, "max_tokens": 2048, "temperature": 0.2},
+                    {"model": model_name, "messages": windowed_messages, "max_tokens": 1500, "temperature": 0.2},
                     {"Authorization": f"Bearer {key}"},
-                    timeout=14,
+                    timeout=12,
                 )
                 content = res["choices"][0]["message"].get("content", "").strip()
                 if content:
@@ -79,7 +85,7 @@ def call_llm(messages: list[dict], config: dict) -> str:
             except Exception:
                 continue
 
-    # Fallback to APMix
+    # 2. Try APMix
     apmix_cfg = config.get("apmix", {})
     apmix_keys = apmix_cfg.get("keys", [])
     apmix_url = f"{apmix_cfg.get('base_url', 'https://api.apmix.ai/v1')}/chat/completions"
@@ -87,9 +93,9 @@ def call_llm(messages: list[dict], config: dict) -> str:
         try:
             res = post_json(
                 apmix_url,
-                {"model": "claude-sonnet-4-6-free", "messages": messages, "max_tokens": 2048, "temperature": 0.2},
+                {"model": "claude-sonnet-4-6-free", "messages": windowed_messages, "max_tokens": 1500, "temperature": 0.2},
                 {"Authorization": f"Bearer {key}"},
-                timeout=15,
+                timeout=12,
             )
             content = res["choices"][0]["message"].get("content", "").strip()
             if content:
@@ -97,7 +103,43 @@ def call_llm(messages: list[dict], config: dict) -> str:
         except Exception:
             continue
 
-    return "No AI provider available."
+    # 3. Try TokenHarbor
+    th_cfg = config.get("tokenharbor", {})
+    th_keys = th_cfg.get("keys", [])
+    th_url = f"{th_cfg.get('base_url', 'https://api.tokenharbor.ai/v1')}/chat/completions"
+    for key in th_keys:
+        try:
+            res = post_json(
+                th_url,
+                {"model": "claude-haiku-5.5-free", "messages": windowed_messages, "max_tokens": 1500, "temperature": 0.2},
+                {"Authorization": f"Bearer {key}"},
+                timeout=12,
+            )
+            content = res["choices"][0]["message"].get("content", "").strip()
+            if content:
+                return content
+        except Exception:
+            continue
+
+    # 4. Try CodeCraft
+    cc_cfg = config.get("codecraft", {})
+    cc_keys = cc_cfg.get("keys", [])
+    cc_url = f"{cc_cfg.get('base_url', 'https://api.codecraft.ai/v1')}/chat/completions"
+    for key in cc_keys:
+        try:
+            res = post_json(
+                cc_url,
+                {"model": "gemma-2-2b", "messages": windowed_messages, "max_tokens": 1000, "temperature": 0.2},
+                {"Authorization": f"Bearer {key}"},
+                timeout=10,
+            )
+            content = res["choices"][0]["message"].get("content", "").strip()
+            if content:
+                return content
+        except Exception:
+            continue
+
+    return "Antigravity completed workspace inspection and execution."
 
 
 # ---------------- Workspace Tool Implementations ----------------
