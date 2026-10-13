@@ -838,7 +838,31 @@ async def _stream_task_events_with_deadline(adapter, record: TaskRecord, deadlin
 
 
 async def _finalize_task_completion(record: TaskRecord, terminal_event) -> bool:
-    """Make completion contingent on the verification the request actually required."""
+    """Make completion contingent on verification and a complete final workspace fingerprint."""
+    if not any(item.get("kind") == "workspace_provenance" for item in record.evidence):
+        try:
+            provenance = await asyncio.to_thread(
+                collect_workspace_provenance, record.request.workspace_path
+            )
+        except Exception as provenance_error:
+            provenance = {
+                "status": "error",
+                "snapshot_complete": False,
+                "reason": str(provenance_error)[:200],
+            }
+        provenance_status = str(provenance.get("status") or "error")
+        provenance_summary = (
+            "Captured a bounded final workspace fingerprint."
+            if provenance_status == "captured"
+            else "Workspace provenance is partial or unavailable; final snapshot integrity could not be established."
+        )
+        record.add_evidence(
+            "workspace_provenance",
+            provenance_status,
+            provenance_summary,
+            details=provenance,
+        )
+
     gate = evaluate_completion_gate(
         record.request,
         record.evidence,
