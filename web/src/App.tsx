@@ -196,6 +196,7 @@ export default function App() {
     }
   });
   const resumedTaskIds = useRef<Set<string>>(new Set());
+  const historyLoadRequest = useRef(0);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [taskHistorySearch, setTaskHistorySearch] = useState("");
@@ -1193,6 +1194,7 @@ export default function App() {
 
   const loadHistoryItem = (item: TaskHistoryItem) => {
     if (busy) return;
+    const loadId = ++historyLoadRequest.current;
     setSelectedHistoryId(item.id);
     setConversationPrompt(item.prompt);
     setEvents(item.events || []);
@@ -1207,6 +1209,24 @@ export default function App() {
     setNotice("");
     setError("");
     setHistoryDrawerOpen(false);
+
+    // Browser storage only has a task summary after reload. Rehydrate the event
+    // timeline from the backend's durable event log for completed and failed tasks.
+    void request("/tasks/" + encodeURIComponent(item.id) + "/event-history?limit=1000")
+      .then(response => response.json())
+      .then((body: { events?: Ev[] }) => {
+        if (historyLoadRequest.current !== loadId || !Array.isArray(body.events)) return;
+        const restoredEvents = body.events;
+        const output = restoredEvents
+          .filter(event => event.event_type === "token")
+          .map(event => event.text || "")
+          .join("");
+        setEvents(restoredEvents);
+        setTaskHistory(old => old.map(entry => entry.id === item.id
+          ? { ...entry, events: restoredEvents, output: output || entry.output }
+          : entry));
+      })
+      .catch(() => { /* Local-only legacy history entries may not exist on the backend. */ });
   };
 
   const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
