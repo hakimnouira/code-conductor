@@ -180,3 +180,45 @@ class TestRunResponse(BaseModel):
     stderr: str
     duration_ms: float
 
+
+
+class ScheduleCreateRequest(BaseModel):
+    workflow_id: str = Field(min_length=1, max_length=80)
+    interval_minutes: int = Field(default=60, ge=15, le=43200)
+    max_retries: int = Field(default=1, ge=0, le=3)
+    enabled: bool = True
+    workspace_path: str | None = None
+
+
+class ScheduleUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class ScheduleResponse(BaseModel):
+    schedule_id: str
+    workflow_id: str
+    name: str
+    workspace_path: str = ""
+    interval_minutes: int
+    enabled: bool
+    next_run_at: float
+    max_retries: int
+    failure_streak: int = 0
+    last_run_at: float | None = None
+    last_status: str = ""
+    last_task_id: str = ""
+    created_at: float
+    updated_at: float
+
+
+class ScheduleRunResponse(BaseModel):
+    run_id: str
+    schedule_id: str
+    scheduled_for: float
+    started_at: float | None = None
+    completed_at: float | None = None
+    status: str
+    task_id: str = ""
+    attempt: int = 0
+    max_retries: int = 1
+    error: str = ""

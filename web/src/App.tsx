@@ -11,6 +11,8 @@ type Health = { status: string; version: string; workspace: string; active_tasks
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
 type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };
+type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
+type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
@@ -156,6 +158,13 @@ export default function App() {
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowName, setWorkflowName] = useState("");
   const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);
+  const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);
+  const [scheduleBusyId, setScheduleBusyId] = useState("");
+  const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");
+  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
+  const scheduleNotificationCursor = useRef<Record<string, number>>({});
+  const scheduleNotificationInitialized = useRef(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -645,9 +654,62 @@ export default function App() {
     }
   };
 
+  const loadScheduledWorkflows = async () => {
+    try {
+      const response = await request("/schedules?limit=100");
+      const rows = await response.json() as ScheduledWorkflow[];
+      setScheduledWorkflows(Array.isArray(rows) ? rows : []);
+    } catch {
+      // Keep the workflow library usable when connected to an older backend.
+    }
+  };
+
   useEffect(() => {
-    if (health?.status === "healthy" || health?.status === "degraded") void loadWorkflowPresets();
+    if (health?.status === "healthy" || health?.status === "degraded") {
+      void loadWorkflowPresets();
+      void loadScheduledWorkflows();
+    }
   }, [health?.status, base, token]);
+
+  useEffect(() => {
+    if (health?.status !== "healthy" && health?.status !== "degraded") return;
+    let cancelled = false;
+    const pollSchedules = async () => {
+      try {
+        const response = await request("/schedules?limit=100");
+        const rows = await response.json() as ScheduledWorkflow[];
+        if (cancelled || !Array.isArray(rows)) return;
+        setScheduledWorkflows(rows);
+        if (!scheduleNotificationInitialized.current) {
+          for (const schedule of rows) {
+            scheduleNotificationCursor.current[schedule.schedule_id] = schedule.last_run_at || 0;
+          }
+          scheduleNotificationInitialized.current = true;
+          return;
+        }
+        for (const schedule of rows) {
+          const latestRun = schedule.last_run_at || 0;
+          const previousRun = scheduleNotificationCursor.current[schedule.schedule_id] || 0;
+          if (latestRun <= previousRun || !schedule.last_status) continue;
+          scheduleNotificationCursor.current[schedule.schedule_id] = latestRun;
+          const passed = schedule.last_status === "completed";
+          notify(
+            passed ? "completion" : "action",
+            passed ? "Scheduled workflow completed" : "Scheduled workflow needs attention",
+            `${schedule.name}: ${schedule.last_status}${schedule.last_task_id ? ` (task ${schedule.last_task_id})` : ""}`,
+          );
+        }
+      } catch {
+        // Polling is best-effort; schedules remain durable on the backend.
+      }
+    };
+    void pollSchedules();
+    const timer = window.setInterval(() => void pollSchedules(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [health?.status, request, notifications.enabled, notifications.completion, notifications.action, notifications.sound]);
 
   const saveCurrentWorkflow = async () => {
     if (!workflowName.trim() || !prompt.trim()) {
@@ -675,6 +737,100 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Could not save workflow");
     } finally {
       setWorkflowBusy(false);
+    }
+  };
+
+  const scheduleWorkflow = async (workflow: WorkflowPreset) => {
+    setScheduleBusyId(workflow.workflow_id);
+    setError("");
+    try {
+      const response = await request("/schedules", {
+        method: "POST",
+        body: JSON.stringify({
+          workflow_id: workflow.workflow_id,
+          interval_minutes: scheduleIntervalMinutes,
+          max_retries: 1,
+          enabled: true,
+          workspace_path: workspace || null,
+        }),
+      });
+      const scheduled = await response.json() as ScheduledWorkflow;
+      setScheduledWorkflows(old => [scheduled, ...old.filter(item => item.schedule_id !== scheduled.schedule_id)]);
+      setNotice(`Scheduled "${workflow.name}" every ${scheduleIntervalMinutes} minutes. The backend must be running for scheduled work to execute.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not schedule workflow");
+    } finally {
+      setScheduleBusyId("");
+    }
+  };
+
+  const toggleScheduleRuns = async (scheduleId: string) => {
+    if (scheduleRunsOpenId === scheduleId) {
+      setScheduleRunsOpenId("");
+      return;
+    }
+    setScheduleRunsOpenId(scheduleId);
+    try {
+      const response = await request("/schedules/" + encodeURIComponent(scheduleId) + "/runs?limit=20");
+      const rows = await response.json() as ScheduledRun[];
+      setScheduleRunDetails(old => ({ ...old, [scheduleId]: Array.isArray(rows) ? rows : [] }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load schedule history");
+    }
+  };
+
+  const openScheduledTask = async (taskId: string) => {
+    const existing = taskHistory.find(item => item.id === taskId);
+    if (existing) {
+      loadHistoryItem(existing);
+      return;
+    }
+    try {
+      const response = await request("/tasks/" + encodeURIComponent(taskId));
+      const task = await response.json() as { task_id: string; status: string; agent_id: string; prompt: string; created_at: number };
+      const status: TaskHistoryItem["status"] = task.status === "completed" || task.status === "failed" || task.status === "cancelled" ? task.status : "running";
+      const item: TaskHistoryItem = {
+        id: task.task_id,
+        timestamp: task.created_at * 1000,
+        prompt: task.prompt || "Scheduled workflow",
+        agentId: task.agent_id || "auto",
+        agentName: agents.find(agentItem => agentItem.id === task.agent_id)?.name || task.agent_id || "Agent",
+        status,
+        output: "",
+        events: [],
+      };
+      setTaskHistory(old => old.some(entry => entry.id === item.id) ? old : [item, ...old]);
+      loadHistoryItem(item);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open scheduled task");
+    }
+  };
+
+  const toggleScheduledWorkflow = async (schedule: ScheduledWorkflow) => {
+    setScheduleBusyId(schedule.schedule_id);
+    try {
+      const response = await request("/schedules/" + encodeURIComponent(schedule.schedule_id), {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !schedule.enabled }),
+      });
+      const updated = await response.json() as ScheduledWorkflow;
+      setScheduledWorkflows(old => old.map(item => item.schedule_id === updated.schedule_id ? updated : item));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update schedule");
+    } finally {
+      setScheduleBusyId("");
+    }
+  };
+
+  const deleteScheduledWorkflow = async (scheduleId: string) => {
+    setScheduleBusyId(scheduleId);
+    try {
+      await request("/schedules/" + encodeURIComponent(scheduleId), { method: "DELETE" });
+      setScheduledWorkflows(old => old.filter(item => item.schedule_id !== scheduleId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete schedule");
+    } finally {
+      setScheduleBusyId("");
     }
   };
 
@@ -2990,14 +3146,73 @@ export default function App() {
                 {workflowPresets.length === 0 ? <p style={{ color: "var(--muted)" }}>No workflows saved yet.</p> : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                     {workflowPresets.map(workflow => (
-                      <div key={workflow.workflow_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+                      <div key={workflow.workflow_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-start" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <b>{workflow.name}</b>
                           <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>{workflow.prompt.slice(0, 220)}{workflow.prompt.length > 220 ? "…" : ""}</p>
                           <span style={{ color: "var(--muted)", fontSize: "11px" }}>Agent: {workflow.agent_id} · Auto Verify: {workflow.auto_verify ? "On" : "Off"}{workflow.browser_verify_url ? " · Browser check enabled" : ""}</span>
                         </div>
                         <button className="outline-button" onClick={() => applyWorkflowPreset(workflow)} disabled={workflowBusy}>Load</button>
+                        <button className="outline-button" onClick={() => void scheduleWorkflow(workflow)} disabled={workflowBusy || !!scheduleBusyId} title="Create a recurring schedule">{scheduleBusyId === workflow.workflow_id ? <LoaderCircle size={13}/> : "Schedule"}</button>
                         <button className="icon-button" onClick={() => void deleteWorkflowPreset(workflow.workflow_id)} disabled={workflowBusy} title="Delete workflow"><Trash2 size={14}/></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="workspace-input-section" style={{ marginTop: "22px" }}>
+                <label className="field-label">
+                  <b>Recurring schedules ({scheduledWorkflows.length})</b>
+                  <span>Choose an interval above, then select Schedule on a saved workflow. Schedules and run records persist in the local SQLite database.</span>
+                </label>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
+                  <span style={{ fontSize: "12px", color: "var(--muted)" }}>New schedule interval</span>
+                  <select className="workspace-custom-input" style={{ maxWidth: "220px" }} value={scheduleIntervalMinutes} onChange={e => setScheduleIntervalMinutes(Number(e.target.value))}>
+                    <option value={15}>Every 15 minutes</option>
+                    <option value={60}>Every hour</option>
+                    <option value={360}>Every 6 hours</option>
+                    <option value={720}>Every 12 hours</option>
+                    <option value={1440}>Every day</option>
+                    <option value={10080}>Every week</option>
+                    <option value={43200}>Every 30 days</option>
+                  </select>
+                </div>
+                {scheduledWorkflows.length === 0 ? <p style={{ color: "var(--muted)" }}>No recurring schedules configured.</p> : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {scheduledWorkflows.map(schedule => (
+                      <div key={schedule.schedule_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-start" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <b>{schedule.name}</b>
+                          <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>
+                            Every {schedule.interval_minutes >= 1440 && schedule.interval_minutes % 1440 === 0 ? `${schedule.interval_minutes / 1440} day(s)` : schedule.interval_minutes >= 60 && schedule.interval_minutes % 60 === 0 ? `${schedule.interval_minutes / 60} hour(s)` : `${schedule.interval_minutes} minutes`} · retries {schedule.max_retries}
+                          </p>
+                          <span style={{ color: "var(--muted)", fontSize: "11px" }}>
+                            {schedule.enabled ? "Enabled" : "Paused"} · Next: {new Date(schedule.next_run_at * 1000).toLocaleString()} · Last run: {schedule.last_status || "Never"}{schedule.failure_streak ? ` · failure streak ${schedule.failure_streak}` : ""}
+                          </span>
+                        </div>
+                        <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduleRuns(schedule.schedule_id)}>Runs</button>
+                        <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduledWorkflow(schedule)}>{scheduleBusyId === schedule.schedule_id ? <LoaderCircle size={13}/> : schedule.enabled ? "Pause" : "Resume"}</button>
+                        <button className="icon-button" disabled={!!scheduleBusyId} onClick={() => void deleteScheduledWorkflow(schedule.schedule_id)} title="Delete schedule"><Trash2 size={14}/></button>
+                        {scheduleRunsOpenId === schedule.schedule_id && (
+                          <div style={{ flexBasis: "100%", borderTop: "1px solid var(--border)", paddingTop: "10px" }}>
+                            <b style={{ fontSize: "12px" }}>Recent runs</b>
+                            {(scheduleRunDetails[schedule.schedule_id] || []).length === 0 ? <p style={{ color: "var(--muted)", fontSize: "12px" }}>No runs recorded yet. The first run is scheduled for the next interval.</p> : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+                                {(scheduleRunDetails[schedule.schedule_id] || []).map(run => (
+                                  <div key={run.run_id} style={{ background: "var(--surface-2)", borderRadius: "8px", padding: "9px" }}>
+                                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", fontSize: "11px" }}>
+                                      <b>{run.status.toUpperCase()}</b>
+                                      <span>{new Date((run.started_at || run.scheduled_for) * 1000).toLocaleString()}</span>
+                                      <span>Attempts: {run.attempt}/{run.max_retries + 1}</span>
+                                      {run.task_id && <button className="outline-button" onClick={() => void openScheduledTask(run.task_id)}>Open task</button>}
+                                    </div>
+                                    {run.error && <p style={{ color: "var(--danger, #d55)", fontSize: "12px", margin: "6px 0 0" }}>{run.error}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

@@ -201,6 +201,11 @@ The local daemon listens on `http://127.0.0.1:8765` with `Authorization: Bearer 
 | `POST` | `/workspace/git/diff` | Calculate clean unified diff against HEAD. |
 | `POST` | `/workspace/git/checkpoint` | Create safety checkpoint branch or stash. |
 | `POST` | `/workspace/test/run` | Execute allowlisted test runner with process sandboxing. |
+| `GET` | `/schedules` | List durable recurring workflow schedules. |
+| `POST` | `/schedules` | Schedule a saved workflow with interval and retry policy. |
+| `PUT` | `/schedules/{schedule_id}` | Pause or resume a schedule. |
+| `GET` | `/schedules/{schedule_id}/runs` | Retrieve durable schedule run history. |
+| `POST` | `/browser/automation-test` | Run Playwright-backed browser diagnostics against the configured CDP browser. |
 
 ---
 
@@ -254,6 +259,39 @@ In **Connections & settings**, enter a provider ID, display name, base URL, mode
 
 The generic connector supports OpenAI-compatible `/chat/completions` endpoints for text responses only. It does **not** provide file editing, shell tools, or subscription sign-in. For coding-agent capabilities, use a provider's official CLI/SDK and its supported authentication flow. Do not paste passwords, cookies, OAuth refresh tokens, or subscription session data into the API-key field.
 
+
+## Durable Scheduled Workflows & Browser Verification
+
+### Recurring workflow scheduler
+Saved workflows can be scheduled from the dashboard's workflow library. Schedules are stored in the local SQLite task database, survive backend restarts, and support:
+- Intervals from 15 minutes to 30 days, pause/resume, and deletion.
+- Bounded retries (0–3) for failed task dispatches or failed task runs.
+- Durable run records with status, task ID, attempt count, timestamps, and error details.
+- Startup recovery of queued/running schedule records. Tasks interrupted by a backend restart are marked failed by the task store and can be retried by the scheduler.
+- Dashboard run history, opening the underlying task timeline, and opt-in completion/failure notifications while the dashboard is open.
+
+The backend must remain running for a scheduled job to fire. This first scheduler uses intervals rather than cron/time-zone expressions; after downtime it skips missed intervals and schedules the next occurrence from recovery time instead of launching a burst of stale jobs. Schedules execute the saved prompt in **Safe** permission mode and keep a snapshot of the workflow settings, so removing or editing the original preset does not silently rewrite an existing schedule.
+
+API endpoints (Bearer token required):
+- `GET /schedules` — list schedules.
+- `POST /schedules` — create a recurring schedule from `workflow_id`, `interval_minutes`, optional `workspace_path`, `max_retries`, and `enabled`.
+- `PUT /schedules/{schedule_id}` — pause/resume.
+- `DELETE /schedules/{schedule_id}` — remove a schedule (historical run records are retained).
+- `GET /schedules/{schedule_id}/runs` — inspect recent runs.
+
+### Playwright-backed browser verification
+When a task has `browser_verify_url` configured, Code Conductor attaches Playwright to the configured Chromium DevTools Protocol endpoint (default `http://127.0.0.1:9222`) and opens a separate tab. It captures:
+- Page load state and main-document HTTP status.
+- Uncaught page exceptions and browser console errors.
+- HTTP error responses and failed requests as diagnostic evidence.
+- A screenshot saved under `.code-conductor/artifacts/{task_id}/browser-verification.png`.
+- A bounded text excerpt and structured checks added to the task timeline.
+
+The verifier waits for DOM content and makes a bounded attempt to wait for network idle; applications with polling, streaming, or WebSockets may never become idle. Failed subresource requests are reported but do not alone fail a run. JavaScript errors, common visible error markers, screenshot capture failures, and a failed main document can fail verification and feed diagnostics into the existing bounded repair loop.
+
+The backend installs the Playwright Python package through `backend/requirements.txt`. It does **not** download a browser binary; configure a local Chromium/Chrome instance with remote debugging enabled and connect it in the Browser Session panel. The additional endpoint is `POST /browser/automation-test` with `{"url":"http://127.0.0.1:5173","wait_seconds":2}`.
+
+This provides stronger runtime evidence than a page-content smoke check, but it is not a substitute for explicit acceptance assertions, a full E2E suite, accessibility checks, or a security audit. Treat the browser report as evidence, not proof of correctness.
 
 ## Chat-first workspace and GitHub repository analysis
 
