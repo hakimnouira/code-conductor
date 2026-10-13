@@ -122,12 +122,13 @@ def test_workspace_provenance_fingerprints_revision_tracked_and_untracked_change
     assert second["snapshot_sha256"] != first["snapshot_sha256"]
 
 
-def test_workspace_provenance_marks_non_git_workspace_partial(tmp_path):
+def test_workspace_provenance_fingerprints_non_git_workspace(tmp_path):
+    (tmp_path / "module.py").write_text("value = 1\\n", encoding="utf-8")
     result = collect_workspace_provenance(tmp_path)
-    assert result["status"] == "partial"
-    assert result["workspace_kind"] == "non_git"
-    assert result["snapshot_complete"] is False
-    assert result["reason"] == "not_a_git_repository"
+    assert result["status"] == "captured"
+    assert result["workspace_kind"] == "filesystem"
+    assert result["snapshot_complete"] is True
+    assert result["snapshot_sha256"]
 
 
 
