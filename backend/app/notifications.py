@@ -17,7 +17,7 @@ def notify_schedule_outcome(name: str, status: str, error: str = "") -> bool:
 
     normalized = status.strip().lower()
     title = "Code Conductor · Workflow " + ("completed" if normalized == "completed" else "needs attention")
-    message = name[:180] if normalized == "completed" else f"{name[:120]}: {(error or status)[:160]}"
+    message = name[:180] if normalized == "completed" else f"{name[:120]} failed; open Code Conductor for details."
     try:
         from winotify import Notification
 
