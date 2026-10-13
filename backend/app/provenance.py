@@ -121,7 +121,22 @@ def _collect_filesystem_provenance(root: Path, captured_at: float) -> dict[str, 
     while stack:
         directory = stack.pop()
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name, reverse=True)
+            # Bound directory enumeration itself: sorting an unbounded scandir result
+            # would defeat the memory limit even if hashing later stopped at the cap.
+            entries = []
+            overflow = False
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    if len(entries) >= _MAX_UNTRACKED_FILES + 1:
+                        overflow = True
+                        break
+                    entries.append(entry)
+            if overflow:
+                complete = False
+                digest.update(b"directory_entry_limit_reached\\0")
+                digest.update(directory.relative_to(root).as_posix().encode("utf-8", errors="surrogateescape"))
+                continue
+            entries.sort(key=lambda entry: entry.name, reverse=True)
         except OSError:
             complete = False
             digest.update(b"directory_read_error\\0")
