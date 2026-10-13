@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.core.security import require_bearer_token
+from app.browser_automation import run_browser_automation
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +348,21 @@ async def capture_browser_screenshot(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Screenshot capture failed: {exc}",
         )
+
+
+@router.post("/automation-test")
+async def browser_automation_test(
+    payload: BrowserVerifyPayload,
+    _: str = Depends(require_bearer_token),
+) -> dict[str, Any]:
+    """Run Playwright-based verification in the configured Chromium browser."""
+    try:
+        return await run_browser_automation(payload.url, wait_seconds=payload.wait_seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Browser automation verification failed")
+        raise HTTPException(status_code=502, detail=f"Browser automation verification failed: {str(exc)[:500]}")
 
 
 @router.post("/verify")
