@@ -82,9 +82,33 @@ def run_suite(args: argparse.Namespace) -> int:
         except RuntimeError as exc:
             evidence = {"verification_status": "unavailable", "error": str(exc), "evidence": []}
         expected = case.get("expected_verification_status", "passed")
+        evidence_items = evidence.get("evidence", [])
+        if not isinstance(evidence_items, list):
+            evidence_items = []
         verified = (
             state.get("status") == "completed"
             and evidence.get("verification_status") == expected
+        )
+        latest_status: dict[str, str] = {}
+        test_runs: list[dict[str, Any]] = []
+        build_runs: list[dict[str, Any]] = []
+        for item in evidence_items:
+            kind = str(item.get("kind") or "")
+            if kind:
+                latest_status[kind] = str(item.get("status") or "unknown")
+            details = item.get("details") if isinstance(item.get("details"), dict) else {}
+            if kind == "automated_tests":
+                test_runs.append(details)
+            elif kind == "build":
+                build_runs.append(details)
+        provenance = next(
+            (item for item in reversed(evidence_items) if item.get("kind") == "workspace_provenance"),
+            {},
+        )
+        provenance_details = provenance.get("details") if isinstance(provenance.get("details"), dict) else {}
+        test_build_duration_ms = sum(
+            float(details.get("duration_ms") or 0)
+            for details in [*test_runs, *build_runs]
         )
         result = {
             "suite": suite.get("name", "unnamed"),
@@ -96,13 +120,19 @@ def run_suite(args: argparse.Namespace) -> int:
             "expected_verification_status": expected,
             "passed": verified,
             "duration_seconds": round(time.monotonic() - started, 3),
-            "attempts": sum(
-                1 for item in evidence.get("evidence", [])
-                if item.get("kind") == "automated_tests"
-            ),
+            "verification_duration_ms": round(test_build_duration_ms, 3),
+            "test_attempts": len(test_runs),
+            "build_attempts": len(build_runs),
+            "browser_verification_status": latest_status.get("browser_verification", "not_requested"),
+            "completion_gate_status": latest_status.get("completion_gate", "missing"),
+            "verification_checks": latest_status,
+            "workspace_snapshot_sha256": provenance_details.get("snapshot_sha256"),
+            "workspace_snapshot_complete": provenance_details.get("snapshot_complete", False),
+            "estimated_cost_usd": None,
+            "cost_reporting": "The local task API does not expose provider cost; no estimate was fabricated.",
             "evidence": [
                 {"kind": item.get("kind"), "status": item.get("status")}
-                for item in evidence.get("evidence", [])
+                for item in evidence_items
             ],
             "error": state.get("error") or evidence.get("error") or "",
             "workspace": str(workspace.resolve()),
