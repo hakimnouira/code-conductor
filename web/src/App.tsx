@@ -3104,7 +3104,7 @@ export default function App() {
                 {scheduledWorkflows.length === 0 ? <p style={{ color: "var(--muted)" }}>No recurring schedules configured.</p> : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                     {scheduledWorkflows.map(schedule => (
-                      <div key={schedule.schedule_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+                      <div key={schedule.schedule_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-start" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <b>{schedule.name}</b>
                           <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>
