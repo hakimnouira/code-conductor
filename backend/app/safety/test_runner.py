@@ -98,15 +98,24 @@ class SafeTestRunner:
         }
         inner_command = commands[command_key] + list(extra_args)
         command = [
-            docker, "run", "--rm", "--name", container_name,
+            docker, "run", "--rm", "--pull=never", "--name", container_name,
             "--network", "none",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--pids-limit=256",
             "--memory=2g",
+            "--memory-swap=2g",
             "--cpus=2",
+            "--ulimit", "nofile=1024:1024",
             "--tmpfs", "/tmp:rw,nosuid,size=256m",
+            # Provide disposable tool caches and a bounded temporary home instead of
+            # forwarding host environment variables or mounting the host home directory.
+            "--env", "HOME=/tmp",
+            "--env", "TMPDIR=/tmp",
+            "--env", "CI=1",
+            "--env", "PYTHONDONTWRITEBYTECODE=1",
+            "--env", "npm_config_cache=/tmp/npm-cache",
             "--mount", f"type=bind,source={source},target=/workspace,rw",
             "--workdir", "/workspace",
             image,
