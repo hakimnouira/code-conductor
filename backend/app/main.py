@@ -836,8 +836,9 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "timestamp": time.time(),
                     "data": {"phase": "verification", "status": "skipped"},
                 }))
-                browser_action, browser_verification_attempts = await _browser_verification_gate(
-                    record, browser_verification_attempts
+                browser_action, browser_verification_attempts = await _await_task_deadline(
+                    _browser_verification_gate(record, browser_verification_attempts),
+                    deadline, timeout_seconds,
                 )
                 if browser_action == "retry":
                     continue
@@ -926,8 +927,9 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 },
             }))
             if verification_passed:
-                browser_action, browser_verification_attempts = await _browser_verification_gate(
-                    record, browser_verification_attempts
+                browser_action, browser_verification_attempts = await _await_task_deadline(
+                    _browser_verification_gate(record, browser_verification_attempts),
+                    deadline, timeout_seconds,
                 )
                 if browser_action == "retry":
                     continue
