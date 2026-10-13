@@ -25,6 +25,30 @@ from app.task_store import (
 Dispatch = Callable[[dict[str, Any]], Awaitable[str]]
 StatusLookup = Callable[[str], Awaitable[dict[str, Any] | None]]
 
+_scheduler_started_at: float | None = None
+_scheduler_last_tick_at: float | None = None
+_scheduler_running = False
+_scheduler_poll_seconds = 5.0
+
+
+def get_scheduler_diagnostics() -> dict[str, Any]:
+    """Expose a safe heartbeat snapshot for local operational diagnostics."""
+    now = time.time()
+    age = max(0.0, now - _scheduler_last_tick_at) if _scheduler_last_tick_at else None
+    healthy = bool(
+        _scheduler_running
+        and age is not None
+        and age <= max(30.0, _scheduler_poll_seconds * 3.0)
+    )
+    return {
+        "status": "healthy" if healthy else ("stale" if _scheduler_running else "stopped"),
+        "running": _scheduler_running,
+        "started_at": _scheduler_started_at,
+        "last_tick_at": _scheduler_last_tick_at,
+        "last_tick_age_seconds": round(age, 2) if age is not None else None,
+        "poll_seconds": _scheduler_poll_seconds,
+    }
+
 
 async def _monitor_run(
     run: dict[str, Any],
@@ -150,6 +174,11 @@ async def scheduler_loop(
     poll_seconds: float = 5.0,
 ) -> None:
     """Run durable schedules until stopped; safely reattach monitors after restart."""
+    global _scheduler_started_at, _scheduler_last_tick_at, _scheduler_running, _scheduler_poll_seconds
+    _scheduler_started_at = time.time()
+    _scheduler_last_tick_at = _scheduler_started_at
+    _scheduler_running = True
+    _scheduler_poll_seconds = max(1.0, float(poll_seconds))
     stop_event = asyncio.Event()
     monitors: dict[str, asyncio.Task[None]] = {}
 
@@ -165,6 +194,7 @@ async def scheduler_loop(
     try:
         logger = logging.getLogger(__name__)
         while True:
+            _scheduler_last_tick_at = time.time()
             try:
                 # Re-read incomplete runs on each tick. A temporary SQLite lock
                 # during startup must not permanently disable autonomous workflows.
@@ -180,6 +210,7 @@ async def scheduler_loop(
                 logger.exception("Scheduled workflow polling failed; retrying next tick")
             await asyncio.sleep(max(1.0, poll_seconds))
     except asyncio.CancelledError:
+        _scheduler_running = False
         stop_event.set()
         for task in list(monitors.values()):
             task.cancel()
