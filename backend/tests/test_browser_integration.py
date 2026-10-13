@@ -79,6 +79,10 @@ async def test_real_chromium_captures_browser_actions_network_and_screenshot():
                 {"action": "click", "selector": "#submit"},
             ],
         )
+    except RuntimeError as exc:
+        if "Could not connect to the configured CDP browser or launch managed Chromium" in str(exc):
+            pytest.skip(f"Browser environment not available: {exc}")
+        raise
     finally:
         server.shutdown()
         server.server_close()

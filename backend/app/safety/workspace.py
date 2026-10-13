@@ -106,6 +106,10 @@ def validate_workspace_path(
     if not resolved.is_dir():
         raise WorkspaceValidationError(f"Workspace path is not a directory: '{resolved}'")
 
+    # Reject root drive
+    if resolved.parent == resolved:
+        raise WorkspaceValidationError(f"Root drive '{resolved}' cannot be used directly as a workspace.")
+
     # Reject critical system directories using canonical containment
     for sys_root in FORBIDDEN_SYSTEM_ROOTS:
         if resolved == sys_root or is_contained_in_workspace(resolved, sys_root):
