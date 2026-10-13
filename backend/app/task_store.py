@@ -302,11 +302,18 @@ def claim_due_scheduled_jobs(now: float) -> list[dict[str, Any]]:
             if not item:
                 continue
             due_at = item.get("retry_at") if item.get("retry_at") is not None and item["retry_at"] <= now else item["next_run_at"]
-            if item["schedule_type"] == "interval" and (item.get("retry_at") is None or item["retry_at"] > now):
-                db.execute(
-                    "UPDATE scheduled_jobs SET next_run_at = ?, last_run_at = ?, last_status = 'running', retry_at = NULL, updated_at = ? WHERE job_id = ?",
-                    (now + int(item["interval_seconds"]), now, now, item["job_id"]),
-                )
+            retry_due = item.get("retry_at") is not None and item["retry_at"] <= now
+            if item["schedule_type"] == "interval":
+                if retry_due:
+                    db.execute(
+                        "UPDATE scheduled_jobs SET enabled = 1, last_run_at = ?, last_status = 'running', retry_at = NULL, updated_at = ? WHERE job_id = ?",
+                        (now, now, item["job_id"]),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE scheduled_jobs SET next_run_at = ?, last_run_at = ?, last_status = 'running', retry_at = NULL, updated_at = ? WHERE job_id = ?",
+                        (now + int(item["interval_seconds"]), now, now, item["job_id"]),
+                    )
             else:
                 db.execute(
                     "UPDATE scheduled_jobs SET enabled = 0, last_run_at = ?, last_status = 'running', retry_at = NULL, updated_at = ? WHERE job_id = ?",
