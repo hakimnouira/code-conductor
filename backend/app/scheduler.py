@@ -129,12 +129,14 @@ async def scheduler_loop(
         task.add_done_callback(lambda finished, key=run_id: monitors.pop(key, None) if monitors.get(key) is finished else None)
 
     try:
-        for run in get_incomplete_schedule_runs():
-            attach(run)
         import logging
         logger = logging.getLogger(__name__)
         while True:
             try:
+                # Re-read incomplete runs every tick. This also recovers a transient
+                # startup DB lock without permanently disabling scheduling.
+                for run in get_incomplete_schedule_runs():
+                    attach(run)
                 for run in claim_due_schedules(time.time(), limit=20):
                     attach(run)
                 for run in get_incomplete_schedule_runs():
