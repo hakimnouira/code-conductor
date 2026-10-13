@@ -423,10 +423,12 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
         if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
             root = Path(record.request.workspace_path).resolve()
             artifact_dir = root / ".code-conductor" / "artifacts" / record.task_id
-            artifact_dir.mkdir(parents=True, exist_ok=True)
+            # Resolve before mkdir to prevent a pre-existing symlink from redirecting
+            # screenshot writes outside the selected workspace.
             resolved_dir = artifact_dir.resolve()
             if not resolved_dir.is_relative_to(root):
                 raise ValueError("Browser artifact directory escapes the selected workspace.")
+            resolved_dir.mkdir(parents=True, exist_ok=True)
             image_path = resolved_dir / "browser-verification.png"
             if not image_path.resolve().is_relative_to(root):
                 raise ValueError("Browser screenshot path escapes the selected workspace.")
