@@ -3,6 +3,7 @@ import pytest
 
 from app.browser_automation import _validate_target_url, build_browser_report, evaluate_acceptance_assertions
 from app.browser_session import BrowserVerifyPayload
+from app.models.schemas import BrowserActionStep
 
 
 pytestmark = pytest.mark.unit
@@ -129,6 +130,40 @@ def test_browser_payload_bounds_assertion_count_and_item_length():
     assert payload.required_text[1] == "Dashboard"
     with pytest.raises(Exception):
         BrowserVerifyPayload(url="http://127.0.0.1:5173", required_text=[str(i) for i in range(21)])
+
+
+def test_browser_actions_are_included_in_verification_evidence():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        action_results=[
+            {"index": 0, "action": "fill", "selector": "#search", "passed": True, "duration_ms": 12},
+            {"index": 1, "action": "click", "selector": "#submit", "passed": False, "error": "timeout"},
+        ],
+    )
+    assert report["success"] is False
+    assert report["checks"]["browser_actions_passed"] is False
+    assert report["action_results"][1]["error"] == "timeout"
+
+
+def test_browser_action_schema_is_bounded_and_requires_values():
+    step = BrowserActionStep(action="fill", selector="  input[name='q']  ", value="hello")
+    assert step.selector == "input[name='q']"
+    assert step.timeout_ms == 5000
+    with pytest.raises(Exception):
+        BrowserActionStep(action="fill", selector="input[name='q']")
+    with pytest.raises(Exception):
+        BrowserActionStep(action="click", selector="button", timeout_ms=20000)
+    with pytest.raises(Exception):
+        BrowserActionStep(action="click", selector="   ")
 
 
 def test_browser_report_fails_and_labels_screenshot_infrastructure_errors():
