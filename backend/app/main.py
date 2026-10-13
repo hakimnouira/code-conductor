@@ -578,9 +578,12 @@ async def _create_task_record(
         if saved is None:
             raise HTTPException(status_code=503, detail="Task creation raced with another worker; durable state could not be read.")
         saved_snapshot = saved["snapshot"]
-        if saved_snapshot.get("request_fingerprint") != record.request_fingerprint:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used with a different task request.")
         existing_request = TaskCreateRequest.model_validate(saved["request"])
+        saved_fingerprint = saved_snapshot.get("request_fingerprint") or hashlib.sha256(
+            existing_request.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if saved_fingerprint != record.request_fingerprint:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used with a different task request.")
         existing = TaskRecord(
             task_id=task_id,
             request=existing_request,
