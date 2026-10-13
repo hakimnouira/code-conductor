@@ -181,6 +181,38 @@ def events_after(task_id: str, after_event_id: int = 0, limit: int = 200) -> lis
     return [dict(row) for row in rows]
 
 
+def _decode_saved_task_row(row: sqlite3.Row) -> dict[str, Any] | None:
+    try:
+        current_request = json.loads(row["request_json"])
+        snapshot = json.loads(row["snapshot_json"])
+        original_json = row["initial_request_json"] or row["request_json"]
+        try:
+            initial_request = json.loads(original_json)
+        except (TypeError, json.JSONDecodeError):
+            initial_request = current_request
+        original_available = bool(row["initial_request_json"]) and bool(
+            snapshot.get("original_request_available", True)
+        )
+        return {
+            "request": current_request,
+            "initial_request": initial_request,
+            "initial_request_available": original_available,
+            "snapshot": snapshot,
+        }
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def get_saved_task(task_id: str) -> dict[str, Any] | None:
+    """Fetch one task by primary key without depending on the history page limit."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT request_json, snapshot_json, initial_request_json FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    return _decode_saved_task_row(row) if row is not None else None
+
+
 def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
@@ -189,25 +221,9 @@ def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
         ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
-        try:
-            current_request = json.loads(row["request_json"])
-            snapshot = json.loads(row["snapshot_json"])
-            original_json = row["initial_request_json"] or row["request_json"]
-            try:
-                initial_request = json.loads(original_json)
-            except (TypeError, json.JSONDecodeError):
-                initial_request = current_request
-            original_available = bool(row["initial_request_json"]) and bool(
-                snapshot.get("original_request_available", True)
-            )
-            result.append({
-                "request": current_request,
-                "initial_request": initial_request,
-                "initial_request_available": original_available,
-                "snapshot": snapshot,
-            })
-        except (TypeError, json.JSONDecodeError):
-            continue
+        item = _decode_saved_task_row(row)
+        if item is not None:
+            result.append(item)
     return result
 
 
