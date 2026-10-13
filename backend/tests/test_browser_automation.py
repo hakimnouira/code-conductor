@@ -254,3 +254,86 @@ def test_browser_report_fails_and_labels_screenshot_infrastructure_errors():
     assert report["checks"]["no_verification_errors"] is False
     assert report["console_errors"] == []
     assert report["screenshot_scope"] == "viewport_fallback_size_limit"
+
+
+@pytest.mark.asyncio
+async def test_browser_connection_falls_back_to_managed_chromium():
+    from app.browser_automation import connect_or_launch_browser
+
+    calls = []
+
+    class Context:
+        pass
+
+    class Browser:
+        contexts = []
+        async def new_context(self):
+            calls.append("new_context")
+            return Context()
+
+    class Chromium:
+        async def connect_over_cdp(self, endpoint, timeout):
+            calls.append(("cdp", endpoint, timeout))
+            raise ConnectionError("no CDP browser is running")
+        async def launch(self, headless):
+            calls.append(("launch", headless))
+            return Browser()
+
+    class Playwright:
+        chromium = Chromium()
+
+    browser, context, engine, owned = await connect_or_launch_browser(Playwright(), "http://127.0.0.1:9222")
+    assert isinstance(browser, Browser)
+    assert isinstance(context, Context)
+    assert engine == "playwright-managed-chromium"
+    assert owned is True
+    assert calls == [("cdp", "http://127.0.0.1:9222", 5000), ("launch", True), "new_context"]
+
+
+@pytest.mark.asyncio
+async def test_browser_connection_preserves_existing_cdp_browser():
+    from app.browser_automation import connect_or_launch_browser
+
+    context = object()
+    calls = []
+
+    class Browser:
+        contexts = [context]
+        async def new_context(self):
+            raise AssertionError("Should reuse the connected browser context")
+
+    browser = Browser()
+
+    class Chromium:
+        async def connect_over_cdp(self, endpoint, timeout):
+            calls.append(("cdp", endpoint, timeout))
+            return browser
+        async def launch(self, headless):
+            raise AssertionError("Must not launch a second browser when CDP works")
+
+    class Playwright:
+        chromium = Chromium()
+
+    got_browser, got_context, engine, owned = await connect_or_launch_browser(Playwright(), "http://127.0.0.1:9222")
+    assert got_browser is browser
+    assert got_context is context
+    assert engine == "playwright-cdp"
+    assert owned is False
+    assert calls == [("cdp", "http://127.0.0.1:9222", 5000)]
+
+
+@pytest.mark.asyncio
+async def test_browser_connection_explains_missing_playwright_browser():
+    from app.browser_automation import connect_or_launch_browser
+
+    class Chromium:
+        async def connect_over_cdp(self, endpoint, timeout):
+            raise ConnectionError("CDP unavailable")
+        async def launch(self, headless):
+            raise RuntimeError("executable missing")
+
+    class Playwright:
+        chromium = Chromium()
+
+    with pytest.raises(RuntimeError, match="python -m playwright install chromium"):
+        await connect_or_launch_browser(Playwright(), "http://127.0.0.1:9222")
