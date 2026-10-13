@@ -131,21 +131,23 @@ class AntigravityAdapter(BaseAgentAdapter):
             # Explicitly requested high-risk behavior; never enabled by default.
             args.append("--dangerously-skip-permissions")
 
-        if executable.lower().endswith((".cmd", ".bat")):
-            cmd = ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline([executable, *args])]
-        else:
-            cmd = [executable, *args]
-
         cancel_event = asyncio.Event()
         self._cancel[task_id] = cancel_event
         proc_env = os.environ.copy()
         if "ANTIGRAVITY_LS_ADDRESS" not in proc_env:
             proc_env["ANTIGRAVITY_LS_ADDRESS"] = "localhost:54182"
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(workspace), env=proc_env, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
+            if executable.lower().endswith((".cmd", ".bat")):
+                cmd_str = f'"{executable}" ' + " ".join(f'"{a}"' if " " in a else a for a in args)
+                proc = await asyncio.create_subprocess_shell(
+                    cmd_str, cwd=str(workspace), env=proc_env, stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    executable, *args, cwd=str(workspace), env=proc_env, stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
             self._active[task_id] = proc
             assert proc.stdout is not None
             assert proc.stdin is not None

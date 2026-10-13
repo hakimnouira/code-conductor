@@ -79,8 +79,8 @@ class DualModelAdapter(BaseAgentAdapter):
     async def get_capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(
             supports_streaming=True,
-            supports_code_edits=False,
-            supports_terminal_execution=False,
+            supports_code_edits=True,
+            supports_terminal_execution=True,
             supports_subagents=False,
             supported_models=[
                 "dual-random-pair",
@@ -147,12 +147,81 @@ class DualModelAdapter(BaseAgentAdapter):
             )
             await asyncio.sleep(0.006)
 
-        yield AgentEvent(
-            task_id=task_id,
-            event_type=EventType.COMPLETED,
-            text="",
-            timestamp=time.time(),
-        )
+        # ---------------- Phase 2: Action Execution via Antigravity ----------------
+        if not cancel_event.is_set() and request.workspace_path:
+            yield AgentEvent(
+                task_id=task_id,
+                event_type=EventType.LOG,
+                text="⚖️ Dual consultation complete. Google Antigravity is now taking action in the workspace...",
+                timestamp=time.time(),
+            )
+
+            from app.adapters.antigravity import AntigravityAdapter
+            from app.adapters.codex import CodexAdapter
+
+            action_prompt = (
+                f"Based on the dual-model consultation verdict below, inspect the workspace and take direct action to resolve the user's issue:\n\n"
+                f"{dual_result}\n\n"
+                f"Original user request: {request.prompt}"
+            )
+
+            action_req = TaskCreateRequest(
+                prompt=action_prompt,
+                agent_id="antigravity",
+                workspace_path=request.workspace_path,
+                permission_mode=request.permission_mode,
+                god_mode_confirmed=request.god_mode_confirmed,
+                model=request.model,
+            )
+
+            executor: BaseAgentAdapter = AntigravityAdapter()
+            exec_state, _ = await executor.check_availability()
+            if exec_state != AvailabilityState.READY:
+                codex = CodexAdapter()
+                c_state, _ = await codex.check_availability()
+                if c_state == AvailabilityState.READY:
+                    executor = codex
+
+            has_completed = False
+            try:
+                async for ev in executor.stream_task(task_id, action_req):
+                    if cancel_event.is_set():
+                        break
+                    if ev.event_type == EventType.STARTED:
+                        yield AgentEvent(
+                            task_id=task_id,
+                            event_type=EventType.LOG,
+                            text=ev.text,
+                            timestamp=ev.timestamp,
+                            data=ev.data,
+                        )
+                        continue
+                    if ev.event_type == EventType.COMPLETED:
+                        has_completed = True
+                    yield ev
+            except Exception as exc:
+                yield AgentEvent(
+                    task_id=task_id,
+                    event_type=EventType.LOG,
+                    text=f"Workspace action notice: {exc}",
+                    timestamp=time.time(),
+                )
+
+            if not has_completed and not cancel_event.is_set():
+                yield AgentEvent(
+                    task_id=task_id,
+                    event_type=EventType.COMPLETED,
+                    text="",
+                    timestamp=time.time(),
+                )
+        else:
+            yield AgentEvent(
+                task_id=task_id,
+                event_type=EventType.COMPLETED,
+                text="",
+                timestamp=time.time(),
+            )
+
         self._active_cancels.pop(task_id, None)
 
     async def cancel_task(self, task_id: str) -> bool:
