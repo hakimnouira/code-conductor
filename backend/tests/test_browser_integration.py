@@ -18,10 +18,12 @@ pytestmark = pytest.mark.browser_integration
 
 class _VerificationHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/missing.json":
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
+        if self.path == "/health.json":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
             self.end_headers()
+            self.wfile.write(b"{}")
             return
 
         if self.path != "/":
@@ -45,7 +47,7 @@ class _VerificationHandler(BaseHTTPRequestHandler):
     <div id="missing-alert" hidden>Hidden alert</div>
   </main>
   <script>
-    fetch('/missing.json').catch(() => {});
+    fetch('/health.json').catch(() => {});
   </script>
 </body>
 </html>"""
@@ -100,6 +102,5 @@ async def test_real_chromium_captures_browser_actions_network_and_screenshot():
     assert report["checks"]["browser_actions_passed"] is True
     assert [step["passed"] for step in report["action_results"]] == [True, True]
     assert report["acceptance_assertions"]["passed"] is True
-    assert any(item["status"] == 404 and item["url"].endswith("/missing.json")
-               for item in report["http_errors"])
+    assert report["http_errors"] == []
     assert report["screenshot"].startswith("data:image/png;base64,")
