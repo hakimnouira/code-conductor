@@ -8,6 +8,7 @@ import pytest
 from app.main import TaskRecord
 from app.models.schemas import TaskCreateRequest, TaskStatus
 from app.task_store import get_saved_task, get_saved_tasks
+import app.provenance as provenance
 from app.provenance import collect_workspace_provenance
 
 
@@ -205,3 +206,39 @@ def test_exact_task_lookup_is_not_limited_by_recent_history_window(tmp_path, mon
     exact = get_saved_task("task-target")
     assert exact is not None
     assert exact["snapshot"]["task_id"] == "task-target"
+
+
+
+def test_workspace_provenance_caps_large_git_command_output(tmp_path, monkeypatch):
+    workspace = tmp_path / "bounded-repo"
+    workspace.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.name", "Code Conductor Tests")
+    git("config", "user.email", "tests@example.invalid")
+    tracked = workspace / "large.txt"
+    tracked.write_text("x" * 500, encoding="utf-8")
+    git("add", "large.txt")
+    git("commit", "-m", "initial")
+    tracked.write_text("y" * 500, encoding="utf-8")
+    for index in range(20):
+        (workspace / f"untracked-{index:02d}.txt").write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(provenance, "_MAX_STATUS_BYTES", 64)
+    monkeypatch.setattr(provenance, "_MAX_DIFF_BYTES", 64)
+    result = collect_workspace_provenance(workspace)
+
+    assert result["status"] == "partial"
+    assert result["snapshot_complete"] is False
+    assert result["diff_complete"] is False
+    assert result["diff_bytes_hashed"] <= 64
+    assert result["status_bytes_hashed"] <= 64
+    assert result["snapshot_sha256"]
