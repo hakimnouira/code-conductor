@@ -420,6 +420,7 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
             claimed.append({
                 "run_id": run_id,
                 "schedule_id": schedule["schedule_id"],
+                "name": schedule["name"],
                 "workflow": schedule["workflow"],
                 "status": "queued",
                 "task_id": "",
