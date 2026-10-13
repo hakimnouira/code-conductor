@@ -26,7 +26,14 @@ def test_acceptance_criteria_require_passing_automated_evidence():
 
     passed = evaluate_completion_gate(
         request,
-        [{"kind": "automated_tests", "status": "passed", "details": {"exit_code": 0}}],
+        [
+            {"kind": "automated_tests", "status": "passed", "details": {"exit_code": 0}},
+            {
+                "kind": "workspace_provenance",
+                "status": "captured",
+                "details": {"snapshot_complete": True, "snapshot_sha256": "abc123"},
+            },
+        ],
         "passed",
     )
     assert passed["passed"] is True
