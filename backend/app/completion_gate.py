@@ -17,6 +17,12 @@ def evaluate_completion_gate(request: Any, evidence: list[dict[str, Any]], verif
 
     failures: list[str] = []
     required_checks: list[str] = []
+    provenance_item = latest.get("workspace_provenance")
+    provenance_details = (
+        provenance_item.get("details")
+        if provenance_item is not None and isinstance(provenance_item.get("details"), dict)
+        else {}
+    )
     verification_requested = bool(
         getattr(request, "auto_verify", False)
         or getattr(request, "acceptance_criteria", [])
@@ -25,17 +31,14 @@ def evaluate_completion_gate(request: Any, evidence: list[dict[str, Any]], verif
 
     if verification_requested:
         required_checks.append("workspace_provenance")
-        provenance = latest.get("workspace_provenance")
-        if provenance is None:
+        if provenance_item is None:
             failures.append("workspace_provenance_evidence_missing")
         else:
-            details = provenance.get("details")
-            details = details if isinstance(details, dict) else {}
-            if provenance.get("status") != "captured":
+            if provenance_item.get("status") != "captured":
                 failures.append("workspace_provenance_not_captured")
-            if details.get("snapshot_complete") is not True:
+            if provenance_details.get("snapshot_complete") is not True:
                 failures.append("workspace_snapshot_incomplete")
-            if not details.get("snapshot_sha256"):
+            if not provenance_details.get("snapshot_sha256"):
                 failures.append("workspace_snapshot_fingerprint_missing")
 
     if bool(getattr(request, "auto_verify", False) or getattr(request, "acceptance_criteria", [])):
@@ -72,4 +75,10 @@ def evaluate_completion_gate(request: Any, evidence: list[dict[str, Any]], verif
         "passed": not failures,
         "required_checks": required_checks,
         "failures": failures,
+        # Include the fingerprint in the gate evidence before the terminal event is
+        # emitted, so clients never observe a "completed" event without its snapshot.
+        "workspace_provenance_status": provenance_item.get("status") if provenance_item else None,
+        "workspace_snapshot_sha256": provenance_details.get("snapshot_sha256"),
+        "workspace_snapshot_complete": provenance_details.get("snapshot_complete", False),
+        "workspace_head_commit": provenance_details.get("head_commit"),
     }
