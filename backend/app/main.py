@@ -721,6 +721,33 @@ async def get_browser_verification_artifact(task_id: str, _: str = Depends(requi
     )
 
 
+@app.get("/tasks/{task_id}/event-history")
+async def get_task_event_history(
+    task_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=1000),
+    _: str = Depends(require_bearer_token),
+):
+    """Return persisted task events as JSON so completed history can be rehydrated."""
+    if task_id not in _tasks:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    result = []
+    rows = events_after(task_id, after_event_id=after, limit=limit)
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+            if isinstance(payload, dict):
+                payload["event_id"] = int(row["event_id"])
+                result.append(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return {
+        "task_id": task_id,
+        "events": result,
+        "next_cursor": result[-1]["event_id"] if result else after,
+    }
+
+
 @app.get("/tasks/{task_id}/events")
 async def stream_task_events(
     task_id: str,
