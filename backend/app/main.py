@@ -159,10 +159,12 @@ class TaskRecord:
         try:
             root = Path(self.request.workspace_path).resolve()
             artifact_dir = root / ".code-conductor" / "artifacts" / self.task_id
-            artifact_dir.mkdir(parents=True, exist_ok=True)
+            # Resolve before creating anything: an existing symlink must not redirect
+            # directory creation outside the selected workspace.
             resolved_dir = artifact_dir.resolve()
             if not resolved_dir.is_relative_to(root):
                 raise ValueError("Evidence artifact directory escapes the selected workspace.")
+            resolved_dir.mkdir(parents=True, exist_ok=True)
             manifest = {
                 "schema_version": 1,
                 "task_id": self.task_id,
