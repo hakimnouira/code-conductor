@@ -18,7 +18,7 @@ def evaluate_completion_gate(request: Any, evidence: list[dict[str, Any]], verif
     failures: list[str] = []
     required_checks: list[str] = []
 
-    if bool(getattr(request, "auto_verify", False)):
+    if bool(getattr(request, "auto_verify", False) or getattr(request, "acceptance_criteria", [])):
         test_item = latest.get("automated_tests")
         build_item = latest.get("build")
         if test_item is None and build_item is None:
