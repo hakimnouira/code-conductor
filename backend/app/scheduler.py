@@ -17,6 +17,7 @@ from app.notifications import notify_schedule_outcome
 from app.task_store import (
     claim_due_schedules,
     get_incomplete_schedule_runs,
+    is_scheduler_paused,
     list_schedule_runs,
     update_schedule,
     update_schedule_run,
@@ -40,9 +41,14 @@ def get_scheduler_diagnostics() -> dict[str, Any]:
         and age is not None
         and age <= max(30.0, _scheduler_poll_seconds * 3.0)
     )
+    try:
+        paused: bool | None = is_scheduler_paused()
+    except Exception:
+        paused = None
     return {
         "status": "healthy" if healthy else ("stale" if _scheduler_running else "stopped"),
         "running": _scheduler_running,
+        "paused": paused,
         "started_at": _scheduler_started_at,
         "last_tick_at": _scheduler_last_tick_at,
         "last_tick_age_seconds": round(age, 2) if age is not None else None,
@@ -65,6 +71,14 @@ async def _monitor_run(
 
     while not stop_event.is_set():
         if not task_id:
+            # A global pause prevents new dispatches but leaves existing task monitors
+            # alive. The durable run stays pending until an operator resumes schedules.
+            if is_scheduler_paused():
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=_scheduler_poll_seconds)
+                    return
+                except asyncio.TimeoutError:
+                    continue
             # Reuse the same attempt key when a dispatch response is lost. A backend
             # restart after task persistence but before saving task_id must not spawn
             # a second provider task.
@@ -200,8 +214,9 @@ async def scheduler_loop(
                 # during startup must not permanently disable autonomous workflows.
                 for run in get_incomplete_schedule_runs():
                     attach(run)
-                for run in claim_due_schedules(time.time(), limit=20):
-                    attach(run)
+                if not is_scheduler_paused():
+                    for run in claim_due_schedules(time.time(), limit=20):
+                        attach(run)
                 for run in get_incomplete_schedule_runs():
                     attach(run)
             except asyncio.CancelledError:
