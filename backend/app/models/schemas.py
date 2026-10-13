@@ -1,7 +1,7 @@
 import time
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class AgentId(str, Enum):
     AUTO = "auto"
@@ -60,6 +60,12 @@ class TaskCreateRequest(BaseModel):
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
 
+    @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
+    @classmethod
+    def bound_browser_assertion_values(cls, values: list[str]) -> list[str]:
+        return [value.strip()[:500] for value in values if value.strip()][:20]
+
+
 class WorkflowPresetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     prompt: str = Field(min_length=1, max_length=20000)
@@ -70,6 +76,11 @@ class WorkflowPresetRequest(BaseModel):
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
+    @classmethod
+    def bound_browser_assertion_values(cls, values: list[str]) -> list[str]:
+        return [value.strip()[:500] for value in values if value.strip()][:20]
 
 
 class WorkflowPresetResponse(BaseModel):
