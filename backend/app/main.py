@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import sys
 import time
@@ -115,6 +116,10 @@ class TaskRecord:
         self.task_id = task_id
         self.request = request
         self.agent_id = agent_id
+        self.request_fingerprint = str(
+            (restored or {}).get("request_fingerprint")
+            or hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
+        )
         self._status = TaskStatus.PENDING
         self.created_at = time.time()
         self.started_at: float | None = None
@@ -205,6 +210,7 @@ class TaskRecord:
             "task_id": self.task_id,
             "status": self.status.value,
             "agent_id": self.agent_id,
+            "request_fingerprint": self.request_fingerprint,
             "prompt": self.request.prompt,
             "workspace_path": self.request.workspace_path,
             "created_at": self.created_at,
@@ -257,6 +263,7 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
     request = TaskCreateRequest(
         prompt=str(workflow.get("prompt") or ""),
         agent_id=str(workflow.get("agent_id") or "auto"),
+        idempotency_key=str(workflow.get("_code_conductor_idempotency_key") or "") or None,
         workspace_path=str(workflow.get("workspace_path") or "") or None,
         auto_verify=bool(workflow.get("auto_verify", False)),
         browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
@@ -367,15 +374,9 @@ async def list_agents(_: str = Depends(require_bearer_token)):
 async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
     if request.permission_mode == "god" and not request.god_mode_confirmed:
         raise HTTPException(status_code=400, detail="God Mode requires explicit confirmation in the task request.")
-    registry = get_agent_registry()
-    adapter = await registry.resolve_agent(request.agent_id, request.prompt)
-    if not adapter:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
-        )
 
-    # Validate workspace path security containment
+    # Validate and canonicalize the workspace before computing an idempotency
+    # fingerprint, so equivalent requests resolve to the same task identity.
     try:
         validated_ws = validate_workspace_path(
             request.workspace_path,
@@ -388,7 +389,44 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
             detail=f"Invalid workspace path: {str(e)}",
         )
 
-    task_id = f"task-{uuid.uuid4().hex[:8]}"
+    request_fingerprint = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
+    task_id = (
+        "task-" + hashlib.sha256(request.idempotency_key.encode("utf-8")).hexdigest()[:16]
+        if request.idempotency_key
+        else f"task-{uuid.uuid4().hex[:8]}"
+    )
+
+    if request.idempotency_key:
+        # Restore the persisted task before deciding whether this dispatch is new.
+        # This closes the crash window between task creation and saving task_id on
+        # the scheduled-run record.
+        if task_id not in _tasks:
+            await _restore_task_records()
+        existing = _tasks.get(task_id)
+        if existing:
+            if existing.request_fingerprint != request_fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency key was already used with a different task request.",
+                )
+            return TaskResponse(
+                task_id=existing.task_id,
+                status=existing.status,
+                agent_id=existing.agent_id,
+                prompt=request.prompt,
+                created_at=existing.created_at,
+                message="Returning the existing task for this idempotency key.",
+                workspace_path=existing.request.workspace_path,
+            )
+
+    registry = get_agent_registry()
+    adapter = await registry.resolve_agent(request.agent_id, request.prompt)
+    if not adapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
+        )
+
     record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
     _tasks[task_id] = record
 
