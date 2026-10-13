@@ -672,6 +672,42 @@ async def _browser_verification_gate(record: TaskRecord, attempts: int) -> tuple
     return "failed", attempts
 
 
+class TaskExecutionTimeout(TimeoutError):
+    """Raised when a task exceeds its configured wall-clock deadline."""
+
+
+def _task_timeout_seconds() -> int:
+    try:
+        configured = int(os.getenv("CODE_CONDUCTOR_TASK_TIMEOUT_SECONDS", "3600"))
+    except (TypeError, ValueError):
+        configured = 3600
+    return min(max(configured, 60), 86400)
+
+
+async def _await_task_deadline(awaitable, deadline: float, timeout_seconds: int):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TaskExecutionTimeout(
+            f"Task exceeded its {timeout_seconds}-second execution deadline."
+        )
+    try:
+        return await asyncio.wait_for(awaitable, timeout=remaining)
+    except asyncio.TimeoutError as exc:
+        raise TaskExecutionTimeout(
+            f"Task exceeded its {timeout_seconds}-second execution deadline."
+        ) from exc
+
+
+async def _stream_task_events_with_deadline(adapter, record: TaskRecord, deadline: float, timeout_seconds: int):
+    iterator = adapter.stream_task(record.task_id, record.request).__aiter__()
+    while True:
+        try:
+            event = await _await_task_deadline(iterator.__anext__(), deadline, timeout_seconds)
+        except StopAsyncIteration:
+            return
+        yield event
+
+
 async def _run_task_pipeline(record: TaskRecord, adapter):
     # Status is authoritative: a provider stream must never resurrect a cancelled
     # task or leave a task permanently RUNNING when it closes without a terminal event.
@@ -680,6 +716,8 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         return
     record.status = TaskStatus.RUNNING
     record.started_at = time.time()
+    timeout_seconds = _task_timeout_seconds()
+    deadline = time.monotonic() + timeout_seconds
     terminal_event_seen = False
     try:
         if record.request.github_research:
@@ -692,7 +730,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             }
             await record.event_queue.put(json.dumps(research_event))
             try:
-                research = await research_github(record.request.prompt, record.request.workspace_path, clone_best=True)
+                research = await _await_task_deadline(\n                    research_github(record.request.prompt, record.request.workspace_path, clone_best=True),\n                    deadline, timeout_seconds,\n                )
                 status_text = research.get("status", "unavailable")
                 repos = research.get("repositories", [])
                 if status_text == "complete" and repos:
@@ -719,6 +757,8 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                         "data": {"phase": "github_research", "status": "unavailable", "query": research.get("query")},
                     }
                 await record.event_queue.put(json.dumps(research_event))
+            except TaskExecutionTimeout:
+                raise
             except Exception as research_error:
                 await record.event_queue.put(json.dumps({
                     "task_id": record.task_id, "event_type": "log",
@@ -742,7 +782,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         browser_verification_attempts = 0
         while True:
             terminal_event = None
-            async for event in adapter.stream_task(record.task_id, record.request):
+            async for event in _stream_task_events_with_deadline(adapter, record, deadline, timeout_seconds):
                 if event.event_type == EventType.COMPLETED:
                     # Delay success until requested verification has completed.
                     terminal_event = event
@@ -766,8 +806,9 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 break
 
             if not record.request.auto_verify:
-                browser_action, browser_verification_attempts = await _browser_verification_gate(
-                    record, browser_verification_attempts
+                browser_action, browser_verification_attempts = await _await_task_deadline(
+                    _browser_verification_gate(record, browser_verification_attempts),
+                    deadline, timeout_seconds,
                 )
                 if browser_action == "retry":
                     continue
@@ -810,7 +851,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 break
 
             verification_attempt += 1
-            result = await runner.run_tests(command_key=command_key, timeout_seconds=120)
+            result = await _await_task_deadline(\n                runner.run_tests(command_key=command_key, timeout_seconds=120),\n                deadline, timeout_seconds,\n            )
             # Cancellation can arrive while the test subprocess is running. Do not
             # emit stale verification evidence or let this pipeline overwrite it.
             if record.status == TaskStatus.CANCELLED:
@@ -834,7 +875,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
             verification_command = command_key
             build_key = runner.discover_build_runner() if command_key != "npm_build" else None
             if result.passed and build_key:
-                build_result = await runner.run_tests(command_key=build_key, timeout_seconds=120)
+                build_result = await _await_task_deadline(\n                    runner.run_tests(command_key=build_key, timeout_seconds=120),\n                    deadline, timeout_seconds,\n                )
                 if record.status == TaskStatus.CANCELLED:
                     break
                 record.add_evidence(
@@ -930,6 +971,21 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         record.status = TaskStatus.CANCELLED
         record.completed_at = time.time()
         raise
+    except TaskExecutionTimeout as e:
+        record.status = TaskStatus.FAILED
+        record.error = str(e)[:1000]
+        record.completed_at = time.time()
+        record.add_evidence(
+            "execution_timeout", "failed", record.error,
+            details={"timeout_seconds": timeout_seconds},
+        )
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "error",
+            "text": record.error,
+            "timestamp": record.completed_at,
+            "data": {"reason": "task_timeout", "timeout_seconds": timeout_seconds},
+        }))
     except Exception as e:
         if record.status != TaskStatus.CANCELLED:
             record.status = TaskStatus.FAILED
