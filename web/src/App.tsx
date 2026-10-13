@@ -12,7 +12,7 @@ type Task = { task_id: string; status: string; agent_id: string; prompt?: string
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
 type BrowserActionStep = { action: "click" | "fill" | "check" | "uncheck" | "select_option" | "press" | "wait_for_selector"; selector: string; value?: string; timeout_ms?: number };
 type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; browser_required_text?: string[]; browser_forbidden_text?: string[]; browser_visible_selectors?: string[]; browser_hidden_selectors?: string[]; browser_steps?: BrowserActionStep[]; created_at: number; updated_at: number };
-type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
+type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; schedule_type?: "interval" | "cron"; cron_expression?: string; timezone?: string; misfire_policy?: "skip" | "run_once"; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
 type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
@@ -184,6 +184,10 @@ export default function App() {
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);
   const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);
+  const [scheduleMode, setScheduleMode] = useState<"interval" | "cron">("interval");
+  const [scheduleCron, setScheduleCron] = useState("0 9 * * 1-5");
+  const [scheduleTimezone, setScheduleTimezone] = useState("Africa/Tunis");
+  const [scheduleMisfirePolicy, setScheduleMisfirePolicy] = useState<"skip" | "run_once">("run_once");
   const [scheduleBusyId, setScheduleBusyId] = useState("");
   const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");
   const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
@@ -778,6 +782,9 @@ export default function App() {
         body: JSON.stringify({
           workflow_id: workflow.workflow_id,
           interval_minutes: scheduleIntervalMinutes,
+          cron_expression: scheduleMode === "cron" ? scheduleCron.trim() : null,
+          timezone: scheduleTimezone,
+          misfire_policy: scheduleMisfirePolicy,
           max_retries: 1,
           enabled: true,
           workspace_path: workspace || null,
@@ -785,7 +792,9 @@ export default function App() {
       });
       const scheduled = await response.json() as ScheduledWorkflow;
       setScheduledWorkflows(old => [scheduled, ...old.filter(item => item.schedule_id !== scheduled.schedule_id)]);
-      setNotice(`Scheduled "${workflow.name}" every ${scheduleIntervalMinutes} minutes. The backend must be running for scheduled work to execute.`);
+      setNotice(scheduleMode === "cron"
+        ? `Scheduled "${workflow.name}" with cron ${scheduleCron.trim()} (${scheduleTimezone}). The backend must be running for scheduled work to execute.`
+        : `Scheduled "${workflow.name}" every ${scheduleIntervalMinutes} minutes. The backend must be running for scheduled work to execute.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not schedule workflow");
     } finally {
@@ -3252,19 +3261,37 @@ export default function App() {
               <div className="workspace-input-section" style={{ marginTop: "22px" }}>
                 <label className="field-label">
                   <b>Recurring schedules ({scheduledWorkflows.length})</b>
-                  <span>Choose an interval above, then select Schedule on a saved workflow. Schedules and run records persist in the local SQLite database.</span>
+                  <span>Choose an interval or cron expression, then select Schedule on a saved workflow. Schedules and run records persist in the local SQLite database.</span>
                 </label>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
-                  <span style={{ fontSize: "12px", color: "var(--muted)" }}>New schedule interval</span>
-                  <select className="workspace-custom-input" style={{ maxWidth: "220px" }} value={scheduleIntervalMinutes} onChange={e => setScheduleIntervalMinutes(Number(e.target.value))}>
-                    <option value={15}>Every 15 minutes</option>
-                    <option value={60}>Every hour</option>
-                    <option value={360}>Every 6 hours</option>
-                    <option value={720}>Every 12 hours</option>
-                    <option value={1440}>Every day</option>
-                    <option value={10080}>Every week</option>
-                    <option value={43200}>Every 30 days</option>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "12px" }}>
+                  <span style={{ fontSize: "12px", color: "var(--muted)" }}>Schedule type</span>
+                  <select className="workspace-custom-input" style={{ maxWidth: "180px" }} value={scheduleMode} onChange={e => setScheduleMode(e.target.value as "interval" | "cron")}>
+                    <option value="interval">Interval</option>
+                    <option value="cron">Cron expression</option>
                   </select>
+                  {scheduleMode === "interval" ? (
+                    <>
+                      <span style={{ fontSize: "12px", color: "var(--muted)" }}>Every</span>
+                      <select className="workspace-custom-input" style={{ maxWidth: "220px" }} value={scheduleIntervalMinutes} onChange={e => setScheduleIntervalMinutes(Number(e.target.value))}>
+                        <option value={15}>Every 15 minutes</option>
+                        <option value={60}>Every hour</option>
+                        <option value={360}>Every 6 hours</option>
+                        <option value={720}>Every 12 hours</option>
+                        <option value={1440}>Every day</option>
+                        <option value={10080}>Every week</option>
+                        <option value={43200}>Every 30 days</option>
+                      </select>
+                    </>
+                  ) : (
+                    <>
+                      <input className="workspace-custom-input" style={{ maxWidth: "180px" }} aria-label="Cron expression" value={scheduleCron} onChange={e => setScheduleCron(e.target.value)} placeholder="0 9 * * 1-5"/>
+                      <input className="workspace-custom-input" style={{ maxWidth: "180px" }} aria-label="IANA timezone" value={scheduleTimezone} onChange={e => setScheduleTimezone(e.target.value)} placeholder="Africa/Tunis"/>
+                      <select className="workspace-custom-input" style={{ maxWidth: "180px" }} aria-label="Missed schedule policy" value={scheduleMisfirePolicy} onChange={e => setScheduleMisfirePolicy(e.target.value as "skip" | "run_once")}>
+                        <option value="run_once">Run once after downtime</option>
+                        <option value="skip">Skip stale run</option>
+                      </select>
+                    </>
+                  )}
                 </div>
                 {scheduledWorkflows.length === 0 ? <p style={{ color: "var(--muted)" }}>No recurring schedules configured.</p> : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -3273,7 +3300,9 @@ export default function App() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <b>{schedule.name}</b>
                           <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>
-                            Every {schedule.interval_minutes >= 1440 && schedule.interval_minutes % 1440 === 0 ? `${schedule.interval_minutes / 1440} day(s)` : schedule.interval_minutes >= 60 && schedule.interval_minutes % 60 === 0 ? `${schedule.interval_minutes / 60} hour(s)` : `${schedule.interval_minutes} minutes`} · retries {schedule.max_retries}
+                            {schedule.schedule_type === "cron"
+                              ? `Cron ${schedule.cron_expression} · ${schedule.timezone || "UTC"} · missed runs: ${schedule.misfire_policy || "run_once"}`
+                              : `Every ${schedule.interval_minutes >= 1440 && schedule.interval_minutes % 1440 === 0 ? `${schedule.interval_minutes / 1440} day(s)` : schedule.interval_minutes >= 60 && schedule.interval_minutes % 60 === 0 ? `${schedule.interval_minutes / 60} hour(s)` : `${schedule.interval_minutes} minutes`}`} · retries {schedule.max_retries}
                           </p>
                           <span style={{ color: "var(--muted)", fontSize: "11px" }}>
                             {schedule.enabled ? "Enabled" : "Paused"} · Next: {new Date(schedule.next_run_at * 1000).toLocaleString()} · Last run: {schedule.last_status || "Never"}{schedule.failure_streak ? ` · failure streak ${schedule.failure_streak}` : ""}

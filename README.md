@@ -265,8 +265,9 @@ The generic connector supports OpenAI-compatible `/chat/completions` endpoints f
 
 ### Recurring workflow scheduler
 Saved workflows can be scheduled from the dashboard's workflow library. Schedules are stored in the local SQLite task database, survive backend restarts, and support:
-- Intervals from 15 minutes to 30 days, pause/resume, and deletion.
-- Bounded retries (0–3) for failed task dispatches or failed task runs.
+- Intervals from 15 minutes to 30 days or five-field cron expressions such as `0 9 * * 1-5`, with an IANA timezone such as `Africa/Tunis`.
+- Explicit missed-run policy: `run_once` collapses downtime into one catch-up run; `skip` drops an occurrence that is more than one configured interval late. All missed occurrences are collapsed rather than replayed as a burst.
+- Pause/resume, deletion, and bounded retries (0–3) for failed task dispatches or failed task runs.
 - Durable run records with status, task ID, attempt count, timestamps, and error details.
 - Startup recovery of queued/running schedule records. Tasks interrupted by a backend restart are marked failed by the task store and can be retried by the scheduler.
 - Dashboard run history, opening the underlying task timeline, and opt-in completion/failure notifications while the dashboard is open.
@@ -275,7 +276,8 @@ The backend must remain running for a scheduled job to fire. This first schedule
 
 API endpoints (Bearer token required):
 - `GET /schedules` — list schedules.
-- `POST /schedules` — create a recurring schedule from `workflow_id`, `interval_minutes`, optional `workspace_path`, `max_retries`, and `enabled`.
+- `POST /schedules` — create a recurring schedule from `workflow_id` and either `interval_minutes` or `cron_expression` plus `timezone`; supports `misfire_policy` (`run_once` or `skip`), optional `workspace_path`, `max_retries`, and `enabled`.
+- Cron expressions use five fields: minute, hour, day-of-month, month, weekday. The scheduler uses IANA timezone data and persists the next UTC occurrence.
 - `PUT /schedules/{schedule_id}` — pause/resume.
 - `DELETE /schedules/{schedule_id}` — remove a schedule (historical run records are retained).
 - `GET /schedules/{schedule_id}/runs` — inspect recent runs.

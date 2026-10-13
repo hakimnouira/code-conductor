@@ -70,6 +70,7 @@ from app.antigravity_history import router as antigravity_history_router
 from app.browser_session import router as browser_session_router
 from app.browser_automation import run_browser_automation
 from app.scheduler import scheduler_loop
+from app.cron_schedule import CronExpressionError, next_cron_occurrence
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
@@ -832,6 +833,16 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "workspace_path": workspace_path,
     }
     now = time.time()
+    cron_expression = (req.cron_expression or "").strip()
+    schedule_type = "cron" if cron_expression else "interval"
+    try:
+        next_run_at = (
+            next_cron_occurrence(cron_expression, req.timezone, now)
+            if schedule_type == "cron"
+            else now + req.interval_minutes * 60
+        )
+    except CronExpressionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     item = create_schedule({
         "schedule_id": uuid.uuid4().hex,
         "workflow_id": req.workflow_id,
@@ -839,8 +850,12 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "name": workflow["name"],
         "workspace_path": workspace_path,
         "interval_minutes": req.interval_minutes,
+        "schedule_type": schedule_type,
+        "cron_expression": cron_expression,
+        "timezone": req.timezone,
+        "misfire_policy": req.misfire_policy,
         "enabled": req.enabled,
-        "next_run_at": now + req.interval_minutes * 60,
+        "next_run_at": next_run_at,
         "max_retries": req.max_retries,
         "created_at": now,
         "updated_at": now,
@@ -854,7 +869,17 @@ async def set_scheduled_workflow(schedule_id: str, req: ScheduleUpdateRequest, _
     item = get_schedule(schedule_id)
     if not item:
         raise HTTPException(status_code=404, detail="Schedule not found.")
-    next_run = time.time() + int(item["interval_minutes"]) * 60 if req.enabled else None
+    next_run = None
+    if req.enabled:
+        now = time.time()
+        try:
+            next_run = (
+                next_cron_occurrence(item["cron_expression"], item["timezone"], now)
+                if item.get("schedule_type") == "cron"
+                else now + int(item["interval_minutes"]) * 60
+            )
+        except CronExpressionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     update_schedule(schedule_id, enabled=req.enabled, next_run_at=next_run)
     return get_schedule(schedule_id)
 

@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.cron_schedule import next_cron_occurrence
+
 
 def _database_path() -> Path:
     override = os.environ.get("CODE_CONDUCTOR_TASK_DB", "").strip()
@@ -60,9 +62,25 @@ def _connect() -> sqlite3.Connection:
             last_status TEXT NOT NULL DEFAULT '',
             last_task_id TEXT NOT NULL DEFAULT '',
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            schedule_type TEXT NOT NULL DEFAULT 'interval',
+            cron_expression TEXT NOT NULL DEFAULT '',
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            misfire_policy TEXT NOT NULL DEFAULT 'run_once'
         )"""
     )
+    # Migrate databases created before cron/timezone scheduling was introduced.
+    schedule_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(scheduled_workflows)").fetchall()
+    }
+    for column, definition in (
+        ("schedule_type", "TEXT NOT NULL DEFAULT 'interval'"),
+        ("cron_expression", "TEXT NOT NULL DEFAULT ''"),
+        ("timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
+        ("misfire_policy", "TEXT NOT NULL DEFAULT 'run_once'"),
+    ):
+        if column not in schedule_columns:
+            connection.execute(f"ALTER TABLE scheduled_workflows ADD COLUMN {column} {definition}")
     connection.execute(
         """CREATE TABLE IF NOT EXISTS schedule_runs (
             run_id TEXT PRIMARY KEY,
@@ -249,8 +267,9 @@ def create_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
             """INSERT INTO scheduled_workflows(
                 schedule_id, workflow_id, workflow_json, name, workspace_path,
                 interval_minutes, enabled, next_run_at, max_retries,
-                failure_streak, last_run_at, last_status, last_task_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, '', '', ?, ?)""",
+                failure_streak, last_run_at, last_status, last_task_id, created_at, updated_at,
+                schedule_type, cron_expression, timezone, misfire_policy
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, '', '', ?, ?, ?, ?, ?, ?)""",
             (
                 schedule["schedule_id"], schedule["workflow_id"],
                 json.dumps(schedule["workflow"], ensure_ascii=False),
@@ -258,6 +277,8 @@ def create_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
                 int(schedule["interval_minutes"]), int(bool(schedule.get("enabled", True))),
                 float(schedule["next_run_at"]), int(schedule.get("max_retries", 1)),
                 float(schedule["created_at"]), float(schedule["updated_at"]),
+                schedule.get("schedule_type", "interval"), schedule.get("cron_expression") or "",
+                schedule.get("timezone", "UTC"), schedule.get("misfire_policy", "run_once"),
             ),
         )
     return get_schedule(schedule["schedule_id"]) or dict(schedule)
@@ -350,17 +371,38 @@ def claim_due_schedules(now: float, limit: int = 20) -> list[dict[str, Any]]:
                 "SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND status IN ('queued', 'running') LIMIT 1",
                 (schedule["schedule_id"],),
             ).fetchone()
+            scheduled_for = float(schedule["next_run_at"])
+            overdue_by = max(0.0, now - scheduled_for)
+            if schedule.get("schedule_type") == "cron":
+                next_scheduled = next_cron_occurrence(
+                    schedule["cron_expression"], schedule["timezone"], scheduled_for
+                )
+                interval_seconds = max(60.0, next_scheduled - scheduled_for)
+                next_run = next_cron_occurrence(
+                    schedule["cron_expression"], schedule["timezone"], now
+                )
+            else:
+                interval_seconds = int(schedule["interval_minutes"]) * 60
+                next_run = now + interval_seconds
             if active:
-                # Never overlap executions of one workflow. If its previous run is
-                # still active when another tick is due, skip that missed occurrence.
+                # Never overlap executions of one workflow; move the next occurrence
+                # forward rather than accumulating a backlog.
                 db.execute(
                     "UPDATE scheduled_workflows SET next_run_at = ?, updated_at = ? WHERE schedule_id = ?",
-                    (now + int(schedule["interval_minutes"]) * 60, now, schedule["schedule_id"]),
+                    (next_run, now, schedule["schedule_id"]),
+                )
+                continue
+            if schedule.get("misfire_policy", "run_once") == "skip" and overdue_by > interval_seconds:
+                # Explicit skip policy: if the scheduler was down for more than one
+                # interval, record no stale run and advance to the next future tick.
+                db.execute(
+                    "UPDATE scheduled_workflows SET next_run_at = ?, updated_at = ? WHERE schedule_id = ?",
+                    (next_run, now, schedule["schedule_id"]),
                 )
                 continue
             run_id = uuid.uuid4().hex
-            # Skip missed intervals instead of flooding the machine after a long shutdown.
-            next_run = now + int(schedule["interval_minutes"]) * 60
+            # run_once executes a single overdue occurrence; all missed occurrences
+            # are collapsed into one run and the next future occurrence is persisted.
             db.execute(
                 "UPDATE scheduled_workflows SET next_run_at = ?, updated_at = ? WHERE schedule_id = ?",
                 (next_run, now, schedule["schedule_id"]),
