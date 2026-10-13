@@ -6,7 +6,11 @@ if (-not (Test-Path $runner -PathType Leaf)) {
     throw "Background backend runner not found: $runner"
 }
 
-$powerShell = Join-Path $PSHOME "powershell.exe"
+$powerShellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
+if (-not $powerShellCommand) {
+    $powerShellCommand = Get-Command pwsh.exe -ErrorAction Stop
+}
+$powerShell = $powerShellCommand.Source
 $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $runner + '"'
 $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
