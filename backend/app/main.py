@@ -155,7 +155,8 @@ class TaskRecord:
             self.evidence = [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
             self.verification_status = str(restored.get("verification_status") or "not_requested")
         if restored is not None:
-            self._persist()
+            # Restoring history must be read-only; persisting a stale snapshot here
+            # could overwrite a live worker's newer status.
             self.initial_persisted = True
         else:
             # INSERT OR IGNORE makes the first durable writer authoritative when
