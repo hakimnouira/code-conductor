@@ -82,16 +82,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 .app-shell {
-  min-height: 100vh; display: flex;
+  height: 100vh; max-height: 100vh; display: flex; overflow: hidden;
   background: var(--bg-ambient);
   transition: background 0.25s ease;
 }
 .rail {
-  width: 250px; flex: 0 0 250px;
+  width: 250px; flex: 0 0 250px; height: 100vh; max-height: 100vh; overflow-y: auto;
   background: var(--rail-bg);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
-  padding: 20px 14px 14px; min-height: 100vh;
+  padding: 20px 14px 14px;
   transition: background-color 0.25s ease, border-color 0.25s ease;
 }
 .brand-lockup { display: flex; align-items: center; gap: 11px; padding: 2px 9px 22px; }
@@ -189,7 +189,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .rail-action:hover { background: var(--panel-2); color: var(--text); }
 
-.chat-shell { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.chat-shell { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; max-height: 100vh; overflow: hidden; }
 .topbar {
   height: 62px; flex: 0 0 62px; border-bottom: 1px solid var(--line);
   display: flex; align-items: center; justify-content: space-between;
@@ -221,14 +221,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .status-chip.connected span { background: var(--green); box-shadow: 0 0 0 3px rgba(107, 219, 180, 0.15); }
 
-.chat-layout { display: flex; flex: 1; min-height: 0; }
+.chat-layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .conversation {
   flex: 1; min-width: 0; display: flex; flex-direction: column;
-  position: relative; height: calc(100vh - 62px); min-height: 620px;
+  position: relative; height: 100%; min-height: 0; overflow: hidden;
 }
 .conversation-scroll {
-  flex: 1; overflow-y: auto; scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin; padding: 30px clamp(18px, 4vw, 62px) 18px;
+  flex: 1; min-height: 0; overflow-y: auto; scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin; padding: 24px clamp(18px, 4vw, 62px) 18px;
 }
 .welcome-state { max-width: 810px; margin: 7vh auto 0; text-align: center; animation: fade-up .5s ease-out; }
 .welcome-orb { height: 96px; width: 96px; position: relative; margin: 0 auto 22px; display: grid; place-items: center; }

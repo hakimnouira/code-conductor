@@ -25,6 +25,8 @@ build/
 *.spec
 *.exe
 .cloak_profile/
+.cloak_browser_profile/
+.cloak_*/
 
 # Local browser verification artifacts (screenshots/log captures)
 **/.code-conductor/artifacts/

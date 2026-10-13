@@ -21,7 +21,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_CDP_PORT = 9222
-DEFAULT_PROFILE_DIR = Path(r"D:\work\code-conductor\.cloak_profile")
+DEFAULT_PROFILE_DIR = Path(r"D:\work\code-conductor\.cloak_browser_profile")
 
 CLOAK_CANDIDATE_PATHS = [
     Path(r"D:\Downloads\cloakbrowser-windows-x64\chrome.exe"),
@@ -62,10 +62,17 @@ async def launch_cloakbrowser(
 ) -> dict[str, Any]:
     """Launches CloakBrowser with persistent profile and remote debugging enabled."""
     if await is_cdp_connected(port):
+        if open_url and open_url != "about:blank":
+            try:
+                import urllib.parse
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    await client.put(f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(open_url, safe=':/?=&%')}")
+            except Exception as tab_err:
+                logger.warning(f"Failed to open tab in existing browser: {tab_err}")
         return {
             "status": "already_running",
             "endpoint": f"http://127.0.0.1:{port}",
-            "message": "Browser is already connected and running with remote debugging enabled.",
+            "message": f"CloakBrowser is running. Opened tab for {open_url}." if open_url != "about:blank" else "CloakBrowser is connected and running with remote debugging enabled.",
         }
 
     exe = find_browser_executable()

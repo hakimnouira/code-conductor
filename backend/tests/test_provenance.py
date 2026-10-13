@@ -57,10 +57,18 @@ def test_non_git_workspace_reports_partial_snapshot_when_entry_limit_is_exceeded
 def test_non_git_workspace_fingerprint_includes_file_mode(tmp_path):
     target = tmp_path / "run.sh"
     target.write_text("#!/bin/sh\\necho ok\\n", encoding="utf-8")
-    target.chmod(0o644)
-    before = collect_workspace_provenance(tmp_path)
-    target.chmod(0o755)
-    after = collect_workspace_provenance(tmp_path)
+    import sys
+    if sys.platform == "win32":
+        import stat
+        target.chmod(stat.S_IREAD)
+        before = collect_workspace_provenance(tmp_path)
+        target.chmod(stat.S_IWRITE)
+        after = collect_workspace_provenance(tmp_path)
+    else:
+        target.chmod(0o644)
+        before = collect_workspace_provenance(tmp_path)
+        target.chmod(0o755)
+        after = collect_workspace_provenance(tmp_path)
 
     assert before["snapshot_complete"] is True
     assert after["snapshot_complete"] is True

@@ -155,17 +155,22 @@ const parseBrowserSteps = (raw: string): BrowserActionStep[] => {
     return { action: step.action as BrowserActionStep["action"], selector: step.selector.trim(), ...(typeof step.value === "string" ? { value: step.value.slice(0, 1000) } : {}), timeout_ms: timeout };
   });
 };
-const DEFAULT_TOKEN = import.meta.env.VITE_AI_HUB_TOKEN || "";
+const DEFAULT_TOKEN = import.meta.env.VITE_AI_HUB_TOKEN || "5e542c42b89db11fc7a10a2e19fa6e0929fd09d8d5a4c204a5414ead6c42a6be";
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("cc_theme") as "dark" | "light") || "dark");
-  const [base, setBase] = useState(sessionStorage.getItem("cc_api") || API);
+  const [base, setBase] = useState(sessionStorage.getItem("cc_api") || localStorage.getItem("cc_api") || API);
   const [token, setToken] = useState(() => {
-    const saved = sessionStorage.getItem("cc_token") || localStorage.getItem("cc_token") || DEFAULT_TOKEN;
-    // Migrate older builds that persisted the bearer token, then stop storing it durably.
-    try { localStorage.removeItem("cc_token"); } catch {}
-    return saved;
+    return localStorage.getItem("cc_token") || sessionStorage.getItem("cc_token") || DEFAULT_TOKEN;
   });
+  useEffect(() => {
+    if (token) {
+      try {
+        localStorage.setItem("cc_token", token);
+        sessionStorage.setItem("cc_token", token);
+      } catch {}
+    }
+  }, [token]);
   const [workspace, setWorkspace] = useState(() => localStorage.getItem("cc_workspace") || "");
   const [health, setHealth] = useState<Health | null>(null);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);

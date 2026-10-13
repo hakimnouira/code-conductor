@@ -44,18 +44,18 @@ class AntigravityAdapter(BaseAgentAdapter):
             located = shutil.which(self._configured_executable)
             if located:
                 return located
-        found = shutil.which("agy") or shutil.which("agy.cmd") or shutil.which("agy.exe")
-        if found:
-            return found
-        # Check workspace scripts and environment
+        # Check workspace bridge scripts first to avoid unconfigured external binaries
         repo_root = Path(__file__).resolve().parents[3]
         candidates = [
-            repo_root / ".venv" / "Scripts" / "agy.cmd",
             repo_root / "scripts" / "agy.cmd",
+            repo_root / ".venv" / "Scripts" / "agy.cmd",
         ]
         for c in candidates:
             if c.exists():
                 return str(c)
+        found = shutil.which("agy") or shutil.which("agy.cmd") or shutil.which("agy.exe")
+        if found:
+            return found
         return None
 
     async def check_availability(self) -> tuple[AvailabilityState, str]:
@@ -138,9 +138,12 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         cancel_event = asyncio.Event()
         self._cancel[task_id] = cancel_event
+        proc_env = os.environ.copy()
+        if "ANTIGRAVITY_LS_ADDRESS" not in proc_env:
+            proc_env["ANTIGRAVITY_LS_ADDRESS"] = "localhost:54182"
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(workspace), stdin=asyncio.subprocess.PIPE,
+                *cmd, cwd=str(workspace), env=proc_env, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             self._active[task_id] = proc

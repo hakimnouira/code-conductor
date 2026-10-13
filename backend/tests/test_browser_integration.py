@@ -27,6 +27,11 @@ class _VerificationHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"{}")
             return
 
+        if self.path in ("/favicon.ico", "/favicon.png"):
+            self.send_response(204)
+            self.end_headers()
+            return
+
         if self.path != "/":
             self.send_response(404)
             self.end_headers()
