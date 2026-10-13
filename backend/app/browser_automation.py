@@ -270,6 +270,22 @@ async def run_browser_automation(
             except Exception:
                 pass
         action_results = await execute_browser_steps(page, steps or [])
+        if action_results:
+            # Assertions and screenshots must inspect the final state after clicks,
+            # form submissions, and SPA transitions—not the pre-action DOM snapshot.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=2500)
+            except Exception:
+                # Persistent polling and WebSockets are common in SPAs.
+                pass
+            try:
+                await page.wait_for_timeout(150)
+                actual_url = page.url
+                title = await page.title()
+                ready_state = await page.evaluate("document.readyState")
+                body_text = await page.locator("body").inner_text(timeout=3000)
+            except Exception as exc:
+                page_errors.append(f"Post-interaction page inspection failed: {str(exc)[:500]}")
 
         selector_visibility: dict[str, dict[str, Any]] = {}
         for selector in dict.fromkeys(visible_selectors + hidden_selectors):
