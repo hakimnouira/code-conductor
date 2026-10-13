@@ -119,3 +119,26 @@ async def test_runtime_diagnostics_are_authenticated_and_secret_safe(auth_header
         serialized = json.dumps(data)
         assert "prompt" not in serialized.lower()
         assert "api_key" not in serialized.lower()
+
+
+
+@pytest.mark.asyncio
+async def test_global_schedule_pause_and_resume_are_durable(auth_headers, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "runtime-controls.sqlite3"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.post("/scheduler/pause")
+        assert unauthorized.status_code == 401
+
+        paused = await client.post("/scheduler/pause", headers=auth_headers)
+        assert paused.status_code == 200
+        assert paused.json()["paused"] is True
+
+        diagnostics = await client.get("/diagnostics", headers=auth_headers)
+        assert diagnostics.status_code == 200
+        assert diagnostics.json()["scheduler"]["paused"] is True
+
+        resumed = await client.post("/scheduler/resume", headers=auth_headers)
+        assert resumed.status_code == 200
+        assert resumed.json()["paused"] is False
+        diagnostics = await client.get("/diagnostics", headers=auth_headers)
+        assert diagnostics.json()["scheduler"]["paused"] is False

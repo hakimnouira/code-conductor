@@ -81,6 +81,7 @@ from app.git_worktrees import router as git_worktrees_router
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
     get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
+    set_scheduler_paused,
     list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
     queue_schedule_run_now,
 )
@@ -1037,6 +1038,21 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
+
+@app.post("/scheduler/pause")
+async def pause_scheduled_dispatch(_: str = Depends(require_bearer_token)):
+    set_scheduler_paused(True)
+    return {
+        "paused": True,
+        "message": "New scheduled runs are paused. Already-dispatched tasks continue.",
+    }
+
+
+@app.post("/scheduler/resume")
+async def resume_scheduled_dispatch(_: str = Depends(require_bearer_token)):
+    set_scheduler_paused(False)
+    return {"paused": False, "message": "Scheduled dispatch is resumed."}
+
 
 @app.get("/schedules", response_model=list[ScheduleResponse])
 async def get_schedules(limit: int = Query(default=100, ge=1, le=200), _: str = Depends(require_bearer_token)):

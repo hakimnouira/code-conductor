@@ -284,3 +284,40 @@ async def test_uncertain_dispatch_retry_reuses_same_idempotency_key(tmp_path, mo
     history = list_schedule_runs("schedule-idempotency")
     assert history[0]["status"] == "completed"
     assert history[0]["attempt"] == 1
+
+
+
+@pytest.mark.asyncio
+async def test_global_pause_defers_new_dispatch_until_resumed(tmp_path, monkeypatch):
+    import asyncio
+    from app.scheduler import _monitor_run
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "scheduler-pause.sqlite3"))
+    monkeypatch.setattr("app.scheduler._scheduler_poll_seconds", 0.01)
+    pause_states = iter([True, False])
+    monkeypatch.setattr("app.scheduler.is_scheduler_paused", lambda: next(pause_states, False))
+
+    now = time.time()
+    create_schedule({
+        "schedule_id": "schedule-pause-test", "workflow_id": "workflow-pause-test",
+        "workflow": {"prompt": "Run a task", "agent_id": "mock", "workspace_path": ""},
+        "name": "Pause test", "workspace_path": "", "interval_minutes": 15,
+        "enabled": True, "next_run_at": now + 900, "max_retries": 0,
+        "created_at": now, "updated_at": now,
+    })
+    run = claim_due_schedules(now + 901)[0]
+    dispatched = []
+
+    async def dispatch(payload):
+        dispatched.append(payload)
+        return "task-after-resume"
+
+    async def status_lookup(task_id):
+        assert task_id == "task-after-resume"
+        return {"status": "completed", "error": None}
+
+    await _monitor_run(run, dispatch, status_lookup, asyncio.Event())
+    assert len(dispatched) == 1
+    assert dispatched[0]["_code_conductor_idempotency_key"].startswith(
+        "code-conductor:schedule:"
+    )
