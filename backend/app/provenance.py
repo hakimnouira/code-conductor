@@ -103,6 +103,92 @@ def _git_bounded_capture(
     return bytes(captured), complete, returncode, (truncated or timed_out)
 
 
+def _collect_filesystem_provenance(root: Path, captured_at: float) -> dict[str, Any]:
+    """Fingerprint a non-Git workspace without following symlinks or reading unbounded data."""
+    digest = hashlib.sha256()
+    digest.update(b"code-conductor-filesystem-provenance-v1\\0")
+    complete = True
+    scanned_files = 0
+    scanned_bytes = 0
+    scanned_entries = 0
+    stack = [root]
+
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name, reverse=True)
+        except OSError:
+            complete = False
+            digest.update(b"directory_read_error\\0")
+            continue
+
+        for entry in entries:
+            path = Path(entry.path)
+            relative = path.relative_to(root).as_posix()
+            scanned_entries += 1
+            if scanned_entries > _MAX_UNTRACKED_FILES:
+                complete = False
+                digest.update(b"entry_limit_reached\\0")
+                stack.clear()
+                break
+
+            digest.update(b"path\\0")
+            digest.update(relative.encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\\0")
+            try:
+                if entry.is_symlink():
+                    digest.update(b"symlink\\0")
+                    digest.update(os.fsencode(os.readlink(path)))
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    digest.update(b"directory\\0")
+                    stack.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    digest.update(b"special_file\\0")
+                    complete = False
+                    continue
+
+                size = entry.stat(follow_symlinks=False).st_size
+                digest.update(b"file\\0")
+                digest.update(str(size).encode("ascii"))
+                digest.update(b"\\0")
+                if scanned_bytes + size > _MAX_UNTRACKED_BYTES:
+                    digest.update(b"file_size_limit_reached\\0")
+                    complete = False
+                    continue
+                with path.open("rb") as stream:
+                    remaining = size
+                    while remaining:
+                        chunk = stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            complete = False
+                            digest.update(b"short_read\\0")
+                            break
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                        scanned_bytes += len(chunk)
+                scanned_files += 1
+            except OSError:
+                complete = False
+                digest.update(b"read_error\\0")
+
+    return {
+        "status": "captured" if complete else "partial",
+        "captured_at": captured_at,
+        "workspace_kind": "filesystem",
+        "snapshot_sha256": digest.hexdigest(),
+        "snapshot_complete": complete,
+        "files_hashed": scanned_files,
+        "entries_scanned": scanned_entries,
+        "bytes_hashed": scanned_bytes,
+        "limits": {
+            "max_entries": _MAX_UNTRACKED_FILES,
+            "max_bytes": _MAX_UNTRACKED_BYTES,
+        },
+    }
+
+
 def collect_workspace_provenance(workspace: str | Path) -> dict[str, Any]:
     """Return bounded, secret-safe workspace provenance without returning file contents."""
     captured_at = time.time()
@@ -112,13 +198,7 @@ def collect_workspace_provenance(workspace: str | Path) -> dict[str, Any]:
             raise ValueError("workspace_not_directory")
         repo_result = _git(root, "rev-parse", "--show-toplevel")
         if repo_result.returncode != 0:
-            return {
-                "status": "partial",
-                "captured_at": captured_at,
-                "workspace_kind": "non_git",
-                "snapshot_complete": False,
-                "reason": "not_a_git_repository",
-            }
+            return _collect_filesystem_provenance(root, captured_at)
         repo_root = Path(os.fsdecode(repo_result.stdout).strip()).resolve(strict=True)
         if not root.is_relative_to(repo_root):
             return {
