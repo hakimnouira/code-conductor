@@ -1608,10 +1608,71 @@ async def remove_workflow(workflow_id: str, _: str = Depends(require_bearer_toke
 @app.get("/tasks")
 async def list_tasks(limit: int = Query(default=100, ge=1, le=500), _: str = Depends(require_bearer_token)):
     """List persisted task snapshots, newest first."""
-    # Restore lazily for ASGI test clients that do not run lifespan hooks.
-    if not _tasks:
-        await _restore_task_records()
-    return [item.snapshot() for item in sorted(_tasks.values(), key=lambda t: t.created_at, reverse=True)[:limit]]
+    await _restore_task_records()
+    saved = get_saved_tasks(limit=limit)
+    saved_ids = {s["snapshot"]["task_id"] for s in saved if s and s.get("snapshot")}
+    active_records = [
+        item for item in _tasks.values()
+        if item.task_id in saved_ids or item.status == TaskStatus.RUNNING
+    ]
+    return [item.snapshot() for item in sorted(active_records, key=lambda t: t.created_at, reverse=True)[:limit]]
+
+
+@app.get("/tasks/search")
+async def search_task_history(
+    q: str = Query(..., min_length=1, description="Search query for chat history"),
+    limit: int = Query(default=20, ge=1, le=100),
+    _: str = Depends(require_bearer_token),
+):
+    """
+    RAG-style retrieval across persisted chat tasks, prompts, tool calls, and model outputs.
+    Returns ranked relevant tasks with matching snippets and context.
+    """
+    query_terms = [t.lower() for t in q.strip().split() if len(t) > 1]
+    if not query_terms:
+        query_terms = [q.lower().strip()]
+
+    all_tasks = get_saved_tasks(limit=500)
+    scored_results = []
+
+    for task_data in all_tasks:
+        if not task_data or not task_data.get("snapshot"):
+            continue
+        snap = task_data["snapshot"]
+        tid = snap.get("task_id", "")
+        prompt = snap.get("prompt", "")
+        agent_id = snap.get("agent_id", "")
+
+        events = events_after(tid, after_event_id=0, limit=200)
+        tokens_text = " ".join(e.get("payload", "") for e in events)
+
+        score = 0
+        combined_text = f"{prompt} {tokens_text}".lower()
+
+        for term in query_terms:
+            if term in prompt.lower():
+                score += 5
+            count = combined_text.count(term)
+            if count > 0:
+                score += min(count, 10)
+
+        if score > 0:
+            idx = combined_text.find(query_terms[0])
+            start = max(0, idx - 40)
+            end = min(len(combined_text), idx + 120)
+            snippet = combined_text[start:end].replace("\n", " ").strip()
+            scored_results.append({
+                "task_id": tid,
+                "prompt": prompt,
+                "agent_id": agent_id,
+                "status": snap.get("status"),
+                "created_at": snap.get("created_at"),
+                "relevance_score": score,
+                "snippet": f"...{snippet}..." if snippet else prompt[:100],
+            })
+
+    scored_results.sort(key=lambda x: x["relevance_score"], reverse=True)
+    return scored_results[:limit]
 
 
 @app.get("/tasks/{task_id}")

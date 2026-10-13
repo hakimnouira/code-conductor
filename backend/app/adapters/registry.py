@@ -6,6 +6,7 @@ from app.adapters.custom_provider import CustomProviderAdapter
 from app.core.provider_store import list_providers
 from app.adapters.echo import EchoMockAdapter
 from app.adapters.multimodel import MultiModelAdapter
+from app.adapters.dual_model import DualModelAdapter
 from app.adapters.ollama import OllamaAdapter
 from app.adapters.orchestrator import OrchestratorAdapter
 from app.models.schemas import AgentInfo, AvailabilityState
@@ -20,6 +21,7 @@ class AgentRegistry:
         self.register(CopilotAdapter())
         self.register(OllamaAdapter())
         self.register(AntigravityAdapter())
+        self.register(DualModelAdapter())
         self.register(MultiModelAdapter("groq"))
         self.register(MultiModelAdapter("codecraft"))
         self.register(MultiModelAdapter("apmix"))
@@ -74,6 +76,7 @@ class AgentRegistry:
     async def get_ready_workers(self) -> list[BaseAgentAdapter]:
         """Returns all currently ready real worker adapters (excluding orchestrator and mock)."""
         worker_ids = [
+            "dual",
             "codex",
             "copilot",
             "ollama",
@@ -100,9 +103,9 @@ class AgentRegistry:
         - Specific agent requested: returns that adapter directly.
         - 'auto':
             - Discovers real worker availability first.
-            - If prompt implies multi-step decomposition ('refactor and test', 'plan and execute')
+            - If prompt implies multi-step decomposition ('decompose', 'plan and execute')
               AND at least one real worker is ready: routes to orchestrator.
-            - Otherwise routes to the best available ready worker.
+            - Otherwise routes randomly among ready workers for model diversity & load balancing.
             - If NO real provider is ready: returns None (never silently disguises mock as real).
         """
         if agent_id in ("google-antigravity", "antigravity-ide"):
@@ -125,9 +128,10 @@ class AgentRegistry:
             if orchestrator:
                 return orchestrator
 
-        # Select highest-priority ready worker
+        # Select randomly among ready workers for load balancing & model diversity
         if ready_workers:
-            return ready_workers[0]
+            import random
+            return random.choice(ready_workers)
 
         # No real provider is ready
         return None

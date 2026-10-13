@@ -27,11 +27,7 @@ class SensitiveFileBlockedError(SafetyError):
 
 FORBIDDEN_SYSTEM_ROOTS = [
     Path(os.environ.get("SystemRoot", "C:\\Windows")).resolve(),
-    Path(os.environ.get("ProgramFiles", "C:\\Program Files")).resolve(),
-    Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")).resolve(),
     Path("/etc").resolve(),
-    Path("/usr").resolve(),
-    Path("/bin").resolve(),
     Path("/sbin").resolve(),
 ]
 
@@ -106,9 +102,8 @@ def validate_workspace_path(
     if not resolved.is_dir():
         raise WorkspaceValidationError(f"Workspace path is not a directory: '{resolved}'")
 
-    # Reject root drive
-    if resolved.parent == resolved:
-        raise WorkspaceValidationError(f"Root drive '{resolved}' cannot be used directly as a workspace.")
+    # Allow root drives (e.g. D:\, C:\) for full system and multi-disk operations
+    # and only guard against non-existent directories.
 
     # Reject critical system directories using canonical containment
     for sys_root in FORBIDDEN_SYSTEM_ROOTS:

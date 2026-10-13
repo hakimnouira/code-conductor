@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown, GitBranch,
+  Activity, ArrowUpRight, Bell, Bot, Camera, Check, CheckCircle2, ChevronDown, GitBranch, GitCompare,
   CircleAlert, Code2, Command, Copy, Edit3, ExternalLink, Eye, FolderGit2, FolderOpen, Github,
   Globe, History, KeyRound, Layers, LoaderCircle, Moon, Plus, Power, RefreshCw, Search, Send,
   Settings2, ShieldAlert, ShieldCheck, Sparkles, Square, Sun, Terminal, Trash2, Workflow, X
@@ -313,7 +313,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("cc_task_history", JSON.stringify(taskHistory.slice(0, 50)));
+      localStorage.setItem("cc_task_history", JSON.stringify(taskHistory.slice(0, 250)));
     } catch {}
   }, [taskHistory]);
 
@@ -1136,7 +1136,7 @@ export default function App() {
   useEffect(() => {
     if (!health) return;
     let ignore = false;
-    void request("/tasks?limit=100").then(r => r.json()).then((rows: {
+    void request("/tasks?limit=250").then(r => r.json()).then((rows: {
       task_id: string; status: string; agent_id: string; prompt: string; created_at: number;
     }[]) => {
       if (ignore || !Array.isArray(rows)) return;
@@ -1159,7 +1159,7 @@ export default function App() {
             events: prior?.events || [],
           });
         }
-        return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+        return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 250);
       });
     }).catch(() => { /* Backend may be upgrading or temporarily unavailable. */ });
     return () => { ignore = true; };
@@ -1618,6 +1618,7 @@ export default function App() {
   const getAgentBadge = (id: string) => {
     const lower = id.toLowerCase();
     if (lower === "auto") return { text: "Auto", className: "tag-auto" };
+    if (lower.includes("dual")) return { text: "Dual ⚖️", className: "tag-auto" };
     if (lower.startsWith("web-") || lower.includes("cloak")) return { text: "Web API", className: "tag-web" };
     if (lower.includes("groq") || lower.includes("fast")) return { text: "Fast", className: "tag-fast" };
     if (lower.includes("apmix") || lower.includes("free") || lower.includes("tokenharbor")) return { text: "Free", className: "tag-free" };
@@ -2302,6 +2303,7 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                    <button className={"tool-pill " + (agent === "dual" ? "active" : "")} title="Dual Model Consultation: 2 models answer in parallel, compare perspectives, and synthesize a conclusion" onClick={() => setAgent(agent === "dual" ? "auto" : "dual")}><GitCompare size={14}/> Dual Compare</button>
                     <button className="tool-pill active" title="Run 4-Phase Guided Workflow" onClick={() => void runGuidedWorkflow()}><Sparkles size={14}/> Guided Flow</button>
                     <button className="tool-pill" title="Edit workspace-specific AI instructions" onClick={() => void openProjectRules()}><Edit3 size={14}/> Project Rules</button>
                     <button className="tool-pill" title="Create a new isolated Git worktree and switch the active workspace" onClick={() => void createIsolatedWorktree()} disabled={worktreeBusy}><GitBranch size={14}/>{worktreeBusy ? "Creating…" : "Isolated Worktree"}</button>
