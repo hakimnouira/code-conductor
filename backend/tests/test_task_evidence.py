@@ -1,0 +1,78 @@
+"""Machine-readable task evidence and artifact manifest tests."""
+import json
+
+import pytest
+
+from app.main import TaskRecord
+from app.models.schemas import TaskCreateRequest, TaskStatus
+from app.task_store import get_saved_tasks
+
+
+pytestmark = pytest.mark.unit
+
+
+def test_evidence_is_attached_to_task_snapshot_and_atomic_manifest(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "tasks.sqlite3"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = TaskCreateRequest(
+        prompt="Implement and verify a feature",
+        agent_id="mock",
+        workspace_path=str(workspace),
+        auto_verify=True,
+    )
+    task = TaskRecord("task-evidence", request, "mock")
+    task.status = TaskStatus.COMPLETED
+    task.verification_status = "passed"
+    task.add_evidence(
+        "automated_tests",
+        "passed",
+        "pytest passed with exit code 0.",
+        details={"command": "python -m pytest", "exit_code": 0, "duration_ms": 23.5},
+    )
+    task.add_evidence(
+        "task_completion",
+        "completed",
+        "Agent execution reached a terminal completion event.",
+        details={"verification_status": task.verification_status},
+    )
+
+    manifest_path = workspace / ".code-conductor" / "artifacts" / "task-evidence" / "evidence.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert manifest["task_id"] == "task-evidence"
+    assert manifest["task_status"] == "completed"
+    assert manifest["verification_status"] == "passed"
+    assert [item["kind"] for item in manifest["evidence"]] == [
+        "automated_tests",
+        "task_completion",
+    ]
+    assert manifest["evidence"][0]["details"]["exit_code"] == 0
+    assert not manifest_path.with_suffix(".json.tmp").exists()
+
+    persisted = next(
+        item["snapshot"] for item in get_saved_tasks()
+        if item["snapshot"]["task_id"] == "task-evidence"
+    )
+    assert persisted["verification_status"] == "passed"
+    assert len(persisted["evidence"]) == 2
+
+
+def test_evidence_manifest_does_not_follow_workspace_escape(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "tasks-escape.sqlite3"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / ".code-conductor").symlink_to(outside, target_is_directory=True)
+    task = TaskRecord(
+        "task-escape",
+        TaskCreateRequest(prompt="safe task", workspace_path=str(workspace)),
+        "mock",
+    )
+
+    # Evidence stays in the durable database; a hostile symlink cannot redirect
+    # the manifest outside the chosen workspace.
+    task.add_evidence("automated_tests", "passed", "test")
+    assert not (outside / "artifacts" / "task-escape" / "evidence.json").exists()
+    assert task.snapshot()["evidence"][0]["kind"] == "automated_tests"
