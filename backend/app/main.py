@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from collections import Counter
 import hashlib
 import json
 import sys
@@ -72,14 +73,14 @@ from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
 from app.browser_session import router as browser_session_router
 from app.browser_automation import run_browser_automation
-from app.scheduler import scheduler_loop
+from app.scheduler import get_scheduler_diagnostics, scheduler_loop
 from app.cron_schedule import CronExpressionError, next_cron_occurrence
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
-    get_saved_tasks, get_schedule, list_schedule_runs,
+    get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
     list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
     queue_schedule_run_now,
 )
@@ -353,6 +354,74 @@ async def get_health(_: str = Depends(require_bearer_token)):
         workspace=settings.workspace_root,
         active_tasks=active,
     )
+
+
+@app.get("/diagnostics")
+async def get_runtime_diagnostics(_: str = Depends(require_bearer_token)):
+    """Expose authenticated, secret-safe scheduler/task health and recent run aggregates."""
+    now = time.time()
+    database_status = "healthy"
+    database_error = ""
+    try:
+        saved_tasks = get_saved_tasks(limit=500)
+        schedules = list_schedules(limit=200)
+        run_summary = get_schedule_run_summary(limit=10)
+    except Exception as exc:
+        saved_tasks = []
+        schedules = []
+        run_summary = {"counts_by_status": {}, "recent_runs": []}
+        database_status = "degraded"
+        database_error = type(exc).__name__
+
+    task_counts = Counter(
+        str(item.get("snapshot", {}).get("status") or "unknown")
+        for item in saved_tasks
+    )
+    verification_counts = Counter(
+        str(item.get("snapshot", {}).get("verification_status") or "not_requested")
+        for item in saved_tasks
+    )
+    stale_threshold_seconds = 15 * 60
+    stale_tasks = []
+    for task in _tasks.values():
+        if task.status != TaskStatus.RUNNING or task.started_at is None:
+            continue
+        age = max(0.0, now - float(task.started_at))
+        if age >= stale_threshold_seconds:
+            stale_tasks.append({
+                "task_id": task.task_id,
+                "agent_id": task.agent_id,
+                "age_seconds": round(age, 2),
+            })
+
+    scheduler = get_scheduler_diagnostics()
+    overall_status = (
+        "healthy"
+        if database_status == "healthy"
+        and scheduler["status"] == "healthy"
+        and not stale_tasks
+        else "degraded"
+    )
+    return {
+        "status": overall_status,
+        "captured_at": now,
+        "uptime_seconds": round(now - _start_time, 2),
+        "database": {"status": database_status, "error_type": database_error or None},
+        "scheduler": scheduler,
+        "tasks": {
+            "persisted_sample_size": len(saved_tasks),
+            "counts_by_status": dict(task_counts),
+            "verification_counts": dict(verification_counts),
+            "active_in_memory": sum(1 for task in _tasks.values() if task.status == TaskStatus.RUNNING),
+            "stale_threshold_seconds": stale_threshold_seconds,
+            "stale_tasks": sorted(stale_tasks, key=lambda item: item["age_seconds"], reverse=True)[:20],
+        },
+        "schedules": {
+            "sample_size": len(schedules),
+            "enabled": sum(1 for schedule in schedules if schedule.get("enabled")),
+            "runs": run_summary,
+        },
+    }
 
 class GitHubResearchRequest(BaseModel):
     prompt: str
