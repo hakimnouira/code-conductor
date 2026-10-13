@@ -91,11 +91,15 @@ def next_cron_occurrence(expression: str, timezone_name: str, after_epoch: float
         cron_dow = (local.weekday() + 1) % 7
         dom_match = local.day in dom_values
         dow_match = cron_dow in dow_values
-        day_match = (
-            dom_match and dow_match
-            if dom_wildcard or dow_wildcard
-            else dom_match or dow_match
-        )
+        if dom_wildcard and dow_wildcard:
+            day_match = True
+        elif dom_wildcard:
+            day_match = dow_match
+        elif dow_wildcard:
+            day_match = dom_match
+        else:
+            day_match = dom_match or dow_match
+
         if (
             local.minute in minute_values
             and local.hour in hour_values

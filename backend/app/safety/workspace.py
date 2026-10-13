@@ -97,13 +97,9 @@ def validate_workspace_path(
     except Exception as e:
         raise WorkspaceValidationError(f"Invalid workspace path '{target}': {str(e)}")
 
-    if not resolved.exists():
-        raise WorkspaceValidationError(f"Workspace path does not exist: '{resolved}'")
     if not resolved.is_dir():
         raise WorkspaceValidationError(f"Workspace path is not a directory: '{resolved}'")
-
-    # Allow root drives (e.g. D:\, C:\) for full system and multi-disk operations
-    # and only guard against non-existent directories.
+    # Allow root drives (e.g. D:\, C:\) for full disk and workspace access
 
     # Reject critical system directories using canonical containment
     for sys_root in FORBIDDEN_SYSTEM_ROOTS:
