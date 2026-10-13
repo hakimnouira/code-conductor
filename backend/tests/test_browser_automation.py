@@ -1,7 +1,8 @@
 """Unit tests for evidence-based Playwright verification reports."""
 import pytest
 
-from app.browser_automation import _validate_target_url, build_browser_report
+from app.browser_automation import _validate_target_url, build_browser_report, evaluate_acceptance_assertions
+from app.browser_session import BrowserVerifyPayload
 
 
 pytestmark = pytest.mark.unit
@@ -66,3 +67,86 @@ def test_subresource_failures_are_reported_without_false_failure():
 def test_browser_verification_rejects_unsafe_urls(url):
     with pytest.raises(ValueError):
         _validate_target_url(url)
+
+
+def test_acceptance_assertions_check_expected_text_and_selectors():
+    assertions = evaluate_acceptance_assertions(
+        body_text="Welcome to Code Conductor. Dashboard ready.",
+        required_text=["Welcome to Code Conductor", "Dashboard ready"],
+        forbidden_text=["Application error"],
+        visible_selectors=["main", "[data-testid='task-list']"],
+        hidden_selectors=["[role='alert']"],
+        selector_visibility={
+            "main": {"visible": True},
+            "[data-testid='task-list']": {"visible": True},
+            "[role='alert']": {"visible": False},
+        },
+    )
+    assert assertions["passed"] is True
+    assert all(item["passed"] for item in assertions["required_text"])
+    assert assertions["hidden_selectors"][0]["passed"] is True
+
+
+def test_acceptance_assertions_fail_when_expected_ui_is_missing():
+    assertions = evaluate_acceptance_assertions(
+        body_text="Welcome. Application error.",
+        required_text=["Dashboard"],
+        forbidden_text=["Application error"],
+        visible_selectors=["main"],
+        hidden_selectors=[],
+        selector_visibility={"main": {"visible": False}},
+    )
+    assert assertions["passed"] is False
+    assert assertions["required_text"][0]["passed"] is False
+    assert assertions["forbidden_text"][0]["passed"] is False
+    assert assertions["visible_selectors"][0]["passed"] is False
+
+
+def test_browser_report_fails_when_acceptance_assertions_fail():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Page loaded",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        assertions={"passed": False, "required_text": [{"value": "Dashboard", "passed": False}]},
+    )
+    assert report["success"] is False
+    assert report["checks"]["acceptance_assertions_passed"] is False
+
+
+def test_browser_payload_bounds_assertion_count_and_item_length():
+    payload = BrowserVerifyPayload(
+        url="http://127.0.0.1:5173",
+        required_text=["  " + ("x" * 700) + "  ", "Dashboard"],
+    )
+    assert len(payload.required_text[0]) == 500
+    assert payload.required_text[1] == "Dashboard"
+    with pytest.raises(Exception):
+        BrowserVerifyPayload(url="http://127.0.0.1:5173", required_text=[str(i) for i in range(21)])
+
+
+def test_browser_report_fails_and_labels_screenshot_infrastructure_errors():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        verification_errors=["Screenshot capture failed: timeout"],
+        screenshot_scope="viewport_fallback_size_limit",
+    )
+    assert report["success"] is False
+    assert report["checks"]["no_verification_errors"] is False
+    assert report["console_errors"] == []
+    assert report["screenshot_scope"] == "viewport_fallback_size_limit"

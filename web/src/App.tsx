@@ -10,7 +10,7 @@ type Agent = { id: string; name: string; description: string; state: string; dia
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
-type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };
+type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; browser_required_text?: string[]; browser_forbidden_text?: string[]; browser_visible_selectors?: string[]; browser_hidden_selectors?: string[]; created_at: number; updated_at: number };
 type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
 type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
@@ -153,6 +153,10 @@ export default function App() {
   const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
   const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
   const [browserVerifyUrl, setBrowserVerifyUrl] = useState(() => localStorage.getItem("cc_browser_verify_url") || "");
+  const [browserRequiredText, setBrowserRequiredText] = useState(() => localStorage.getItem("cc_browser_required_text") || "");
+  const [browserForbiddenText, setBrowserForbiddenText] = useState(() => localStorage.getItem("cc_browser_forbidden_text") || "");
+  const [browserVisibleSelectors, setBrowserVisibleSelectors] = useState(() => localStorage.getItem("cc_browser_visible_selectors") || "");
+  const [browserHiddenSelectors, setBrowserHiddenSelectors] = useState(() => localStorage.getItem("cc_browser_hidden_selectors") || "");
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
@@ -727,6 +731,10 @@ export default function App() {
           agent_id: agent || "auto",
           auto_verify: autoVerifyEnabled,
           browser_verify_url: browserVerifyUrl.trim() || null,
+          browser_required_text: browserRequiredText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+          browser_forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+          browser_visible_selectors: browserVisibleSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+          browser_hidden_selectors: browserHiddenSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
         }),
       });
       const saved = await response.json() as WorkflowPreset;
@@ -839,8 +847,16 @@ export default function App() {
     setAgent(workflow.agent_id);
     setAutoVerifyEnabled(workflow.auto_verify);
     setBrowserVerifyUrl(workflow.browser_verify_url || "");
+    setBrowserRequiredText((workflow.browser_required_text || []).join("\n"));
+    setBrowserForbiddenText((workflow.browser_forbidden_text || []).join("\n"));
+    setBrowserVisibleSelectors((workflow.browser_visible_selectors || []).join("\n"));
+    setBrowserHiddenSelectors((workflow.browser_hidden_selectors || []).join("\n"));
     localStorage.setItem("cc_auto_verify", String(workflow.auto_verify));
     localStorage.setItem("cc_browser_verify_url", workflow.browser_verify_url || "");
+    localStorage.setItem("cc_browser_required_text", (workflow.browser_required_text || []).join("\n"));
+    localStorage.setItem("cc_browser_forbidden_text", (workflow.browser_forbidden_text || []).join("\n"));
+    localStorage.setItem("cc_browser_visible_selectors", (workflow.browser_visible_selectors || []).join("\n"));
+    localStorage.setItem("cc_browser_hidden_selectors", (workflow.browser_hidden_selectors || []).join("\n"));
     setWorkflowLibraryOpen(false);
     setNotice("Workflow loaded. Review the prompt and submit when ready.");
   };
@@ -1085,7 +1101,11 @@ export default function App() {
         stream: true, auto_approve: false, permission_mode: permissionMode,
         god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled,
         auto_verify: autoVerifyEnabled, verification_max_attempts: 2,
-        browser_verify_url: browserVerifyUrl.trim() || undefined
+        browser_verify_url: browserVerifyUrl.trim() || undefined,
+        browser_required_text: browserRequiredText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+        browser_forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+        browser_visible_selectors: browserVisibleSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20),
+        browser_hidden_selectors: browserHiddenSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20)
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal, taskPrompt, agentName);
@@ -1928,6 +1948,24 @@ export default function App() {
                     style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
                   />
                 </div>
+                <details style={{ marginTop: "8px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: "8px" }}>
+                  <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--muted)" }}>Browser acceptance assertions (optional, max 20 per field)</summary>
+                  <p style={{ color: "var(--muted)", fontSize: "11px", margin: "8px 0" }}>These checks run after navigation. Use one expected phrase or CSS selector per line. Selector checks only inspect visibility; they do not click controls or submit forms.</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px" }}>Required text
+                      <textarea aria-label="Required browser text" value={browserRequiredText} onChange={e => { setBrowserRequiredText(e.target.value); localStorage.setItem("cc_browser_required_text", e.target.value); }} placeholder={"Dashboard ready\nWelcome back"} rows={3} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}/>
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px" }}>Forbidden text
+                      <textarea aria-label="Forbidden browser text" value={browserForbiddenText} onChange={e => { setBrowserForbiddenText(e.target.value); localStorage.setItem("cc_browser_forbidden_text", e.target.value); }} placeholder={"Application error\nFailed to load"} rows={3} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}/>
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px" }}>Must be visible (CSS selectors)
+                      <textarea aria-label="Visible browser selectors" value={browserVisibleSelectors} onChange={e => { setBrowserVisibleSelectors(e.target.value); localStorage.setItem("cc_browser_visible_selectors", e.target.value); }} placeholder={"main\n[data-testid='task-list']"} rows={3} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}/>
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: "5px", fontSize: "12px" }}>Must be hidden (CSS selectors)
+                      <textarea aria-label="Hidden browser selectors" value={browserHiddenSelectors} onChange={e => { setBrowserHiddenSelectors(e.target.value); localStorage.setItem("cc_browser_hidden_selectors", e.target.value); }} placeholder={"[role='alert']"} rows={3} style={{ width: "100%", resize: "vertical", padding: "8px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}/>
+                    </label>
+                  </div>
+                </details>
                 <div className="composer-bottom">
                   <div className="composer-tools">
                     <button type="button" className="select-pill" onClick={() => { setWorkflowLibraryOpen(true); void loadWorkflowPresets(); }} title="Open reusable workflows">

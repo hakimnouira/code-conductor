@@ -160,9 +160,10 @@ async def test_task_list_includes_completed_task(auth_headers):
 async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, monkeypatch):
     import base64
 
-    async def fake_verify(url, wait_seconds=2):
+    async def fake_verify(url, wait_seconds=2, **assertions):
         assert url == "http://localhost:3000"
         assert wait_seconds == 2
+        assert assertions["required_text"] == []
         return {
             "success": True,
             "url": url,

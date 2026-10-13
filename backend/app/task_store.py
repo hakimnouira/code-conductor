@@ -89,10 +89,22 @@ def _connect() -> sqlite3.Connection:
             agent_id TEXT NOT NULL,
             auto_verify INTEGER NOT NULL DEFAULT 0,
             browser_verify_url TEXT NOT NULL DEFAULT '',
+            browser_required_text TEXT NOT NULL DEFAULT '[]',
+            browser_forbidden_text TEXT NOT NULL DEFAULT '[]',
+            browser_visible_selectors TEXT NOT NULL DEFAULT '[]',
+            browser_hidden_selectors TEXT NOT NULL DEFAULT '[]',
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )"""
     )
+    # Upgrade databases created by earlier Code Conductor versions without losing presets.
+    existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(workflow_presets)").fetchall()}
+    for column in (
+        "browser_required_text", "browser_forbidden_text",
+        "browser_visible_selectors", "browser_hidden_selectors",
+    ):
+        if column not in existing_columns:
+            connection.execute(f"ALTER TABLE workflow_presets ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
     connection.commit()
     return connection
 
@@ -153,21 +165,33 @@ def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
 
 
 
+def _decode_json_list(value: Any) -> list[str]:
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(decoded, list):
+            return []
+        return [str(item).strip()[:500] for item in decoded if isinstance(item, str) and item.strip()][:20]
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+
 def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
             """SELECT workflow_id, name, prompt, agent_id, auto_verify,
-                      browser_verify_url, created_at, updated_at
+                      browser_verify_url, browser_required_text, browser_forbidden_text,
+                      browser_visible_selectors, browser_hidden_selectors, created_at, updated_at
                FROM workflow_presets ORDER BY updated_at DESC LIMIT ?""",
             (min(max(1, limit), 200),),
         ).fetchall()
-    return [
-        {
-            **dict(row),
-            "auto_verify": bool(row["auto_verify"]),
-        }
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["auto_verify"] = bool(item["auto_verify"])
+        for field in ("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors"):
+            item[field] = _decode_json_list(item[field])
+        result.append(item)
+    return result
 
 
 def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -177,19 +201,29 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         db.execute(
             """INSERT INTO workflow_presets(
                     workflow_id, name, prompt, agent_id, auto_verify,
-                    browser_verify_url, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    browser_verify_url, browser_required_text, browser_forbidden_text,
+                    browser_visible_selectors, browser_hidden_selectors, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(workflow_id) DO UPDATE SET
                     name=excluded.name,
                     prompt=excluded.prompt,
                     agent_id=excluded.agent_id,
                     auto_verify=excluded.auto_verify,
                     browser_verify_url=excluded.browser_verify_url,
+                    browser_required_text=excluded.browser_required_text,
+                    browser_forbidden_text=excluded.browser_forbidden_text,
+                    browser_visible_selectors=excluded.browser_visible_selectors,
+                    browser_hidden_selectors=excluded.browser_hidden_selectors,
                     updated_at=excluded.updated_at""",
             (
                 workflow["workflow_id"], workflow["name"], workflow["prompt"],
                 workflow.get("agent_id", "auto"), int(bool(workflow.get("auto_verify", False))),
-                workflow.get("browser_verify_url", ""), created_at, now,
+                workflow.get("browser_verify_url", ""),
+                json.dumps(_decode_json_list(workflow.get("browser_required_text", [])), ensure_ascii=False),
+                json.dumps(_decode_json_list(workflow.get("browser_forbidden_text", [])), ensure_ascii=False),
+                json.dumps(_decode_json_list(workflow.get("browser_visible_selectors", [])), ensure_ascii=False),
+                json.dumps(_decode_json_list(workflow.get("browser_hidden_selectors", [])), ensure_ascii=False),
+                created_at, now,
             ),
         )
     return next((item for item in list_workflows(200) if item["workflow_id"] == workflow["workflow_id"]), dict(workflow))

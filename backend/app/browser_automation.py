@@ -23,6 +23,52 @@ def _validate_target_url(url: str) -> None:
         raise ValueError("Verification URL must be HTTP(S), include a host, and contain no embedded credentials.")
 
 
+def evaluate_acceptance_assertions(
+    *,
+    body_text: str,
+    required_text: list[str] | None = None,
+    forbidden_text: list[str] | None = None,
+    visible_selectors: list[str] | None = None,
+    hidden_selectors: list[str] | None = None,
+    selector_visibility: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate explicit user acceptance criteria against captured page evidence."""
+    page_text = body_text.casefold()
+    selector_visibility = selector_visibility or {}
+    required_results = [
+        {"value": value, "passed": value.casefold() in page_text}
+        for value in (required_text or [])
+    ]
+    forbidden_results = [
+        {"value": value, "passed": value.casefold() not in page_text}
+        for value in (forbidden_text or [])
+    ]
+    visible_results = []
+    for selector in visible_selectors or []:
+        state = selector_visibility.get(selector, {})
+        visible_results.append({
+            "selector": selector,
+            "passed": bool(state.get("visible")) and not state.get("error"),
+            **({"error": str(state["error"])[:300]} if state.get("error") else {}),
+        })
+    hidden_results = []
+    for selector in hidden_selectors or []:
+        state = selector_visibility.get(selector, {})
+        hidden_results.append({
+            "selector": selector,
+            "passed": not bool(state.get("visible")) and not state.get("error"),
+            **({"error": str(state["error"])[:300]} if state.get("error") else {}),
+        })
+    groups = [required_results, forbidden_results, visible_results, hidden_results]
+    return {
+        "passed": all(item["passed"] for group in groups for item in group),
+        "required_text": required_results,
+        "forbidden_text": forbidden_results,
+        "visible_selectors": visible_results,
+        "hidden_selectors": hidden_results,
+    }
+
+
 def build_browser_report(
     *,
     url: str,
@@ -35,6 +81,9 @@ def build_browser_report(
     http_errors: list[dict[str, Any]],
     failed_requests: list[dict[str, Any]],
     screenshot: str | None,
+    assertions: dict[str, Any] | None = None,
+    verification_errors: list[str] | None = None,
+    screenshot_scope: str = "full_page",
 ) -> dict[str, Any]:
     """Build a stable, testable verification report from captured browser evidence."""
     text = body_text[:12000]
@@ -45,12 +94,15 @@ def build_browser_report(
             "uncaught exception", "failed to compile", "vite error",
         ) if marker in lower_text
     ]
+    assertions = assertions or {"passed": True, "required_text": [], "forbidden_text": [], "visible_selectors": [], "hidden_selectors": []}
     checks = {
         "page_loaded": ready_state in ("interactive", "complete"),
         "main_document_http_ok": main_document_status is None or main_document_status < 400,
         "no_uncaught_page_errors": not page_errors,
         "no_console_errors": not console_errors,
         "no_common_error_markers": not error_markers,
+        "acceptance_assertions_passed": bool(assertions.get("passed", True)),
+        "no_verification_errors": not (verification_errors or []),
     }
     return {
         "success": all(checks.values()),
@@ -64,6 +116,9 @@ def build_browser_report(
         "http_errors": http_errors[:50],
         "failed_requests": failed_requests[:50],
         "error_markers": error_markers,
+        "acceptance_assertions": assertions,
+        "verification_errors": (verification_errors or [])[:20],
+        "screenshot_scope": screenshot_scope,
         "body_text_excerpt": text[:6000],
         "screenshot": screenshot,
         "verification_engine": "playwright-cdp",
@@ -74,9 +129,21 @@ def build_browser_report(
     }
 
 
-async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, Any]:
+async def run_browser_automation(
+    url: str,
+    wait_seconds: int = 2,
+    *,
+    required_text: list[str] | None = None,
+    forbidden_text: list[str] | None = None,
+    visible_selectors: list[str] | None = None,
+    hidden_selectors: list[str] | None = None,
+) -> dict[str, Any]:
     """Navigate a fresh tab, collect runtime/network evidence, and capture a screenshot."""
     _validate_target_url(url)
+    required_text = [value.strip()[:500] for value in (required_text or []) if isinstance(value, str) and value.strip()][:20]
+    forbidden_text = [value.strip()[:500] for value in (forbidden_text or []) if isinstance(value, str) and value.strip()][:20]
+    visible_selectors = [value.strip()[:500] for value in (visible_selectors or []) if isinstance(value, str) and value.strip()][:20]
+    hidden_selectors = [value.strip()[:500] for value in (hidden_selectors or []) if isinstance(value, str) and value.strip()][:20]
     from playwright.async_api import async_playwright
 
     from app.browser_session import get_current_endpoint
@@ -84,6 +151,7 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
     endpoint = get_current_endpoint()
     page_errors: list[str] = []
     console_errors: list[str] = []
+    verification_errors: list[str] = []
     http_errors: list[dict[str, Any]] = []
     failed_requests: list[dict[str, Any]] = []
     main_document_status: int | None = None
@@ -91,8 +159,9 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
     title = ""
     ready_state = "unavailable"
     body_text = ""
+    assertions: dict[str, Any] = {"passed": True, "required_text": [], "forbidden_text": [], "visible_selectors": [], "hidden_selectors": []}
     actual_url = url
-    browser = None
+    screenshot_scope = "full_page"
     page = None
     playwright = await async_playwright().start()
     try:
@@ -107,14 +176,17 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
             nonlocal main_document_status
             try:
                 request = response.request
-                if request.is_navigation_request() and request.frame == page.main_frame:
-                    main_document_status = int(response.status)
                 if int(response.status) >= 400:
                     http_errors.append({
                         "url": str(response.url)[:1000],
                         "status": int(response.status),
                         "resource_type": str(request.resource_type),
                     })
+                try:
+                    if request.is_navigation_request() and request.frame == page.main_frame:
+                        main_document_status = int(response.status)
+                except Exception:
+                    pass
             except Exception:
                 return
 
@@ -145,11 +217,31 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
                 body_text = await page.locator("body").inner_text(timeout=1000)
             except Exception:
                 pass
+        selector_visibility: dict[str, dict[str, Any]] = {}
+        for selector in dict.fromkeys(visible_selectors + hidden_selectors):
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+                visible = bool(count and await locator.first.is_visible())
+                selector_visibility[selector] = {"visible": visible}
+            except Exception as selector_error:
+                selector_visibility[selector] = {"visible": False, "error": str(selector_error)[:300]}
+        assertions = evaluate_acceptance_assertions(
+            body_text=body_text,
+            required_text=required_text,
+            forbidden_text=forbidden_text,
+            visible_selectors=visible_selectors,
+            hidden_selectors=hidden_selectors,
+            selector_visibility=selector_visibility,
+        )
         try:
             image = await page.screenshot(type="png", full_page=True, animations="disabled", timeout=5000)
+            if len(image) > 8 * 1024 * 1024:
+                image = await page.screenshot(type="png", full_page=False, animations="disabled", timeout=5000)
+                screenshot_scope = "viewport_fallback_size_limit"
             screenshot_uri = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
         except Exception as exc:
-            console_errors.append(f"Screenshot capture failed: {str(exc)[:300]}")
+            verification_errors.append(f"Screenshot capture failed: {str(exc)[:300]}")
         return build_browser_report(
             url=actual_url,
             title=title,
@@ -161,6 +253,9 @@ async def run_browser_automation(url: str, wait_seconds: int = 2) -> dict[str, A
             http_errors=http_errors,
             failed_requests=failed_requests,
             screenshot=screenshot_uri,
+            assertions=assertions,
+            verification_errors=verification_errors,
+            screenshot_scope=screenshot_scope,
         )
     finally:
         if page is not None:
