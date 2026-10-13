@@ -10,7 +10,8 @@ type Agent = { id: string; name: string; description: string; state: string; dia
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
-type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };
+type BrowserAssertions = { expected_text?: string[]; forbidden_text?: string[]; required_selectors?: string[]; expected_url_contains?: string | null; expected_title_contains?: string | null };
+type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; browser_assertions?: BrowserAssertions; created_at: number; updated_at: number };
 type ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
 type ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
@@ -153,6 +154,9 @@ export default function App() {
   const [githubResearchEnabled, setGithubResearchEnabled] = useState(() => localStorage.getItem("cc_github_research") !== "false");
   const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
   const [browserVerifyUrl, setBrowserVerifyUrl] = useState(() => localStorage.getItem("cc_browser_verify_url") || "");
+  const [browserExpectedText, setBrowserExpectedText] = useState(() => localStorage.getItem("cc_browser_expected_text") || "");
+  const [browserForbiddenText, setBrowserForbiddenText] = useState(() => localStorage.getItem("cc_browser_forbidden_text") || "");
+  const [browserRequiredSelectors, setBrowserRequiredSelectors] = useState(() => localStorage.getItem("cc_browser_required_selectors") || "");
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
@@ -727,6 +731,11 @@ export default function App() {
           agent_id: agent || "auto",
           auto_verify: autoVerifyEnabled,
           browser_verify_url: browserVerifyUrl.trim() || null,
+          browser_assertions: {
+            expected_text: browserExpectedText.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+            forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+            required_selectors: browserRequiredSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+          },
         }),
       });
       const saved = await response.json() as WorkflowPreset;
@@ -839,6 +848,13 @@ export default function App() {
     setAgent(workflow.agent_id);
     setAutoVerifyEnabled(workflow.auto_verify);
     setBrowserVerifyUrl(workflow.browser_verify_url || "");
+    const assertions = workflow.browser_assertions || {};
+    setBrowserExpectedText((assertions.expected_text || []).join("\n"));
+    setBrowserForbiddenText((assertions.forbidden_text || []).join("\n"));
+    setBrowserRequiredSelectors((assertions.required_selectors || []).join("\n"));
+    localStorage.setItem("cc_browser_expected_text", (assertions.expected_text || []).join("\n"));
+    localStorage.setItem("cc_browser_forbidden_text", (assertions.forbidden_text || []).join("\n"));
+    localStorage.setItem("cc_browser_required_selectors", (assertions.required_selectors || []).join("\n"));
     localStorage.setItem("cc_auto_verify", String(workflow.auto_verify));
     localStorage.setItem("cc_browser_verify_url", workflow.browser_verify_url || "");
     setWorkflowLibraryOpen(false);
@@ -1085,7 +1101,12 @@ export default function App() {
         stream: true, auto_approve: false, permission_mode: permissionMode,
         god_mode_confirmed: permissionMode === "god", github_research: githubResearchEnabled,
         auto_verify: autoVerifyEnabled, verification_max_attempts: 2,
-        browser_verify_url: browserVerifyUrl.trim() || undefined
+        browser_verify_url: browserVerifyUrl.trim() || undefined,
+        browser_assertions: {
+          expected_text: browserExpectedText.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+          forbidden_text: browserForbiddenText.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+          required_selectors: browserRequiredSelectors.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+        }
       })
     }).then(r => r.json()) as Task;
     return streamTask(created, signal, taskPrompt, agentName);
@@ -1927,6 +1948,20 @@ export default function App() {
                     placeholder="Optional app URL to smoke-check (http://localhost:3000)"
                     style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
                   />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px", maxWidth: "760px", marginBottom: "10px" }}>
+                  <label className="field-label" style={{ margin: 0 }}>
+                    <span>Expected text (one per line)</span>
+                    <textarea aria-label="Browser expected text assertions" value={browserExpectedText} onChange={e => { setBrowserExpectedText(e.target.value); localStorage.setItem("cc_browser_expected_text", e.target.value); }} placeholder={"Dashboard\nWelcome back"} rows={2} style={{ width: "100%", resize: "vertical", padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }} />
+                  </label>
+                  <label className="field-label" style={{ margin: 0 }}>
+                    <span>Required visible selectors (one per line)</span>
+                    <textarea aria-label="Browser required selectors" value={browserRequiredSelectors} onChange={e => { setBrowserRequiredSelectors(e.target.value); localStorage.setItem("cc_browser_required_selectors", e.target.value); }} placeholder={"main\n[data-testid='app-ready']"} rows={2} style={{ width: "100%", resize: "vertical", padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }} />
+                  </label>
+                  <label className="field-label" style={{ margin: 0 }}>
+                    <span>Forbidden text (one per line)</span>
+                    <textarea aria-label="Browser forbidden text assertions" value={browserForbiddenText} onChange={e => { setBrowserForbiddenText(e.target.value); localStorage.setItem("cc_browser_forbidden_text", e.target.value); }} placeholder={"Application error\nFailed to compile"} rows={2} style={{ width: "100%", resize: "vertical", padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }} />
+                  </label>
                 </div>
                 <div className="composer-bottom">
                   <div className="composer-tools">
