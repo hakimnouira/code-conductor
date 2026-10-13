@@ -162,7 +162,7 @@ export default function App() {
   const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);
   const [scheduleBusyId, setScheduleBusyId] = useState("");
   const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");
-  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
+  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});\n  const scheduleNotificationCursor = useRef<Record<string, number>>({});\n  const scheduleNotificationInitialized = useRef(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -668,6 +668,46 @@ export default function App() {
       void loadScheduledWorkflows();
     }
   }, [health?.status, base, token]);
+
+  useEffect(() => {
+    if (health?.status !== "healthy" && health?.status !== "degraded") return;
+    let cancelled = false;
+    const pollSchedules = async () => {
+      try {
+        const response = await request("/schedules?limit=100");
+        const rows = await response.json() as ScheduledWorkflow[];
+        if (cancelled || !Array.isArray(rows)) return;
+        setScheduledWorkflows(rows);
+        if (!scheduleNotificationInitialized.current) {
+          for (const schedule of rows) {
+            scheduleNotificationCursor.current[schedule.schedule_id] = schedule.last_run_at || 0;
+          }
+          scheduleNotificationInitialized.current = true;
+          return;
+        }
+        for (const schedule of rows) {
+          const latestRun = schedule.last_run_at || 0;
+          const previousRun = scheduleNotificationCursor.current[schedule.schedule_id] || 0;
+          if (latestRun <= previousRun || !schedule.last_status) continue;
+          scheduleNotificationCursor.current[schedule.schedule_id] = latestRun;
+          const passed = schedule.last_status === "completed";
+          notify(
+            passed ? "completion" : "action",
+            passed ? "Scheduled workflow completed" : "Scheduled workflow needs attention",
+            `${schedule.name}: ${schedule.last_status}${schedule.last_task_id ? ` (task ${schedule.last_task_id})` : ""}`,
+          );
+        }
+      } catch {
+        // Polling is best-effort; schedules remain durable on the backend.
+      }
+    };
+    void pollSchedules();
+    const timer = window.setInterval(() => void pollSchedules(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [health?.status, request, notifications.enabled, notifications.completion, notifications.action, notifications.sound]);
 
   const saveCurrentWorkflow = async () => {
     if (!workflowName.trim() || !prompt.trim()) {
