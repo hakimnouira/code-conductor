@@ -737,6 +737,33 @@ export default function App() {
     }
   };
 
+  const openScheduledTask = async (taskId: string) => {
+    const existing = taskHistory.find(item => item.id === taskId);
+    if (existing) {
+      loadHistoryItem(existing);
+      return;
+    }
+    try {
+      const response = await request("/tasks/" + encodeURIComponent(taskId));
+      const task = await response.json() as { task_id: string; status: string; agent_id: string; prompt: string; created_at: number };
+      const status: TaskHistoryItem["status"] = task.status === "completed" || task.status === "failed" || task.status === "cancelled" ? task.status : "running";
+      const item: TaskHistoryItem = {
+        id: task.task_id,
+        timestamp: task.created_at * 1000,
+        prompt: task.prompt || "Scheduled workflow",
+        agentId: task.agent_id || "auto",
+        agentName: agents.find(agentItem => agentItem.id === task.agent_id)?.name || task.agent_id || "Agent",
+        status,
+        output: "",
+        events: [],
+      };
+      setTaskHistory(old => old.some(entry => entry.id === item.id) ? old : [item, ...old]);
+      loadHistoryItem(item);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open scheduled task");
+    }
+  };
+
   const toggleScheduledWorkflow = async (schedule: ScheduledWorkflow) => {
     setScheduleBusyId(schedule.schedule_id);
     try {
@@ -3135,7 +3162,7 @@ export default function App() {
                                       <b>{run.status.toUpperCase()}</b>
                                       <span>{new Date((run.started_at || run.scheduled_for) * 1000).toLocaleString()}</span>
                                       <span>Attempts: {run.attempt}/{run.max_retries + 1}</span>
-                                      {run.task_id && <button className="outline-button" onClick={() => void loadHistoryItem(run.task_id)}>Open task</button>}
+                                      {run.task_id && <button className="outline-button" onClick={() => void openScheduledTask(run.task_id)}>Open task</button>}
                                     </div>
                                     {run.error && <p style={{ color: "var(--danger, #d55)", fontSize: "12px", margin: "6px 0 0" }}>{run.error}</p>}
                                   </div>
