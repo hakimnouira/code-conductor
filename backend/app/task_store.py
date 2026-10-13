@@ -32,9 +32,13 @@ def _connect() -> sqlite3.Connection:
             task_id TEXT PRIMARY KEY,
             request_json TEXT NOT NULL,
             snapshot_json TEXT NOT NULL,
+            initial_request_json TEXT NOT NULL DEFAULT '',
             updated_at REAL NOT NULL
         )"""
     )
+    task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "initial_request_json" not in task_columns:
+        connection.execute("ALTER TABLE tasks ADD COLUMN initial_request_json TEXT NOT NULL DEFAULT ''")
     connection.execute(
         """CREATE TABLE IF NOT EXISTS task_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,19 +132,31 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def save_task(snapshot: dict[str, Any], request_json: str) -> None:
+def save_task(
+    snapshot: dict[str, Any],
+    request_json: str,
+    initial_request_json: str | None = None,
+) -> None:
+    """Persist current execution state while preserving the immutable original request."""
+    initial_json = initial_request_json or request_json
     with _connect() as db:
         db.execute(
-            """INSERT INTO tasks(task_id, request_json, snapshot_json, updated_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO tasks(
+                   task_id, request_json, snapshot_json, initial_request_json, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(task_id) DO UPDATE SET
                  request_json=excluded.request_json,
                  snapshot_json=excluded.snapshot_json,
+                 initial_request_json=CASE
+                     WHEN tasks.initial_request_json = '' THEN excluded.initial_request_json
+                     ELSE tasks.initial_request_json
+                 END,
                  updated_at=excluded.updated_at""",
             (
                 snapshot["task_id"],
                 request_json,
                 json.dumps(snapshot, ensure_ascii=False),
+                initial_json,
                 snapshot.get("completed_at") or snapshot.get("started_at") or snapshot["created_at"],
             ),
         )
@@ -168,14 +184,21 @@ def events_after(task_id: str, after_event_id: int = 0, limit: int = 200) -> lis
 def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
-            "SELECT request_json, snapshot_json FROM tasks ORDER BY updated_at DESC LIMIT ?",
+            "SELECT request_json, snapshot_json, initial_request_json FROM tasks ORDER BY updated_at DESC LIMIT ?",
             (min(max(1, limit), 500),),
         ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
         try:
+            current_request = json.loads(row["request_json"])
+            original_json = row["initial_request_json"] or row["request_json"]
+            try:
+                initial_request = json.loads(original_json)
+            except (TypeError, json.JSONDecodeError):
+                initial_request = current_request
             result.append({
-                "request": json.loads(row["request_json"]),
+                "request": current_request,
+                "initial_request": initial_request,
                 "snapshot": json.loads(row["snapshot_json"]),
             })
         except (TypeError, json.JSONDecodeError):
