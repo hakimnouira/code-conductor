@@ -91,3 +91,29 @@ def test_provider_stream_ending_without_terminal_event_is_not_success(tmp_path, 
     provider = next(item for item in record.evidence if item.get("kind") == "provider_execution")
     assert provider["status"] == "incomplete"
     assert provider["details"]["terminal_event_seen"] is False
+
+def test_provider_disconnect_does_not_overwrite_user_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "tasks.sqlite3"))
+    request = TaskCreateRequest(
+        prompt="Cancellation races with provider disconnect",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+        github_research=False,
+    )
+    record = TaskRecord("task-provider-cancel-race-test", request, "mock")
+
+    class CancellingAdapter:
+        async def stream_task(self, task_id, task_request):
+            yield AgentEvent(task_id=task_id, event_type=EventType.STARTED, text="started")
+            record.status = TaskStatus.CANCELLED
+            raise ConnectionError("transport closed while cancelling")
+
+        async def cancel_task(self, task_id):
+            return True
+
+    asyncio.run(_run_task_pipeline(record, CancellingAdapter()))
+
+    assert record.status == TaskStatus.CANCELLED
+    assert record.error is None
+    provider = next(item for item in record.evidence if item.get("kind") == "provider_execution")
+    assert provider["status"] == "cancelled"
