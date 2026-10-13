@@ -16,10 +16,16 @@ async def test_schedules_are_persistent_pauseable_and_keep_run_history(tmp_path,
     headers = {"Authorization": f"Bearer {get_settings().auth_token}"}
     async with AsyncClient(transport=ASGITransport(app=__import__("app.main", fromlist=["app"]).app), base_url="http://test") as client:
         workflow = await client.post("/workflows", headers=headers, json={
-            "name": "Nightly check", "prompt": "Run tests and summarize failures", "agent_id": "auto"
+            "name": "Nightly check", "prompt": "Run tests and summarize failures", "agent_id": "auto",
+            "browser_steps": [
+                {"action": "fill", "selector": "input[name='q']", "value": "smoke test"},
+                {"action": "click", "selector": "button[type='submit']"},
+            ],
         })
         assert workflow.status_code == 200
         workflow_id = workflow.json()["workflow_id"]
+        assert workflow.json()["browser_steps"][0]["action"] == "fill"
+        assert workflow.json()["browser_steps"][1]["selector"] == "button[type='submit']"
 
         unauthenticated = await client.get("/schedules")
         assert unauthenticated.status_code == 401
@@ -62,6 +68,7 @@ def test_due_schedule_claim_is_atomic_and_persists_recoverable_run(tmp_path, mon
     workflow = {
         "workflow_id": "workflow-1", "name": "Scheduled tests", "prompt": "Run tests",
         "agent_id": "auto", "auto_verify": True, "browser_verify_url": "",
+        "browser_steps": [{"action": "click", "selector": "[data-testid='run']"}],
     }
     created = create_schedule({
         "schedule_id": "schedule-1", "workflow_id": "workflow-1", "workflow": workflow,
@@ -74,6 +81,7 @@ def test_due_schedule_claim_is_atomic_and_persists_recoverable_run(tmp_path, mon
     due = claim_due_schedules(now, limit=10)
     assert len(due) == 1
     assert due[0]["workflow"]["prompt"] == "Run tests"
+    assert due[0]["workflow"]["browser_steps"][0]["action"] == "click"
     assert due[0]["status"] == "queued"
     assert get_incomplete_schedule_runs()[0]["run_id"] == due[0]["run_id"]
     assert get_schedule("schedule-1")["next_run_at"] > now
