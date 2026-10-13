@@ -162,7 +162,9 @@ export default function App() {
   const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);
   const [scheduleBusyId, setScheduleBusyId] = useState("");
   const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");
-  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});\n  const scheduleNotificationCursor = useRef<Record<string, number>>({});\n  const scheduleNotificationInitialized = useRef(false);
+  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
+  const scheduleNotificationCursor = useRef<Record<string, number>>({});
+  const scheduleNotificationInitialized = useRef(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
