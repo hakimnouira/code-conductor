@@ -5,7 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
 from app.main import TaskRecord, _browser_verification_gate, _run_task_pipeline, _verify_browser_for_task, _tasks, app
-from app.models.schemas import TaskCreateRequest, TaskStatus
+from app.models.schemas import AgentEvent, EventType, TaskCreateRequest, TaskStatus
 
 pytestmark = pytest.mark.mocked_integration
 
@@ -408,3 +408,35 @@ async def test_task_execution_deadline_fails_silent_provider_with_evidence(tmp_p
         if isinstance(item, str) and '"task_timeout"' in item
     ]
     assert timeout_events
+
+
+
+@pytest.mark.asyncio
+async def test_auto_verify_fails_closed_when_no_test_runner_is_detected(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "auto-verify.sqlite3"))
+    request = TaskCreateRequest(
+        prompt="Implement a feature that has no tests",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+        auto_verify=True,
+        github_research=False,
+    )
+    record = TaskRecord("task-no-test-runner", request, "mock")
+
+    class CompletingAdapter:
+        async def stream_task(self, task_id, task_request):
+            yield AgentEvent(
+                task_id=task_id,
+                event_type=EventType.COMPLETED,
+                text="Implementation finished",
+            )
+
+    await _run_task_pipeline(record, CompletingAdapter())
+
+    assert record.status == TaskStatus.FAILED
+    assert record.verification_status == "failed"
+    assert "no supported test or build command" in (record.error or "").lower()
+    evidence = next(item for item in record.evidence if item["kind"] == "automated_tests")
+    assert evidence["status"] == "failed"
+    assert evidence["details"]["reason"] == "no_supported_test_command"
+    assert evidence["details"]["required"] is True
