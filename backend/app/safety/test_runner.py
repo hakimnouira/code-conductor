@@ -163,6 +163,28 @@ class SafeTestRunner:
                 duration_ms=round(duration_ms, 2),
             )
 
+        except asyncio.CancelledError:
+            # Cancelling the parent task must not leave tests, browsers, or build
+            # subprocesses running in the background.
+            if proc and proc.pid:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                    )
+                else:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except (asyncio.TimeoutError, OSError):
+                    pass
+            raise
         except asyncio.TimeoutError:
             duration_ms = (time.perf_counter() - t_start) * 1000.0
             if proc and proc.pid:
