@@ -261,6 +261,20 @@ In **Connections & settings**, enter a provider ID, display name, base URL, mode
 The generic connector supports OpenAI-compatible `/chat/completions` endpoints for text responses only. It does **not** provide file editing, shell tools, or subscription sign-in. For coding-agent capabilities, use a provider's official CLI/SDK and its supported authentication flow. Do not paste passwords, cookies, OAuth refresh tokens, or subscription session data into the API-key field.
 
 
+## Docker-isolated test verification (opt-in)
+
+Host execution remains the default for compatibility. To run Auto Verify and manual test-run commands inside a constrained Docker container, configure the backend environment before starting it:
+
+```powershell
+$env:CODE_CONDUCTOR_TEST_SANDBOX = "docker"
+$env:CODE_CONDUCTOR_TEST_SANDBOX_IMAGE = "my-project-test-image:latest"
+cxcode start
+```
+
+The image must already contain the project's runtime and test dependencies; the container has no network, a read-only root filesystem, dropped Linux capabilities, no-new-privileges, a 256-process limit, 2 GiB memory, 2 CPUs, and a bounded writable `/tmp`. Only the selected workspace is bind-mounted writable, and the container is force-removed on timeout or cancellation. The machine-readable evidence records `execution_mode: "docker"` or `"host"`.
+
+This is an opt-in isolation layer, not a perfect security boundary. Tests can still read files that are present inside the mounted workspace and can modify workspace contents, so do not put credentials in a workspace used for untrusted code. The sandbox does not silently fall back to host execution: a missing Docker CLI or image configuration fails verification.
+
 ## Durable Scheduled Workflows & Browser Verification
 
 ### Recurring workflow scheduler
