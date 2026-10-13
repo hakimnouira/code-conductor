@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.core.security import require_bearer_token
+from app.browser_verification import BrowserAssertions, verify_with_playwright
 
 logger = logging.getLogger(__name__)
 
