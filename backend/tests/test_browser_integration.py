@@ -82,7 +82,16 @@ async def test_real_chromium_captures_browser_actions_network_and_screenshot():
         server.server_close()
         thread.join(timeout=2)
 
-    assert report["success"] is True, report
+    assert report["success"] is True, (
+        f"checks={report['checks']}; "
+        f"assertions={report['acceptance_assertions']}; "
+        f"actions={report['action_results']}; "
+        f"page_errors={report['page_errors']}; "
+        f"console_errors={report['console_errors']}; "
+        f"http_errors={report['http_errors']}; "
+        f"verification_errors={report['verification_errors']}; "
+        f"body={report['body_text_excerpt']!r}"
+    )
     assert report["verification_engine"] in {
         "playwright-cdp",
         "playwright-managed-chromium",
