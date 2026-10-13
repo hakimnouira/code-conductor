@@ -62,7 +62,7 @@ from app.safety.workspace import (
     validate_workspace_path,
 )
 from app.safety.git_guard import GitGuard
-from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError
+from app.safety.test_runner import SafeTestRunner, TestRunnerSecurityError, get_test_execution_diagnostics
 from app.safety.security_scan import scan_recent_secrets
 from app.provenance import collect_workspace_provenance
 from app.orchestrator.history import AuditHistoryTracker
@@ -525,6 +525,7 @@ async def get_runtime_diagnostics(_: str = Depends(require_bearer_token)):
         "uptime_seconds": round(now - _start_time, 2),
         "database": {"status": database_status, "error_type": database_error or None},
         "scheduler": scheduler,
+        "test_execution": get_test_execution_diagnostics(),
         "tasks": {
             "persisted_sample_size": len(saved_tasks),
             "counts_by_status": dict(task_counts),

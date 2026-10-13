@@ -372,6 +372,20 @@ The backend creates or reuses the per-user token in `%USERPROFILE%\.aihub_token`
 The web-model configuration is stored in the checkout's `.web_models.json` by default, so moving or cloning the repository does not require editing a drive-specific path. Set `CODE_CONDUCTOR_WEB_MODELS_PATH` to override it. The Windows launcher resolves the project directory relative to its own location; set `CODE_CONDUCTOR_CLOAK_EXE` to use a non-default CloakBrowser executable.
 
 
+## Test execution isolation
+
+The test runner supports two modes. For compatibility, `CODE_CONDUCTOR_TEST_SANDBOX=host` remains the default; **host mode executes project tests with the backend user's permissions and is not a security sandbox**. Treat test code from untrusted repositories as executable code.
+
+For stronger isolation, configure a prebuilt image that is already available locally:
+
+- `CODE_CONDUCTOR_TEST_SANDBOX=docker`
+- `CODE_CONDUCTOR_TEST_SANDBOX_IMAGE=python:3.11-slim` (or another trusted, prebuilt image matching the project toolchain)
+- `CODE_CONDUCTOR_REQUIRE_TEST_SANDBOX=true` to reject test execution unless Docker mode is selected
+
+Docker mode uses no network, a read-only container root, dropped Linux capabilities, no-new-privileges, process/memory/CPU limits, and only a writable workspace mount plus bounded temporary storage. It uses `--pull=never`; build/pull trusted images before starting Code Conductor. The workspace remains writable by design, so the sandbox is defense-in-depth rather than a complete isolation boundary.
+
+The authenticated `GET /diagnostics` response includes `test_execution` with the active mode, configuration status, Docker availability, and warnings. Check this before running untrusted project tests.
+
 ## Task execution deadline
 
 Tasks have a configurable wall-clock deadline via `CODE_CONDUCTOR_TASK_TIMEOUT_SECONDS` (default `3600`, bounded to 60–86,400 seconds). A timeout cancels the pending provider or verification operation, marks the task failed, and records `execution_timeout` evidence instead of leaving it running indefinitely.

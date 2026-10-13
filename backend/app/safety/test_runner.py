@@ -19,6 +19,45 @@ class RunnerSecurityError(Exception):
 TestRunnerSecurityError = RunnerSecurityError
 
 
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_test_execution_diagnostics() -> dict:
+    """Describe test-runner isolation without exposing image names or secrets."""
+    mode = os.environ.get("CODE_CONDUCTOR_TEST_SANDBOX", "host").strip().lower() or "host"
+    required = _env_enabled("CODE_CONDUCTOR_REQUIRE_TEST_SANDBOX")
+    image = os.environ.get("CODE_CONDUCTOR_TEST_SANDBOX_IMAGE", "").strip()
+    image_valid = bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,200}", image))
+    docker_available = bool(shutil.which("docker"))
+    warnings: list[str] = []
+
+    if mode == "docker":
+        configured = image_valid and docker_available
+        status = "configured" if configured else "misconfigured"
+        if not image_valid:
+            warnings.append("Docker sandbox image is missing or invalid.")
+        if not docker_available:
+            warnings.append("Docker CLI is unavailable.")
+    elif mode == "host":
+        status = "policy_violation" if required else "host_mode"
+        warnings.append("Test commands execute directly on the host and are not isolated from host files or network.")
+        if required:
+            warnings.append("Sandbox enforcement is enabled, but CODE_CONDUCTOR_TEST_SANDBOX is not set to docker.")
+    else:
+        status = "misconfigured"
+        warnings.append("CODE_CONDUCTOR_TEST_SANDBOX must be 'host' or 'docker'.")
+
+    return {
+        "mode": mode,
+        "sandbox_required": required,
+        "docker_available": docker_available,
+        "sandbox_image_configured": image_valid,
+        "status": status,
+        "warnings": warnings,
+    }
+
+
 async def _read_bounded(stream: asyncio.StreamReader, limit: int = 1_000_000) -> tuple[bytes, bool]:
     """Drain a subprocess pipe while retaining only its final bounded byte window."""
     retained = bytearray()
@@ -227,6 +266,10 @@ class SafeTestRunner:
         user_args = list(extra_args or [])
         self.validate_args(user_args)
         execution_mode = os.environ.get("CODE_CONDUCTOR_TEST_SANDBOX", "host").strip().lower() or "host"
+        if _env_enabled("CODE_CONDUCTOR_REQUIRE_TEST_SANDBOX") and execution_mode != "docker":
+            raise TestRunnerSecurityError(
+                "Test sandbox enforcement is enabled; set CODE_CONDUCTOR_TEST_SANDBOX=docker and configure a prebuilt image."
+            )
         container_name: str | None = None
         docker_executable: str | None = None
         if execution_mode == "docker":
