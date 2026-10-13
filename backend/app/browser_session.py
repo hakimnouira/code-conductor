@@ -49,8 +49,6 @@ class BrowserVerifyPayload(BaseModel):
     assertions: "BrowserAssertions" = Field(default_factory=lambda: BrowserAssertions())
 
 
-from app.browser_verification import BrowserAssertions, verify_with_playwright
-
 
 def get_current_endpoint() -> str:
     global _CURRENT_CDP_ENDPOINT
