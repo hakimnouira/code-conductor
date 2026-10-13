@@ -985,9 +985,14 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
 
         verification_attempt = 0
         browser_verification_attempts = 0
+        provider_attempts = 0
         while True:
             terminal_event = None
+            provider_attempts += 1
+            provider_started = time.monotonic()
+            provider_event_count = 0
             async for event in _stream_task_events_with_deadline(adapter, record, deadline, timeout_seconds):
+                provider_event_count += 1
                 if event.event_type == EventType.COMPLETED:
                     # Delay success until requested verification has completed.
                     terminal_event = event
@@ -1004,6 +1009,25 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                             record.error = event.text or "Agent reported an execution error."
                     record.completed_at = time.time()
                     break
+
+            provider_duration_ms = round((time.monotonic() - provider_started) * 1000.0, 2)
+            provider_stream_status = (
+                "passed" if terminal_event is not None and record.status not in (TaskStatus.CANCELLED, TaskStatus.FAILED)
+                else "failed" if record.status == TaskStatus.FAILED
+                else "cancelled" if record.status == TaskStatus.CANCELLED
+                else "incomplete"
+            )
+            record.add_evidence(
+                "provider_execution", provider_stream_status,
+                f"Provider stream attempt {provider_attempts} ended with status {provider_stream_status}.",
+                details={
+                    "attempt": provider_attempts,
+                    "agent_id": record.agent_id,
+                    "duration_ms": provider_duration_ms,
+                    "events_received": provider_event_count,
+                    "terminal_event_seen": terminal_event is not None,
+                },
+            )
 
             if record.status in (TaskStatus.CANCELLED, TaskStatus.FAILED):
                 break
