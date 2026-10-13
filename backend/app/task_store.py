@@ -104,6 +104,13 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_schedule_runs_status ON schedule_runs(status, scheduled_for)"
     )
     connection.execute(
+        """CREATE TABLE IF NOT EXISTS runtime_controls (
+            control_key TEXT PRIMARY KEY,
+            control_value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )"""
+    )
+    connection.execute(
         """CREATE TABLE IF NOT EXISTS workflow_presets (
             workflow_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -590,3 +597,34 @@ def get_schedule_run_summary(limit: int = 10) -> dict[str, Any]:
         "counts_by_status": {str(row["status"]): int(row["count"]) for row in count_rows},
         "recent_runs": [dict(row) for row in recent_rows],
     }
+
+
+
+def get_runtime_control(key: str, default: str = "") -> str:
+    with _connect() as db:
+        row = db.execute(
+            "SELECT control_value FROM runtime_controls WHERE control_key = ?",
+            (key,),
+        ).fetchone()
+    return str(row["control_value"]) if row is not None else default
+
+
+def set_runtime_control(key: str, value: str) -> None:
+    with _connect() as db:
+        db.execute(
+            """INSERT INTO runtime_controls(control_key, control_value, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(control_key) DO UPDATE SET
+                 control_value=excluded.control_value,
+                 updated_at=excluded.updated_at""",
+            (key, value, time.time()),
+        )
+
+
+def is_scheduler_paused() -> bool:
+    return get_runtime_control("scheduler_paused", "false").strip().lower() == "true"
+
+
+def set_scheduler_paused(paused: bool) -> bool:
+    set_runtime_control("scheduler_paused", "true" if paused else "false")
+    return paused
