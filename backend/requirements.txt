@@ -10,5 +10,5 @@ github-copilot-sdk>=1.0.0,<2.0.0
 
 keyring>=25.0.0
 playwright>=1.50.0,<2.0.0
-tzdata>=2024.1
+tzdata>=2026.5
 winotify>=1.1.0; platform_system == "Windows"
