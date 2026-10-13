@@ -5,6 +5,7 @@ requires a Playwright Chromium binary.
 """
 from __future__ import annotations
 
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -80,8 +81,14 @@ async def test_real_chromium_captures_browser_actions_network_and_screenshot():
             ],
         )
     except RuntimeError as exc:
-        if "Could not connect to the configured CDP browser or launch managed Chromium" in str(exc):
-            pytest.skip(f"Browser environment not available: {exc}")
+        # Local developer environments may not have Chromium installed. CI installs
+        # the browser explicitly, so treating launch failure as a skip would turn a
+        # broken end-to-end verification job into a misleading green build.
+        if (
+            not os.environ.get("CI")
+            and "Could not connect to the configured CDP browser or launch managed Chromium" in str(exc)
+        ):
+            pytest.skip(f"Browser environment not available outside CI: {exc}")
         raise
     finally:
         server.shutdown()
