@@ -82,6 +82,8 @@ def build_browser_report(
     failed_requests: list[dict[str, Any]],
     screenshot: str | None,
     assertions: dict[str, Any] | None = None,
+    verification_errors: list[str] | None = None,
+    screenshot_scope: str = "full_page",
 ) -> dict[str, Any]:
     """Build a stable, testable verification report from captured browser evidence."""
     text = body_text[:12000]
@@ -100,6 +102,7 @@ def build_browser_report(
         "no_console_errors": not console_errors,
         "no_common_error_markers": not error_markers,
         "acceptance_assertions_passed": bool(assertions.get("passed", True)),
+        "no_verification_errors": not (verification_errors or []),
     }
     return {
         "success": all(checks.values()),
@@ -114,6 +117,8 @@ def build_browser_report(
         "failed_requests": failed_requests[:50],
         "error_markers": error_markers,
         "acceptance_assertions": assertions,
+        "verification_errors": (verification_errors or [])[:20],
+        "screenshot_scope": screenshot_scope,
         "body_text_excerpt": text[:6000],
         "screenshot": screenshot,
         "verification_engine": "playwright-cdp",
@@ -146,6 +151,7 @@ async def run_browser_automation(
     endpoint = get_current_endpoint()
     page_errors: list[str] = []
     console_errors: list[str] = []
+    verification_errors: list[str] = []
     http_errors: list[dict[str, Any]] = []
     failed_requests: list[dict[str, Any]] = []
     main_document_status: int | None = None
@@ -155,7 +161,7 @@ async def run_browser_automation(
     body_text = ""
     assertions: dict[str, Any] = {"passed": True, "required_text": [], "forbidden_text": [], "visible_selectors": [], "hidden_selectors": []}
     actual_url = url
-    browser = None
+    screenshot_scope = "full_page"
     page = None
     playwright = await async_playwright().start()
     try:
@@ -170,14 +176,17 @@ async def run_browser_automation(
             nonlocal main_document_status
             try:
                 request = response.request
-                if request.is_navigation_request() and request.frame == page.main_frame:
-                    main_document_status = int(response.status)
                 if int(response.status) >= 400:
                     http_errors.append({
                         "url": str(response.url)[:1000],
                         "status": int(response.status),
                         "resource_type": str(request.resource_type),
                     })
+                try:
+                    if request.is_navigation_request() and request.frame == page.main_frame:
+                        main_document_status = int(response.status)
+                except Exception:
+                    pass
             except Exception:
                 return
 
@@ -229,9 +238,10 @@ async def run_browser_automation(
             image = await page.screenshot(type="png", full_page=True, animations="disabled", timeout=5000)
             if len(image) > 8 * 1024 * 1024:
                 image = await page.screenshot(type="png", full_page=False, animations="disabled", timeout=5000)
+                screenshot_scope = "viewport_fallback_size_limit"
             screenshot_uri = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
         except Exception as exc:
-            console_errors.append(f"Screenshot capture failed: {str(exc)[:300]}")
+            verification_errors.append(f"Screenshot capture failed: {str(exc)[:300]}")
         return build_browser_report(
             url=actual_url,
             title=title,
@@ -244,6 +254,8 @@ async def run_browser_automation(
             failed_requests=failed_requests,
             screenshot=screenshot_uri,
             assertions=assertions,
+            verification_errors=verification_errors,
+            screenshot_scope=screenshot_scope,
         )
     finally:
         if page is not None:
