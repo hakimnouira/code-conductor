@@ -81,6 +81,7 @@ from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
 from app.task_leases import claim_task_lease, renew_task_lease, release_task_lease
 from app.completion_gate import evaluate_completion_gate
+from app.task_recovery import should_resume_pending_task
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
     get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
@@ -271,18 +272,95 @@ async def _restore_task_records(task_id: str | None = None) -> None:
         except Exception:
             continue
         _tasks[task_id] = record
-        if record.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-            record.error = "Backend restarted while this task was active; execution was not resumed."
-            record.status = TaskStatus.FAILED
+        if record.status == TaskStatus.RUNNING or (
+            record.status == TaskStatus.PENDING
+            and not should_resume_pending_task(
+                record.status.value, record.started_at, record.original_request_available
+            )
+        ):
+            interrupted_status = record.status
+            record.error = (
+                "Backend restarted while this task was running. Automatic replay is disabled "
+                "because provider side effects may already have occurred."
+                if interrupted_status == TaskStatus.RUNNING
+                else "Queued task cannot be resumed because its immutable original request is unavailable."
+            )
             record.completed_at = time.time()
+            record.status = TaskStatus.FAILED
+            record.add_evidence(
+                "restart_recovery", "failed", record.error,
+                details={
+                    "reason": "backend_restart",
+                    "previous_status": interrupted_status.value,
+                    "automatic_replay": False,
+                    "recoverable": bool(record.original_request_available),
+                },
+            )
             await record.event_queue.put(json.dumps({
                 "task_id": task_id,
                 "event_type": "error",
                 "text": record.error,
                 "timestamp": record.completed_at,
-                "data": {"reason": "backend_restart", "recoverable": True},
+                "data": {
+                    "reason": "backend_restart",
+                    "recoverable": bool(record.original_request_available),
+                    "automatic_replay": False,
+                },
             }))
             record._persist()
+
+
+async def _resume_pending_tasks_after_restart() -> None:
+    """Resume only durable tasks proven not to have started before a crash."""
+    registry = get_agent_registry()
+    for record in list(_tasks.values()):
+        if not should_resume_pending_task(
+            record.status.value, record.started_at, record.original_request_available
+        ):
+            continue
+        try:
+            record.request.workspace_path = str(validate_workspace_path(
+                record.request.workspace_path,
+                default_root=get_settings().workspace_root,
+            ))
+            adapter = await registry.resolve_agent(record.request.agent_id, record.request.prompt)
+            if not adapter:
+                raise RuntimeError("No configured provider could resolve the queued task.")
+        except Exception as exc:
+            record.error = "Queued task could not resume after restart: " + str(exc)[:400]
+            record.completed_at = time.time()
+            record.status = TaskStatus.FAILED
+            record.add_evidence(
+                "restart_recovery", "failed", record.error,
+                details={"reason": "resume_unavailable", "automatic_replay": False},
+            )
+            await record.event_queue.put(json.dumps({
+                "task_id": record.task_id,
+                "event_type": "error",
+                "text": record.error,
+                "timestamp": record.completed_at,
+                "data": {"reason": "resume_unavailable", "automatic_replay": False},
+            }))
+            await record.event_queue.put(None)
+            continue
+
+        record.agent_id = adapter.agent_id
+        record.add_evidence(
+            "restart_recovery", "passed",
+            "Resuming a queued task that had not started before the backend restart.",
+            details={"reason": "unstarted_pending_task", "automatic_replay": True},
+        )
+        await record.event_queue.put(json.dumps({
+            "task_id": record.task_id,
+            "event_type": "log",
+            "text": "Backend recovery resumed this queued task; provider execution had not started before the restart.",
+            "timestamp": time.time(),
+            "data": {"phase": "restart_recovery", "status": "resumed"},
+        }))
+        asyncio.create_task(
+            _run_task_pipeline(record, adapter),
+            name=f"recovered-task-{record.task_id}",
+        )
 
 
 async def _dispatch_scheduled_workflow(workflow: dict) -> str:
@@ -314,6 +392,7 @@ async def _lookup_scheduled_task(task_id: str) -> dict | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _restore_task_records()
+    await _resume_pending_tasks_after_restart()
     scheduler_task = asyncio.create_task(
         scheduler_loop(_dispatch_scheduled_workflow, _lookup_scheduled_task),
         name="code-conductor-scheduler",
