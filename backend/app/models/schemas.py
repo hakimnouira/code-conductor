@@ -55,6 +55,10 @@ class TaskCreateRequest(BaseModel):
     auto_verify: bool = False
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
     browser_verify_url: str | None = None
+    browser_expected_text: list[str] = Field(default_factory=list, max_length=30)
+    browser_forbidden_text: list[str] = Field(default_factory=list, max_length=30)
+    browser_required_selectors: list[str] = Field(default_factory=list, max_length=30)
+    browser_expected_url_contains: str | None = Field(default=None, max_length=512)
 
 class WorkflowPresetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
