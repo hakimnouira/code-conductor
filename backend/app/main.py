@@ -891,14 +891,24 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         await record.event_queue.queue.put(None)
         return
 
+    pipeline_task = asyncio.current_task()
+    lease_lost = asyncio.Event()
+
     async def renew_lease():
         while True:
             await asyncio.sleep(20)
-            renewed = await asyncio.to_thread(renew_task_lease, record.task_id, lease_owner)
+            try:
+                renewed = await asyncio.to_thread(renew_task_lease, record.task_id, lease_owner)
+            except Exception:
+                renewed = False
             if not renewed:
-                # Do not silently claim that this worker still owns the execution slot.
-                record.error = "Task execution lease was lost; another worker may have recovered it."
+                # Stop this worker immediately. It must not keep modifying the workspace
+                # or persist a terminal snapshot after another worker may have claimed it.
+                lease_lost.set()
+                record.error = "Task execution lease was lost; this worker stopped without overwriting durable state."
                 record._status = TaskStatus.FAILED
+                if pipeline_task is not None:
+                    pipeline_task.cancel()
                 return
 
     lease_heartbeat = asyncio.create_task(renew_lease(), name=f"task-lease-{record.task_id}")
@@ -1204,8 +1214,14 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                 "data": {"phase": "verification", "status": "repair_requested", "attempt": verification_attempt},
             }))
     except asyncio.CancelledError:
-        record.status = TaskStatus.CANCELLED
-        record.completed_at = time.time()
+        if lease_lost.is_set():
+            # A stale worker must not persist a cancellation/failure over the current
+            # lease owner's task state.
+            record._status = TaskStatus.FAILED
+            record.error = "Task execution lease was lost; this worker stopped without overwriting durable state."
+        else:
+            record.status = TaskStatus.CANCELLED
+            record.completed_at = time.time()
         raise
     except TaskExecutionTimeout as e:
         record.status = TaskStatus.FAILED
@@ -1236,6 +1252,18 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         }
         await record.event_queue.put(json.dumps(err_event))
     finally:
+        if lease_lost.is_set():
+            lease_heartbeat.cancel()
+            await asyncio.gather(lease_heartbeat, return_exceptions=True)
+            try:
+                await asyncio.wait_for(adapter.cancel_task(record.task_id), timeout=5)
+            except Exception:
+                pass
+            await asyncio.to_thread(release_task_lease, record.task_id, lease_owner)
+            # End this process's local stream without appending an event to the shared
+            # event log or overwriting the active owner's durable task snapshot.
+            await record.event_queue.queue.put(None)
+            return
         if record.status == TaskStatus.RUNNING:
             # A provider that ends its stream without completed/error is not success.
             record.status = TaskStatus.FAILED
