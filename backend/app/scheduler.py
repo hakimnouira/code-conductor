@@ -57,7 +57,19 @@ async def _monitor_run(
                 update_schedule(schedule_id, last_run_at=time.time(), last_status="failed", failure_streak_delta=1)
                 return
 
-        state = await status_lookup(task_id)
+        try:
+            state = await status_lookup(task_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Preserve the running record and retry the same task lookup. Do not
+            # dispatch duplicate work because a transient status query failed.
+            update_schedule_run(run_id, error=f"Temporary task status lookup failure: {str(exc)[:500]}")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
         if state is None:
             terminal_status, error = "failed", f"Task {task_id} was not found after scheduling."
         else:
@@ -119,11 +131,20 @@ async def scheduler_loop(
     try:
         for run in get_incomplete_schedule_runs():
             attach(run)
+        import logging
+        logger = logging.getLogger(__name__)
         while True:
-            for run in claim_due_schedules(time.time(), limit=20):
-                attach(run)
-            for run in get_incomplete_schedule_runs():
-                attach(run)
+            try:
+                for run in claim_due_schedules(time.time(), limit=20):
+                    attach(run)
+                for run in get_incomplete_schedule_runs():
+                    attach(run)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # SQLite can be briefly busy during task/event writes. Keep the
+                # scheduler alive and retry on the next tick instead of losing it.
+                logger.exception("Scheduled workflow polling failed; retrying next tick")
             await asyncio.sleep(max(1.0, poll_seconds))
     except asyncio.CancelledError:
         stop_event.set()
