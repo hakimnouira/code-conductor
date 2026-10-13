@@ -28,7 +28,7 @@ def test_auto_verify_requires_successful_test_or_build_evidence():
         "failed",
     )
     assert "automated_tests_not_passed" in failed["failures"]
-    assert "verification_status_failed" in failed["failures"]
+    assert "verification_status_not_passed" in failed["failures"]
 
 
 def test_browser_requirement_needs_explicit_pass_evidence():
@@ -75,3 +75,15 @@ def test_verified_completion_requires_complete_workspace_fingerprint():
         result = evaluate_completion_gate(request, evidence, "passed")
         assert result["passed"] is False
         assert expected_failure in result["failures"]
+
+
+def test_requested_verification_rejects_unknown_or_not_requested_status():
+    request = SimpleNamespace(auto_verify=True, browser_verify_url=None, acceptance_criteria=[])
+    evidence = [
+        {"kind": "automated_tests", "status": "passed", "details": {"exit_code": 0}},
+        provenance(),
+    ]
+    for status in ("", "not_requested", "unknown", "failed", "partial"):
+        result = evaluate_completion_gate(request, evidence, status)
+        assert result["passed"] is False
+        assert "verification_status_not_passed" in result["failures"]
