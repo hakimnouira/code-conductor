@@ -55,6 +55,10 @@ class ScheduledJobCreate(BaseModel):
     auto_verify: bool = False
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
     browser_verify_url: str | None = Field(default=None, max_length=2048)
+    browser_expected_text: list[str] = Field(default_factory=list, max_length=30)
+    browser_forbidden_text: list[str] = Field(default_factory=list, max_length=30)
+    browser_required_selectors: list[str] = Field(default_factory=list, max_length=30)
+    browser_expected_url_contains: str | None = Field(default=None, max_length=512)
     github_research: bool = True
     max_retries: int = Field(default=2, ge=0, le=5)
     enabled: bool = True
@@ -118,6 +122,10 @@ async def create_scheduled_job_endpoint(req: ScheduledJobCreate, _: str = Depend
         "auto_verify": req.auto_verify,
         "verification_max_attempts": req.verification_max_attempts,
         "browser_verify_url": req.browser_verify_url or "",
+        "browser_expected_text": req.browser_expected_text,
+        "browser_forbidden_text": req.browser_forbidden_text,
+        "browser_required_selectors": req.browser_required_selectors,
+        "browser_expected_url_contains": req.browser_expected_url_contains,
         "github_research": req.github_research,
         "permission_mode": "safe",
         "god_mode_confirmed": False,
