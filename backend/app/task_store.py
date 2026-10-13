@@ -138,7 +138,7 @@ def save_task(
     initial_request_json: str | None = None,
 ) -> None:
     """Persist current execution state while preserving the immutable original request."""
-    initial_json = initial_request_json or request_json
+    initial_json = request_json if initial_request_json is None else initial_request_json
     with _connect() as db:
         db.execute(
             """INSERT INTO tasks(
@@ -191,15 +191,20 @@ def get_saved_tasks(limit: int = 100) -> list[dict[str, Any]]:
     for row in rows:
         try:
             current_request = json.loads(row["request_json"])
+            snapshot = json.loads(row["snapshot_json"])
             original_json = row["initial_request_json"] or row["request_json"]
             try:
                 initial_request = json.loads(original_json)
             except (TypeError, json.JSONDecodeError):
                 initial_request = current_request
+            original_available = bool(row["initial_request_json"]) and bool(
+                snapshot.get("original_request_available", True)
+            )
             result.append({
                 "request": current_request,
                 "initial_request": initial_request,
-                "snapshot": json.loads(row["snapshot_json"]),
+                "initial_request_available": original_available,
+                "snapshot": snapshot,
             })
         except (TypeError, json.JSONDecodeError):
             continue

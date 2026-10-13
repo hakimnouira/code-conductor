@@ -179,4 +179,5 @@ def test_original_request_column_migrates_existing_task_database(tmp_path, monke
     monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(database))
     saved = get_saved_tasks()
     assert saved[0]["initial_request"]["prompt"] == "Legacy task"
+    assert saved[0]["initial_request_available"] is False
     assert saved[0]["request"]["prompt"] == "Legacy task"
