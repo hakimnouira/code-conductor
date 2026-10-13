@@ -129,3 +129,24 @@ def test_browser_payload_bounds_assertion_count_and_item_length():
     assert payload.required_text[1] == "Dashboard"
     with pytest.raises(Exception):
         BrowserVerifyPayload(url="http://127.0.0.1:5173", required_text=[str(i) for i in range(21)])
+
+
+def test_browser_report_fails_and_labels_screenshot_infrastructure_errors():
+    report = build_browser_report(
+        url="http://localhost:5173/",
+        title="Dashboard",
+        ready_state="complete",
+        body_text="Dashboard",
+        main_document_status=200,
+        page_errors=[],
+        console_errors=[],
+        http_errors=[],
+        failed_requests=[],
+        screenshot=None,
+        verification_errors=["Screenshot capture failed: timeout"],
+        screenshot_scope="viewport_fallback_size_limit",
+    )
+    assert report["success"] is False
+    assert report["checks"]["no_verification_errors"] is False
+    assert report["console_errors"] == []
+    assert report["screenshot_scope"] == "viewport_fallback_size_limit"
