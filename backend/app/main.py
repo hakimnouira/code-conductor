@@ -79,6 +79,7 @@ from app.cron_schedule import CronExpressionError, next_cron_occurrence
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
+from app.task_leases import claim_task_lease, renew_task_lease, release_task_lease
 from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
     get_saved_task, get_saved_tasks, get_schedule, get_schedule_run_summary, list_schedule_runs,
@@ -715,6 +716,29 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
     if record.status == TaskStatus.CANCELLED:
         await record.event_queue.put(None)
         return
+
+    # SQLite's atomic lease claim prevents two backend processes from executing the
+    # same durable task ID concurrently. A duplicate worker must not overwrite the
+    # active worker's persisted task snapshot.
+    lease_owner = uuid.uuid4().hex
+    claimed = await asyncio.to_thread(claim_task_lease, record.task_id, lease_owner)
+    if not claimed:
+        record.error = "Another backend worker currently owns this task execution lease."
+        record._status = TaskStatus.FAILED
+        await record.event_queue.queue.put(None)
+        return
+
+    async def renew_lease():
+        while True:
+            await asyncio.sleep(20)
+            renewed = await asyncio.to_thread(renew_task_lease, record.task_id, lease_owner)
+            if not renewed:
+                # Do not silently claim that this worker still owns the execution slot.
+                record.error = "Task execution lease was lost; another worker may have recovered it."
+                record._status = TaskStatus.FAILED
+                return
+
+    lease_heartbeat = asyncio.create_task(renew_lease(), name=f"task-lease-{record.task_id}")
     record.status = TaskStatus.RUNNING
     record.started_at = time.time()
     timeout_seconds = _task_timeout_seconds()
@@ -1109,6 +1133,9 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
+        lease_heartbeat.cancel()
+        await asyncio.gather(lease_heartbeat, return_exceptions=True)
+        await asyncio.to_thread(release_task_lease, record.task_id, lease_owner)
 
 @app.post("/scheduler/pause")
 async def pause_scheduled_dispatch(_: str = Depends(require_bearer_token)):
