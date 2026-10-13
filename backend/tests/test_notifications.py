@@ -35,5 +35,6 @@ def test_enabled_windows_notification_uses_schedule_outcome(monkeypatch):
     assert notify_schedule_outcome("Daily report", "failed", "Tests did not pass") is True
     assert calls[0]["app_id"] == "Code Conductor"
     assert "needs attention" in calls[0]["title"]
-    assert "Tests did not pass" in calls[0]["msg"]
+    assert "open Code Conductor for details" in calls[0]["msg"]
+    assert "Tests did not pass" not in calls[0]["msg"]
     assert calls[1] == {"shown": True}
