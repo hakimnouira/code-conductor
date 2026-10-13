@@ -109,7 +109,16 @@ async def run_browser_automation(
         page = await context.new_page()
         page.set_default_timeout(7000)
         page.on("pageerror", lambda exc: page_errors.append(str(exc)[:500]))
-        page.on("console", lambda msg: console_errors.append(msg.text[:500]) if msg.type == "error" else None)
+
+        def on_console(message: Any) -> None:
+            # Chromium reports failed image/favicon loads as console errors too;
+            # those are already captured in failed_requests/http_errors and should
+            # not masquerade as JavaScript runtime failures.
+            if message.type == "error" and not str(message.text).lower().startswith("failed to load resource:"):
+                if len(console_errors) < 30:
+                    console_errors.append(str(message.text)[:500])
+
+        page.on("console", on_console)
 
         def on_response(response: Any) -> None:
             nonlocal main_document_status
