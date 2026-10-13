@@ -44,7 +44,10 @@ class TaskStatus(str, Enum):
 
 class BrowserActionStep(BaseModel):
     """A bounded, selector-based browser action; arbitrary JavaScript is not accepted."""
-    action: Literal["click", "fill", "check", "uncheck", "select_option", "press", "wait_for_selector"]
+    action: Literal[
+        "click", "fill", "check", "uncheck", "select_option", "press", "wait_for_selector",
+        "assert_text", "assert_value", "assert_count", "assert_enabled", "assert_disabled",
+    ]
     selector: str = Field(min_length=1, max_length=500)
     value: str | None = Field(default=None, max_length=1000)
     timeout_ms: int = Field(default=5000, ge=100, le=10000)
@@ -59,8 +62,17 @@ class BrowserActionStep(BaseModel):
 
     @model_validator(mode="after")
     def require_action_value(self):
-        if self.action in ("fill", "select_option", "press") and self.value is None:
+        if self.action in (
+            "fill", "select_option", "press", "assert_text", "assert_value", "assert_count"
+        ) and self.value is None:
             raise ValueError(f"Browser action '{self.action}' requires a value.")
+        if self.action == "assert_count":
+            try:
+                expected_count = int(self.value or "")
+            except ValueError as exc:
+                raise ValueError("Browser action 'assert_count' requires a non-negative integer value.") from exc
+            if expected_count < 0:
+                raise ValueError("Browser action 'assert_count' requires a non-negative integer value.")
         return self
 
 
