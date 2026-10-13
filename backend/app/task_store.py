@@ -520,3 +520,29 @@ def list_schedule_runs(schedule_id: str, limit: int = 50) -> list[dict[str, Any]
             (schedule_id, min(max(1, limit), 200)),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+
+def get_schedule_run_summary(limit: int = 10) -> dict[str, Any]:
+    """Return aggregate schedule-run counts and a small, secret-safe recent-run list."""
+    with _connect() as db:
+        count_rows = db.execute(
+            "SELECT status, COUNT(*) AS count FROM schedule_runs GROUP BY status"
+        ).fetchall()
+        recent_rows = db.execute(
+            """SELECT schedule_runs.run_id, schedule_runs.schedule_id,
+                      COALESCE(scheduled_workflows.name, '') AS name,
+                      schedule_runs.scheduled_for, schedule_runs.started_at,
+                      schedule_runs.completed_at, schedule_runs.status,
+                      schedule_runs.task_id, schedule_runs.attempt
+               FROM schedule_runs
+               LEFT JOIN scheduled_workflows
+                 ON scheduled_workflows.schedule_id = schedule_runs.schedule_id
+               ORDER BY schedule_runs.scheduled_for DESC
+               LIMIT ?""",
+            (min(max(1, limit), 50),),
+        ).fetchall()
+    return {
+        "counts_by_status": {str(row["status"]): int(row["count"]) for row in count_rows},
+        "recent_runs": [dict(row) for row in recent_rows],
+    }
