@@ -860,11 +860,11 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
     record.status = TaskStatus.RUNNING
     record.started_at = time.time()
     if record.request.acceptance_criteria:
-        criteria_text = "\\n".join(f"- {criterion}" for criterion in record.request.acceptance_criteria)
+        criteria_text = "\n".join(f"- {criterion}" for criterion in record.request.acceptance_criteria)
         record.request.prompt += (
-            "\\n\\nEXPLICIT ACCEPTANCE CRITERIA (all must pass):\\n"
+            "\n\nEXPLICIT ACCEPTANCE CRITERIA (all must pass):\n"
             + criteria_text
-            + "\\nImplement these criteria and ensure automated tests/build checks validate them. Do not claim completion if any criterion is unmet."
+            + "\nImplement these criteria and ensure automated tests/build checks validate them. Do not claim completion if any criterion is unmet."
         )
         await record.event_queue.put(json.dumps({
             "task_id": record.task_id,
