@@ -52,6 +52,11 @@ Remove the task with:
 
 When this task is installed, Stop_CodeConductor.bat or cxcode stop can be followed by an automatic backend restart. Remove or stop the scheduled task first if you want the backend to remain stopped.
 
+Optional Windows toast notifications for scheduled workflow success/failure are off by default. Enable them for your Windows user with:
+
+    [Environment]::SetEnvironmentVariable("CODE_CONDUCTOR_DESKTOP_NOTIFICATIONS", "1", "User")
+
+Then restart the background task. Notifications are emitted by the backend, so they do not require the dashboard to be open. Disable them by setting the same user environment variable to an empty string or null and restarting the task.
 ## Architecture Overview
 
 1. **VS Code Extension (TypeScript)**:
