@@ -89,10 +89,14 @@ def _connect() -> sqlite3.Connection:
             agent_id TEXT NOT NULL,
             auto_verify INTEGER NOT NULL DEFAULT 0,
             browser_verify_url TEXT NOT NULL DEFAULT '',
+            browser_assertions_json TEXT NOT NULL DEFAULT '{}',
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         )"""
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(workflow_presets)").fetchall()}
+    if "browser_assertions_json" not in columns:
+        connection.execute("ALTER TABLE workflow_presets ADD COLUMN browser_assertions_json TEXT NOT NULL DEFAULT '{}'")
     connection.commit()
     return connection
 
@@ -157,17 +161,20 @@ def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
             """SELECT workflow_id, name, prompt, agent_id, auto_verify,
-                      browser_verify_url, created_at, updated_at
+                      browser_verify_url, browser_assertions_json, created_at, updated_at
                FROM workflow_presets ORDER BY updated_at DESC LIMIT ?""",
             (min(max(1, limit), 200),),
         ).fetchall()
-    return [
-        {
-            **dict(row),
-            "auto_verify": bool(row["auto_verify"]),
-        }
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["auto_verify"] = bool(item["auto_verify"])
+        try:
+            item["browser_assertions"] = json.loads(item.pop("browser_assertions_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item["browser_assertions"] = {}
+        result.append(item)
+    return result
 
 
 def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -177,19 +184,22 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         db.execute(
             """INSERT INTO workflow_presets(
                     workflow_id, name, prompt, agent_id, auto_verify,
-                    browser_verify_url, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    browser_verify_url, browser_assertions_json, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(workflow_id) DO UPDATE SET
                     name=excluded.name,
                     prompt=excluded.prompt,
                     agent_id=excluded.agent_id,
                     auto_verify=excluded.auto_verify,
                     browser_verify_url=excluded.browser_verify_url,
+                    browser_assertions_json=excluded.browser_assertions_json,
                     updated_at=excluded.updated_at""",
             (
                 workflow["workflow_id"], workflow["name"], workflow["prompt"],
                 workflow.get("agent_id", "auto"), int(bool(workflow.get("auto_verify", False))),
-                workflow.get("browser_verify_url", ""), created_at, now,
+                workflow.get("browser_verify_url", ""),
+                json.dumps(workflow.get("browser_assertions") or {}, ensure_ascii=False),
+                created_at, now,
             ),
         )
     return next((item for item in list_workflows(200) if item["workflow_id"] == workflow["workflow_id"]), dict(workflow))
