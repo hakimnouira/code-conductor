@@ -10,7 +10,7 @@ type Agent = { id: string; name: string; description: string; state: string; dia
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
-type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };\ntype ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };
+type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };\ntype ScheduledWorkflow = { schedule_id: string; workflow_id: string; name: string; interval_minutes: number; enabled: boolean; next_run_at: number; max_retries: number; failure_streak: number; last_run_at?: number | null; last_status: string; last_task_id: string; created_at: number; updated_at: number };\ntype ScheduledRun = { run_id: string; schedule_id: string; scheduled_for: number; started_at?: number | null; completed_at?: number | null; status: string; task_id: string; attempt: number; max_retries: number; error: string };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
@@ -155,7 +155,7 @@ export default function App() {
   const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowName, setWorkflowName] = useState("");
-  const [workflowBusy, setWorkflowBusy] = useState(false);\n  const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);\n  const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);\n  const [scheduleBusyId, setScheduleBusyId] = useState("");
+  const [workflowBusy, setWorkflowBusy] = useState(false);\n  const [scheduledWorkflows, setScheduledWorkflows] = useState<ScheduledWorkflow[]>([]);\n  const [scheduleIntervalMinutes, setScheduleIntervalMinutes] = useState(1440);\n  const [scheduleBusyId, setScheduleBusyId] = useState("");\n  const [scheduleRunsOpenId, setScheduleRunsOpenId] = useState("");\n  const [scheduleRunDetails, setScheduleRunDetails] = useState<Record<string, ScheduledRun[]>>({});
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -712,6 +712,21 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Could not schedule workflow");
     } finally {
       setScheduleBusyId("");
+    }
+  };
+
+  const toggleScheduleRuns = async (scheduleId: string) => {
+    if (scheduleRunsOpenId === scheduleId) {
+      setScheduleRunsOpenId("");
+      return;
+    }
+    setScheduleRunsOpenId(scheduleId);
+    try {
+      const response = await request("/schedules/" + encodeURIComponent(scheduleId) + "/runs?limit=20");
+      const rows = await response.json() as ScheduledRun[];
+      setScheduleRunDetails(old => ({ ...old, [scheduleId]: Array.isArray(rows) ? rows : [] }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load schedule history");
     }
   };
 
@@ -3055,7 +3070,7 @@ export default function App() {
                 {workflowPresets.length === 0 ? <p style={{ color: "var(--muted)" }}>No workflows saved yet.</p> : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                     {workflowPresets.map(workflow => (
-                      <div key={workflow.workflow_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+                      <div key={workflow.workflow_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "flex-start" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <b>{workflow.name}</b>
                           <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>{workflow.prompt.slice(0, 220)}{workflow.prompt.length > 220 ? "…" : ""}</p>
@@ -3099,8 +3114,29 @@ export default function App() {
                             {schedule.enabled ? "Enabled" : "Paused"} · Next: {new Date(schedule.next_run_at * 1000).toLocaleString()} · Last run: {schedule.last_status || "Never"}{schedule.failure_streak ? ` · failure streak ${schedule.failure_streak}` : ""}
                           </span>
                         </div>
+                        <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduleRuns(schedule.schedule_id)}>Runs</button>
                         <button className="outline-button" disabled={!!scheduleBusyId} onClick={() => void toggleScheduledWorkflow(schedule)}>{scheduleBusyId === schedule.schedule_id ? <LoaderCircle size={13}/> : schedule.enabled ? "Pause" : "Resume"}</button>
                         <button className="icon-button" disabled={!!scheduleBusyId} onClick={() => void deleteScheduledWorkflow(schedule.schedule_id)} title="Delete schedule"><Trash2 size={14}/></button>
+                        {scheduleRunsOpenId === schedule.schedule_id && (
+                          <div style={{ flexBasis: "100%", borderTop: "1px solid var(--border)", paddingTop: "10px" }}>
+                            <b style={{ fontSize: "12px" }}>Recent runs</b>
+                            {(scheduleRunDetails[schedule.schedule_id] || []).length === 0 ? <p style={{ color: "var(--muted)", fontSize: "12px" }}>No runs recorded yet. The first run is scheduled for the next interval.</p> : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+                                {(scheduleRunDetails[schedule.schedule_id] || []).map(run => (
+                                  <div key={run.run_id} style={{ background: "var(--surface-2)", borderRadius: "8px", padding: "9px" }}>
+                                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", fontSize: "11px" }}>
+                                      <b>{run.status.toUpperCase()}</b>
+                                      <span>{new Date((run.started_at || run.scheduled_for) * 1000).toLocaleString()}</span>
+                                      <span>Attempts: {run.attempt}/{run.max_retries + 1}</span>
+                                      {run.task_id && <button className="outline-button" onClick={() => void loadHistoryItem(run.task_id)}>Open task</button>}
+                                    </div>
+                                    {run.error && <p style={{ color: "var(--danger, #d55)", fontSize: "12px", margin: "6px 0 0" }}>{run.error}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
