@@ -132,6 +132,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Backend dependencies installed successfully." -ForegroundColor Green
 
+Write-Host "Installing Chromium for real browser verification..." -ForegroundColor Yellow
+& $VenvPython -m playwright install chromium
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Playwright Chromium installation failed." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host "Playwright Chromium installed successfully." -ForegroundColor Green
+
 # 4. Node.js & Extension Build
 Write-Host "`n[4/5] Setting up VS Code Extension dependencies..." -ForegroundColor Yellow
 $NpmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
