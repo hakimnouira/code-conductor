@@ -88,6 +88,7 @@ class TaskCreateRequest(BaseModel):
     github_research: bool = True
     auto_verify: bool = False
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
     browser_verify_url: str | None = None
     browser_required_text: list[str] = Field(default_factory=list, max_length=20)
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
@@ -118,7 +119,7 @@ class TaskCreateRequest(BaseModel):
             raise ValueError("Idempotency key must not be blank.")
         return cleaned
 
-    @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
+    @field_validator("acceptance_criteria", "browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
     def bound_browser_assertion_values(cls, values: list[str]) -> list[str]:
         return [value.strip()[:500] for value in values if value.strip()][:20]
@@ -129,6 +130,7 @@ class WorkflowPresetRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
     agent_id: str = Field(default="auto", min_length=1, max_length=80)
     auto_verify: bool = False
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
     browser_verify_url: str | None = Field(default=None, max_length=2048)
     browser_required_text: list[str] = Field(default_factory=list, max_length=20)
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
@@ -136,7 +138,7 @@ class WorkflowPresetRequest(BaseModel):
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
 
-    @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
+    @field_validator("acceptance_criteria", "browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
     def bound_browser_assertion_values(cls, values: list[str]) -> list[str]:
         return [value.strip()[:500] for value in values if value.strip()][:20]
@@ -148,6 +150,7 @@ class WorkflowPresetResponse(BaseModel):
     prompt: str
     agent_id: str
     auto_verify: bool = False
+    acceptance_criteria: list[str] = Field(default_factory=list)
     browser_verify_url: str = ""
     browser_required_text: list[str] = Field(default_factory=list)
     browser_forbidden_text: list[str] = Field(default_factory=list)

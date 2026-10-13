@@ -117,6 +117,7 @@ def _connect() -> sqlite3.Connection:
             prompt TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             auto_verify INTEGER NOT NULL DEFAULT 0,
+            acceptance_criteria TEXT NOT NULL DEFAULT '[]',
             browser_verify_url TEXT NOT NULL DEFAULT '',
             browser_required_text TEXT NOT NULL DEFAULT '[]',
             browser_forbidden_text TEXT NOT NULL DEFAULT '[]',
@@ -130,7 +131,7 @@ def _connect() -> sqlite3.Connection:
     # Upgrade databases created by earlier Code Conductor versions without losing presets.
     existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(workflow_presets)").fetchall()}
     for column in (
-        "browser_required_text", "browser_forbidden_text",
+        "acceptance_criteria", "browser_required_text", "browser_forbidden_text",
         "browser_visible_selectors", "browser_hidden_selectors", "browser_steps",
     ):
         if column not in existing_columns:
@@ -248,7 +249,7 @@ def _decode_json_list(value: Any) -> list[str]:
 def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
     with _connect() as db:
         rows = db.execute(
-            """SELECT workflow_id, name, prompt, agent_id, auto_verify,
+            """SELECT workflow_id, name, prompt, agent_id, auto_verify, acceptance_criteria,
                       browser_verify_url, browser_required_text, browser_forbidden_text,
                       browser_visible_selectors, browser_hidden_selectors, browser_steps, created_at, updated_at
                FROM workflow_presets ORDER BY updated_at DESC LIMIT ?""",
@@ -258,7 +259,7 @@ def list_workflows(limit: int = 100) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["auto_verify"] = bool(item["auto_verify"])
-        for field in ("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors"):
+        for field in ("acceptance_criteria", "browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors"):
             item[field] = _decode_json_list(item[field])
         try:
             steps = json.loads(item.get("browser_steps") or "[]")
@@ -275,15 +276,16 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
     with _connect() as db:
         db.execute(
             """INSERT INTO workflow_presets(
-                    workflow_id, name, prompt, agent_id, auto_verify,
+                    workflow_id, name, prompt, agent_id, auto_verify, acceptance_criteria,
                     browser_verify_url, browser_required_text, browser_forbidden_text,
                     browser_visible_selectors, browser_hidden_selectors, browser_steps, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(workflow_id) DO UPDATE SET
                     name=excluded.name,
                     prompt=excluded.prompt,
                     agent_id=excluded.agent_id,
                     auto_verify=excluded.auto_verify,
+                    acceptance_criteria=excluded.acceptance_criteria,
                     browser_verify_url=excluded.browser_verify_url,
                     browser_required_text=excluded.browser_required_text,
                     browser_forbidden_text=excluded.browser_forbidden_text,
@@ -294,6 +296,7 @@ def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
             (
                 workflow["workflow_id"], workflow["name"], workflow["prompt"],
                 workflow.get("agent_id", "auto"), int(bool(workflow.get("auto_verify", False))),
+                json.dumps(_decode_json_list(workflow.get("acceptance_criteria", [])), ensure_ascii=False),
                 workflow.get("browser_verify_url", ""),
                 json.dumps(_decode_json_list(workflow.get("browser_required_text", [])), ensure_ascii=False),
                 json.dumps(_decode_json_list(workflow.get("browser_forbidden_text", [])), ensure_ascii=False),
