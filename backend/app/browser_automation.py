@@ -84,6 +84,7 @@ def build_browser_report(
     assertions: dict[str, Any] | None = None,
     verification_errors: list[str] | None = None,
     screenshot_scope: str = "full_page",
+    action_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a stable, testable verification report from captured browser evidence."""
     text = body_text[:12000]
@@ -95,6 +96,7 @@ def build_browser_report(
         ) if marker in lower_text
     ]
     assertions = assertions or {"passed": True, "required_text": [], "forbidden_text": [], "visible_selectors": [], "hidden_selectors": []}
+    action_results = action_results or []
     checks = {
         "page_loaded": ready_state in ("interactive", "complete"),
         "main_document_http_ok": main_document_status is None or main_document_status < 400,
@@ -102,6 +104,7 @@ def build_browser_report(
         "no_console_errors": not console_errors,
         "no_common_error_markers": not error_markers,
         "acceptance_assertions_passed": bool(assertions.get("passed", True)),
+        "browser_actions_passed": all(item.get("passed", False) for item in action_results),
         "no_verification_errors": not (verification_errors or []),
     }
     return {
@@ -117,6 +120,7 @@ def build_browser_report(
         "failed_requests": failed_requests[:50],
         "error_markers": error_markers,
         "acceptance_assertions": assertions,
+        "action_results": action_results[:20],
         "verification_errors": (verification_errors or [])[:20],
         "screenshot_scope": screenshot_scope,
         "body_text_excerpt": text[:6000],
@@ -137,6 +141,7 @@ async def run_browser_automation(
     forbidden_text: list[str] | None = None,
     visible_selectors: list[str] | None = None,
     hidden_selectors: list[str] | None = None,
+    steps: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Navigate a fresh tab, collect runtime/network evidence, and capture a screenshot."""
     _validate_target_url(url)
@@ -162,6 +167,7 @@ async def run_browser_automation(
     assertions: dict[str, Any] = {"passed": True, "required_text": [], "forbidden_text": [], "visible_selectors": [], "hidden_selectors": []}
     actual_url = url
     screenshot_scope = "full_page"
+    action_results: list[dict[str, Any]] = []
     page = None
     playwright = await async_playwright().start()
     try:
@@ -217,6 +223,50 @@ async def run_browser_automation(
                 body_text = await page.locator("body").inner_text(timeout=1000)
             except Exception:
                 pass
+        # Only bounded selector-based actions are accepted; arbitrary JavaScript is never run.
+        for index, raw_step in enumerate((steps or [])[:20]):
+            step = raw_step.model_dump() if hasattr(raw_step, "model_dump") else dict(raw_step)
+            action = str(step.get("action") or "")
+            selector = str(step.get("selector") or "").strip()
+            value = step.get("value")
+            timeout_ms = min(max(int(step.get("timeout_ms") or 5000), 100), 10000)
+            started = time.monotonic()
+            result: dict[str, Any] = {
+                "index": index,
+                "action": action,
+                "selector": selector[:500],
+                "passed": False,
+            }
+            try:
+                if not selector:
+                    raise ValueError("Selector must not be blank.")
+                locator = page.locator(selector).first
+                if action == "click":
+                    await locator.click(timeout=timeout_ms)
+                elif action == "fill":
+                    await locator.fill(str(value or ""), timeout=timeout_ms)
+                elif action == "check":
+                    await locator.check(timeout=timeout_ms)
+                elif action == "uncheck":
+                    await locator.uncheck(timeout=timeout_ms)
+                elif action == "select_option":
+                    await locator.select_option(str(value), timeout=timeout_ms)
+                elif action == "press":
+                    await locator.press(str(value), timeout=timeout_ms)
+                elif action == "wait_for_selector":
+                    await locator.wait_for(state="visible", timeout=timeout_ms)
+                else:
+                    raise ValueError(f"Unsupported browser action: {action}")
+                result["passed"] = True
+            except Exception as exc:
+                result["error"] = str(exc)[:500]
+                verification_errors.append(f"Browser action {index + 1} ({action}) failed: {str(exc)[:300]}")
+            result["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
+            action_results.append(result)
+            if not result["passed"]:
+                # Stop at the first failure; later actions may be unsafe against an unknown state.
+                break
+
         selector_visibility: dict[str, dict[str, Any]] = {}
         for selector in dict.fromkeys(visible_selectors + hidden_selectors):
             try:
@@ -256,6 +306,7 @@ async def run_browser_automation(
             assertions=assertions,
             verification_errors=verification_errors,
             screenshot_scope=screenshot_scope,
+            action_results=action_results,
         )
     finally:
         if page is not None:
