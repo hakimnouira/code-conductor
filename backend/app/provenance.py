@@ -1,7 +1,8 @@
 """Bounded provenance capture tying task evidence to a Git revision and working-tree snapshot.
 
-This is an integrity fingerprint, not a proof that the code is correct or that every
-file in an arbitrarily large workspace was captured. Limits are explicit in the result.
+This is an integrity fingerprint, not a proof that the code is correct. Command output,
+untracked-file counts, and untracked content are explicitly capped so a huge workspace
+cannot force unbounded memory use. File contents are never returned.
 """
 from __future__ import annotations
 
@@ -10,8 +11,12 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
+_MAX_STATUS_BYTES = 5 * 1024 * 1024
+_MAX_DIFF_BYTES = 50 * 1024 * 1024
+_MAX_UNTRACKED_LIST_BYTES = 5 * 1024 * 1024
 _MAX_UNTRACKED_FILES = 2_000
 _MAX_UNTRACKED_BYTES = 50 * 1024 * 1024
 _COMMAND_TIMEOUT_SECONDS = 10
@@ -25,6 +30,77 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         timeout=_COMMAND_TIMEOUT_SECONDS,
         check=False,
     )
+
+
+def _git_bounded_capture(
+    root: Path,
+    *args: str,
+    max_bytes: int,
+) -> tuple[bytes, bool, int | None, bool]:
+    """Capture at most max_bytes from a Git command, killing it on overflow/timeout."""
+    process = subprocess.Popen(
+        ["git", "-C", str(root), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    captured = bytearray()
+    truncated = False
+    timed_out = False
+
+    def consume_stdout() -> None:
+        nonlocal truncated
+        assert process.stdout is not None
+        while True:
+            # read1 avoids waiting for a full megabyte when a pipe has less data.
+            chunk = process.stdout.read1(min(1024 * 1024, max_bytes + 1 - len(captured)))
+            if not chunk:
+                break
+            remaining = max_bytes - len(captured)
+            if len(chunk) > remaining:
+                if remaining > 0:
+                    captured.extend(chunk[:remaining])
+                truncated = True
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                break
+            captured.extend(chunk)
+        try:
+            process.stdout.close()
+        except OSError:
+            pass
+
+    reader = Thread(target=consume_stdout, daemon=True)
+    reader.start()
+    try:
+        process.wait(timeout=_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    reader.join(timeout=2)
+    if reader.is_alive():
+        timed_out = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        reader.join(timeout=1)
+
+    returncode = process.poll()
+    complete = not truncated and not timed_out and returncode == 0
+    return bytes(captured), complete, returncode, (truncated or timed_out)
 
 
 def collect_workspace_provenance(workspace: str | Path) -> dict[str, Any]:
@@ -57,30 +133,60 @@ def collect_workspace_provenance(workspace: str | Path) -> dict[str, Any]:
         if head_result.returncode != 0:
             raise RuntimeError("git_head_unavailable")
         head = os.fsdecode(head_result.stdout).strip()
-        status_result = _git(repo_root, "status", "--porcelain=v1", "--untracked-files=all", "-z")
-        diff_result = _git(repo_root, "diff", "--binary", "HEAD", "--")
-        if status_result.returncode != 0 or diff_result.returncode != 0:
-            raise RuntimeError("git_worktree_snapshot_failed")
+
+        status_output, status_complete, status_code, status_limited = _git_bounded_capture(
+            repo_root, "status", "--porcelain=v1", "--untracked-files=all", "-z",
+            max_bytes=_MAX_STATUS_BYTES,
+        )
+        diff_output, diff_complete, diff_code, diff_limited = _git_bounded_capture(
+            repo_root, "diff", "--binary", "HEAD", "--", max_bytes=_MAX_DIFF_BYTES,
+        )
+        untracked_output, untracked_complete, untracked_code, untracked_limited = _git_bounded_capture(
+            repo_root, "ls-files", "--others", "--exclude-standard", "-z",
+            max_bytes=_MAX_UNTRACKED_LIST_BYTES,
+        )
+        for name, code, complete in (
+            ("git_status", status_code, status_complete),
+            ("git_diff", diff_code, diff_complete),
+            ("git_untracked_list", untracked_code, untracked_complete),
+        ):
+            if not complete and code not in (0, None) and not (
+                status_limited if name == "git_status"
+                else diff_limited if name == "git_diff"
+                else untracked_limited
+            ):
+                raise RuntimeError(f"{name}_failed")
+
+        raw_paths = untracked_output.split(b"\0")
+        if untracked_output and not untracked_output.endswith(b"\0"):
+            # The last item may be a truncated path and must never be opened.
+            raw_paths = raw_paths[:-1]
+        untracked_paths = [p for p in raw_paths if p]
+        complete = (
+            status_complete
+            and diff_complete
+            and untracked_complete
+            and len(untracked_paths) <= _MAX_UNTRACKED_FILES
+        )
 
         digest = hashlib.sha256()
-        digest.update(b"code-conductor-workspace-provenance-v1\0")
+        digest.update(b"code-conductor-workspace-provenance-v2\0")
         digest.update(head.encode("ascii", errors="replace"))
-        digest.update(b"\0")
-        digest.update(status_result.stdout)
-        digest.update(b"\0")
-        digest.update(diff_result.stdout)
-        untracked_result = _git(repo_root, "ls-files", "--others", "--exclude-standard", "-z")
-        if untracked_result.returncode != 0:
-            raise RuntimeError("git_untracked_list_failed")
+        digest.update(b"\0status\0")
+        digest.update(status_output)
+        digest.update(b"\0status_complete=" + str(status_complete).encode("ascii"))
+        digest.update(b"\0diff\0")
+        digest.update(diff_output)
+        digest.update(b"\0diff_complete=" + str(diff_complete).encode("ascii"))
+        digest.update(b"\0untracked_list\0")
+        digest.update(untracked_output)
+        digest.update(b"\0untracked_list_complete=" + str(untracked_complete).encode("ascii"))
 
-        untracked_paths = [p for p in untracked_result.stdout.split(b"\0") if p]
-        complete = len(untracked_paths) <= _MAX_UNTRACKED_FILES
         scanned_files = 0
         scanned_bytes = 0
         for raw_path in untracked_paths[:_MAX_UNTRACKED_FILES]:
             rel = Path(os.fsdecode(raw_path))
             candidate = (repo_root / rel).resolve(strict=False)
-            # Never follow symlinks outside the repository or hash their targets.
             original = repo_root / rel
             digest.update(b"untracked\0")
             digest.update(raw_path)
@@ -122,13 +228,20 @@ def collect_workspace_provenance(workspace: str | Path) -> dict[str, Any]:
             "repository_root": str(repo_root),
             "workspace_relative_path": str(root.relative_to(repo_root)).replace("\\", "/"),
             "head_commit": head,
-            "dirty": bool(status_result.stdout),
-            "changed_paths": len([p for p in status_result.stdout.split(b"\0") if p]),
+            "dirty": bool(status_output),
+            "changed_paths": len([p for p in status_output.split(b"\0") if p]),
+            "status_bytes_hashed": len(status_output),
+            "diff_bytes_hashed": len(diff_output),
+            "diff_complete": diff_complete,
+            "untracked_path_list_bytes_hashed": len(untracked_output),
             "untracked_files_hashed": scanned_files,
             "untracked_bytes_hashed": scanned_bytes,
             "snapshot_sha256": digest.hexdigest(),
             "snapshot_complete": complete,
             "limits": {
+                "max_status_bytes": _MAX_STATUS_BYTES,
+                "max_diff_bytes": _MAX_DIFF_BYTES,
+                "max_untracked_list_bytes": _MAX_UNTRACKED_LIST_BYTES,
                 "max_untracked_files": _MAX_UNTRACKED_FILES,
                 "max_untracked_bytes": _MAX_UNTRACKED_BYTES,
             },
