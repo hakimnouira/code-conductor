@@ -64,6 +64,7 @@ from app.repository_import import router as repository_import_router
 from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
 from app.browser_session import BrowserVerifyPayload, router as browser_session_router, verify_browser_page
+from app.browser_verification import BrowserAssertions
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
