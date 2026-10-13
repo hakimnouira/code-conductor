@@ -337,3 +337,57 @@ async def test_browser_connection_explains_missing_playwright_browser():
 
     with pytest.raises(RuntimeError, match="python -m playwright install chromium"):
         await connect_or_launch_browser(Playwright(), "http://127.0.0.1:9222")
+
+
+
+@pytest.mark.asyncio
+async def test_browser_step_runner_supports_explicit_dom_assertions():
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        async def inner_text(self, timeout):
+            return "Saved successfully"
+
+        async def input_value(self, timeout):
+            return "alice@example.com"
+
+        async def count(self):
+            return 2
+
+        async def is_enabled(self, timeout):
+            return True
+
+    class FakePage:
+        def locator(self, selector):
+            return FakeLocator()
+
+    results = await execute_browser_steps(FakePage(), [
+        {"action": "assert_text", "selector": "[role='status']", "value": "Saved"},
+        {"action": "assert_value", "selector": "#email", "value": "alice@example.com"},
+        {"action": "assert_count", "selector": ".result-row", "value": "2"},
+        {"action": "assert_enabled", "selector": "#submit"},
+        {"action": "assert_disabled", "selector": "#cancel"},
+    ])
+
+    assert [item["passed"] for item in results] == [True, True, True, True, False]
+    assert results[0]["observed_text"] == "Saved successfully"
+    assert results[1]["observed_value"] == "alice@example.com"
+    assert results[2]["observed_count"] == 2
+    assert results[3]["observed_enabled"] is True
+
+
+def test_browser_assertion_schema_requires_valid_expected_values():
+    assert BrowserActionStep(
+        action="assert_text", selector="[role='status']", value="Saved"
+    ).value == "Saved"
+    assert BrowserActionStep(
+        action="assert_count", selector=".row", value="0"
+    ).value == "0"
+    with pytest.raises(Exception):
+        BrowserActionStep(action="assert_text", selector="[role='status']")
+    with pytest.raises(Exception):
+        BrowserActionStep(action="assert_count", selector=".row", value="-1")
+    with pytest.raises(Exception):
+        BrowserActionStep(action="assert_count", selector=".row", value="many")

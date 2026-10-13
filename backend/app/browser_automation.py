@@ -42,7 +42,8 @@ async def execute_browser_steps(page: Any, steps: list[Any]) -> list[dict[str, A
         try:
             if not selector:
                 raise ValueError("Selector must not be blank.")
-            locator = page.locator(selector).first
+            collection = page.locator(selector)
+            locator = collection.first
             if action == "click":
                 await locator.click(timeout=timeout_ms)
             elif action == "fill":
@@ -57,9 +58,34 @@ async def execute_browser_steps(page: Any, steps: list[Any]) -> list[dict[str, A
                 await locator.press(str(value), timeout=timeout_ms)
             elif action == "wait_for_selector":
                 await locator.wait_for(state="visible", timeout=timeout_ms)
+            elif action == "assert_text":
+                observed = await locator.inner_text(timeout=timeout_ms)
+                result["expected_value"] = str(value)
+                result["observed_text"] = observed[:500]
+                result["passed"] = str(value) in observed
+            elif action == "assert_value":
+                observed = await locator.input_value(timeout=timeout_ms)
+                result["expected_value"] = str(value)
+                result["observed_value"] = observed[:500]
+                result["passed"] = observed == str(value)
+            elif action == "assert_count":
+                observed_count = await collection.count()
+                expected_count = int(str(value))
+                result["expected_count"] = expected_count
+                result["observed_count"] = observed_count
+                result["passed"] = observed_count == expected_count
+            elif action in ("assert_enabled", "assert_disabled"):
+                observed_enabled = await locator.is_enabled(timeout=timeout_ms)
+                result["observed_enabled"] = observed_enabled
+                result["passed"] = (
+                    observed_enabled if action == "assert_enabled" else not observed_enabled
+                )
             else:
                 raise ValueError(f"Unsupported browser action: {action}")
-            result["passed"] = True
+            if action not in (
+                "assert_text", "assert_value", "assert_count", "assert_enabled", "assert_disabled"
+            ):
+                result["passed"] = True
         except Exception as exc:
             result["error"] = str(exc)[:500]
         result["duration_ms"] = round((time.monotonic() - started) * 1000, 2)
