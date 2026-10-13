@@ -269,10 +269,13 @@ def update_schedule(
             values.append(value)
     with _connect() as db:
         if failure_streak_delta is not None:
-            db.execute(
-                "UPDATE scheduled_workflows SET failure_streak = MAX(0, failure_streak + ?) WHERE schedule_id = ?",
-                (failure_streak_delta, schedule_id),
-            )
+            if failure_streak_delta == 0:
+                db.execute("UPDATE scheduled_workflows SET failure_streak = 0 WHERE schedule_id = ?", (schedule_id,))
+            else:
+                db.execute(
+                    "UPDATE scheduled_workflows SET failure_streak = MAX(0, failure_streak + ?) WHERE schedule_id = ?",
+                    (failure_streak_delta, schedule_id),
+                )
         values.append(schedule_id)
         cursor = db.execute(
             f"UPDATE scheduled_workflows SET {', '.join(assignments)} WHERE schedule_id = ?",
