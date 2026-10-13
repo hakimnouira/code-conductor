@@ -780,7 +780,7 @@ export default function App() {
     }[]) => {
       if (ignore || !Array.isArray(rows)) return;
       setTaskHistory(old => {
-        const merged = new Map(old.map(item => [item.id, item]));
+        const merged = new Map<string, TaskHistoryItem>(old.map(item => [item.id, item] as const));
         for (const row of rows) {
           const prior = merged.get(row.task_id);
           const status: TaskHistoryItem["status"] =
