@@ -46,13 +46,18 @@ def scan_recent_secrets(workspace: str | Path, started_at: float | None) -> dict
             if not (path.suffix.lower() in _TEXT_SUFFIXES or filename.lower().startswith(".env")):
                 continue
             try:
-                stat = path.stat()
-                if not path.is_file() or stat.st_mtime < cutoff:
+                if path.is_symlink():
+                    continue
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root):
+                    continue
+                stat = resolved.stat()
+                if not resolved.is_file() or stat.st_mtime < cutoff:
                     continue
                 if stat.st_size > _MAX_FILE_BYTES or total_bytes + stat.st_size > _MAX_TOTAL_BYTES:
                     truncated = True
                     continue
-                raw = path.read_bytes()
+                raw = resolved.read_bytes()
             except (OSError, PermissionError):
                 continue
 
