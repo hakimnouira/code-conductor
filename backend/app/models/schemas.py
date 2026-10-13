@@ -55,6 +55,10 @@ class TaskCreateRequest(BaseModel):
     auto_verify: bool = False
     verification_max_attempts: int = Field(default=2, ge=1, le=3)
     browser_verify_url: str | None = None
+    browser_required_text: list[str] = Field(default_factory=list, max_length=20)
+    browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
+    browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
+    browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
 
 class WorkflowPresetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
@@ -62,6 +66,10 @@ class WorkflowPresetRequest(BaseModel):
     agent_id: str = Field(default="auto", min_length=1, max_length=80)
     auto_verify: bool = False
     browser_verify_url: str | None = Field(default=None, max_length=2048)
+    browser_required_text: list[str] = Field(default_factory=list, max_length=20)
+    browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
+    browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
+    browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
 
 
 class WorkflowPresetResponse(BaseModel):
@@ -71,6 +79,10 @@ class WorkflowPresetResponse(BaseModel):
     agent_id: str
     auto_verify: bool = False
     browser_verify_url: str = ""
+    browser_required_text: list[str] = Field(default_factory=list)
+    browser_forbidden_text: list[str] = Field(default_factory=list)
+    browser_visible_selectors: list[str] = Field(default_factory=list)
+    browser_hidden_selectors: list[str] = Field(default_factory=list)
     created_at: float
     updated_at: float
 
