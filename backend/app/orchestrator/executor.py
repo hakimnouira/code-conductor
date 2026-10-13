@@ -165,7 +165,14 @@ class ParallelOrchestrator:
             )
             if commit.returncode != 0:
                 raise RuntimeError(f"Could not commit worker changes: {commit.stderr[-700:]}")
-            merge = self._git(self._repo_root, "merge", "--no-ff", "--no-edit", info["branch"], timeout=90)
+            # A user's global Git identity is not required for automated integration.
+            merge = self._git(
+                self._repo_root,
+                "-c", "user.name=Code Conductor",
+                "-c", "user.email=code-conductor@localhost",
+                "merge", "--no-ff", "--no-edit", info["branch"],
+                timeout=90,
+            )
             if merge.returncode != 0:
                 self._git(self._repo_root, "merge", "--abort")
                 raise RuntimeError(

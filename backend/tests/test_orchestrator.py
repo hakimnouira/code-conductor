@@ -233,6 +233,10 @@ def test_api_orchestrator_plan_and_history(client: TestClient, tmp_path: Path):
 
 
 def test_parallel_orchestrator_isolates_and_integrates_worker_changes(tmp_path: Path, monkeypatch):
+    # Automated worktree merges must not depend on the user's global Git identity.
+    empty_gitconfig = tmp_path / "empty-global-gitconfig"
+    empty_gitconfig.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_gitconfig))
     home = tmp_path / "test-home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
