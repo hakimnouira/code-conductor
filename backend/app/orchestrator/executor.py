@@ -128,7 +128,11 @@ class ParallelOrchestrator:
                     any(segment == ".git" for segment in segments)
                     or any(segment.startswith(".env") for segment in segments)
                     or lower.endswith((".pem", ".key", ".pfx", ".p12", ".pkcs12"))
-                    or any(token in segments for token in ("credentials", "secrets"))
+                    or any(
+                        "credential" in segment or "secret" in segment
+                        or segment.startswith(("id_rsa", "id_ecdsa", "id_ed25519", "id_dsa"))
+                        for segment in segments
+                    )
                     or any("api_keys" in segment for segment in segments)
                     or any(segments[index:index + 2] == [".code-conductor", "artifacts"] for index in range(len(segments) - 1))
                 ):
