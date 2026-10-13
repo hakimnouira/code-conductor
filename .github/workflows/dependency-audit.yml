@@ -1,0 +1,48 @@
+name: Dependency Security Audit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-dependencies:
+    name: Audit Python dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip-audit
+      - name: Fail on known Python dependency vulnerabilities
+        run: pip-audit -r backend/requirements.txt
+
+  npm-dependencies:
+    name: Audit ${{ matrix.directory }} dependencies
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: [web, extension]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+      - name: Install locked dependencies
+        working-directory: ${{ matrix.directory }}
+        run: npm ci
+      - name: Fail on high or critical npm advisories
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --audit-level=high
