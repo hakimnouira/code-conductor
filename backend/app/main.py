@@ -223,6 +223,7 @@ class TaskRecord:
 
 
 _tasks: dict[str, TaskRecord] = {}
+_idempotency_lock = asyncio.Lock()
 _start_time = time.time()
 
 
@@ -371,6 +372,34 @@ async def list_agents(_: str = Depends(require_bearer_token)):
     return await registry.list_agents()
 
 @app.post("/tasks", response_model=TaskResponse)
+async def _create_task_record(
+    request: TaskCreateRequest,
+    validated_ws: Path,
+    task_id: str,
+) -> TaskResponse:
+    registry = get_agent_registry()
+    adapter = await registry.resolve_agent(request.agent_id, request.prompt)
+    if not adapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
+        )
+
+    record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
+    _tasks[task_id] = record
+    # Spawn background task processing that feeds the event queue.
+    asyncio.create_task(_run_task_pipeline(record, adapter))
+    return TaskResponse(
+        task_id=task_id,
+        status=TaskStatus.PENDING,
+        agent_id=adapter.agent_id,
+        prompt=request.prompt,
+        created_at=record.created_at,
+        message=f"Task assigned to '{adapter.name}'",
+        workspace_path=str(validated_ws),
+    )
+
+
 async def create_task(request: TaskCreateRequest, _: str = Depends(require_bearer_token)):
     if request.permission_mode == "god" and not request.god_mode_confirmed:
         raise HTTPException(status_code=400, detail="God Mode requires explicit confirmation in the task request.")
@@ -397,51 +426,30 @@ async def create_task(request: TaskCreateRequest, _: str = Depends(require_beare
     )
 
     if request.idempotency_key:
-        # Restore the persisted task before deciding whether this dispatch is new.
-        # This closes the crash window between task creation and saving task_id on
-        # the scheduled-run record.
-        if task_id not in _tasks:
-            await _restore_task_records()
-        existing = _tasks.get(task_id)
-        if existing:
-            if existing.request_fingerprint != request_fingerprint:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Idempotency key was already used with a different task request.",
+        # Serialize same-process duplicate requests, including the async provider
+        # lookup. The durable deterministic task ID additionally handles restarts.
+        async with _idempotency_lock:
+            if task_id not in _tasks:
+                await _restore_task_records()
+            existing = _tasks.get(task_id)
+            if existing:
+                if existing.request_fingerprint != request_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Idempotency key was already used with a different task request.",
+                    )
+                return TaskResponse(
+                    task_id=existing.task_id,
+                    status=existing.status,
+                    agent_id=existing.agent_id,
+                    prompt=request.prompt,
+                    created_at=existing.created_at,
+                    message="Returning the existing task for this idempotency key.",
+                    workspace_path=existing.request.workspace_path,
                 )
-            return TaskResponse(
-                task_id=existing.task_id,
-                status=existing.status,
-                agent_id=existing.agent_id,
-                prompt=request.prompt,
-                created_at=existing.created_at,
-                message="Returning the existing task for this idempotency key.",
-                workspace_path=existing.request.workspace_path,
-            )
+            return await _create_task_record(request, validated_ws, task_id)
 
-    registry = get_agent_registry()
-    adapter = await registry.resolve_agent(request.agent_id, request.prompt)
-    if not adapter:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent '{request.agent_id}' could not be resolved or no provider engine is currently active.",
-        )
-
-    record = TaskRecord(task_id=task_id, request=request, agent_id=adapter.agent_id)
-    _tasks[task_id] = record
-
-    # Spawn background task processing that feeds the event queue
-    asyncio.create_task(_run_task_pipeline(record, adapter))
-
-    return TaskResponse(
-        task_id=task_id,
-        status=TaskStatus.PENDING,
-        agent_id=adapter.agent_id,
-        prompt=request.prompt,
-        created_at=record.created_at,
-        message=f"Task assigned to '{adapter.name}'",
-        workspace_path=str(validated_ws),
-    )
+    return await _create_task_record(request, validated_ws, task_id)
 
 async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
     """Run an opt-in browser smoke-check and persist its screenshot as a workspace artifact."""
