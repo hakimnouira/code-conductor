@@ -18,6 +18,22 @@ class RunnerSecurityError(Exception):
 # Backward compatibility alias
 TestRunnerSecurityError = RunnerSecurityError
 
+
+async def _read_bounded(stream: asyncio.StreamReader, limit: int = 1_000_000) -> tuple[bytes, bool]:
+    """Drain a subprocess pipe while retaining only its final bounded byte window."""
+    retained = bytearray()
+    total = 0
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        retained.extend(chunk)
+        if len(retained) > limit:
+            del retained[:-limit]
+    return bytes(retained), total > limit
+
+
 FORBIDDEN_ARG_CHARS = {";", "&", "|", "`", "$", "<", ">", "\n", "\r"}
 
 
@@ -210,19 +226,22 @@ class SafeTestRunner:
                 start_new_session=(sys.platform != "win32"),
             )
 
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(),
+            stdout_reader = asyncio.create_task(_read_bounded(proc.stdout))
+            stderr_reader = asyncio.create_task(_read_bounded(proc.stderr))
+            await asyncio.wait_for(
+                asyncio.gather(proc.wait(), stdout_reader, stderr_reader),
                 timeout=float(timeout_seconds),
             )
+            (stdout_b, stdout_truncated) = stdout_reader.result()
+            (stderr_b, stderr_truncated) = stderr_reader.result()
             duration_ms = (time.perf_counter() - t_start) * 1000.0
 
             exit_code = proc.returncode if proc.returncode is not None else 0
-            # Keep test evidence bounded even when a failing test emits huge logs.
-            stdout_str = stdout_b[-1_000_000:].decode("utf-8", errors="replace")
-            stderr_str = stderr_b[-1_000_000:].decode("utf-8", errors="replace")
-            if len(stdout_b) > 1_000_000:
+            stdout_str = stdout_b.decode("utf-8", errors="replace")
+            stderr_str = stderr_b.decode("utf-8", errors="replace")
+            if stdout_truncated:
                 stdout_str = "[earlier stdout truncated]\n" + stdout_str
-            if len(stderr_b) > 1_000_000:
+            if stderr_truncated:
                 stderr_str = "[earlier stderr truncated]\n" + stderr_str
 
             return TestRunResponse(
