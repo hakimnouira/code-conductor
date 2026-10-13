@@ -110,3 +110,64 @@ async def test_scheduled_run_records_task_result(tmp_path, monkeypatch):
     assert history[0]["status"] == "completed"
     assert history[0]["task_id"] == "task-completed"
     assert history[0]["attempt"] == 1
+
+
+
+def test_active_schedule_does_not_overlap_and_skips_missed_ticks(tmp_path, monkeypatch):
+    from app.task_store import update_schedule
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-overlap.sqlite3"))
+    now = time.time()
+    create_schedule({
+        "schedule_id": "schedule-overlap", "workflow_id": "workflow-overlap",
+        "workflow": {"prompt": "Run tests", "agent_id": "auto"},
+        "name": "Overlap test", "workspace_path": "", "interval_minutes": 15,
+        "enabled": True, "next_run_at": now - 1, "max_retries": 0,
+        "created_at": now, "updated_at": now,
+    })
+    first = claim_due_schedules(now)
+    assert len(first) == 1
+    update_schedule("schedule-overlap", next_run_at=now - 1)
+    # The queued run is still active, so a new occurrence is skipped rather than
+    # launching overlapping work; the next interval is moved into the future.
+    assert claim_due_schedules(now + 1) == []
+    assert get_schedule("schedule-overlap")["next_run_at"] > now
+    assert len(list_schedule_runs("schedule-overlap")) == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_status_lookup_error_does_not_dispatch_duplicate_task(tmp_path, monkeypatch):
+    import asyncio
+    from app.scheduler import _monitor_run
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "schedule-transient.sqlite3"))
+    now = time.time()
+    create_schedule({
+        "schedule_id": "schedule-transient", "workflow_id": "workflow-transient",
+        "workflow": {"prompt": "Run tests", "agent_id": "auto"},
+        "name": "Transient status", "workspace_path": "", "interval_minutes": 15,
+        "enabled": True, "next_run_at": now - 1, "max_retries": 1,
+        "created_at": now, "updated_at": now,
+    })
+    run = claim_due_schedules(now)[0]
+    calls = {"dispatch": 0, "status": 0}
+
+    async def dispatch(_workflow):
+        calls["dispatch"] += 1
+        return "task-stable"
+
+    async def status_lookup(_task_id):
+        calls["status"] += 1
+        if calls["status"] == 1:
+            raise RuntimeError("temporary status database lock")
+        return {"status": "completed", "error": None}
+
+    async def fast_wait_for(awaitable, timeout):
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr("app.scheduler.asyncio.wait_for", fast_wait_for)
+    await _monitor_run(run, dispatch, status_lookup, asyncio.Event())
+    assert calls == {"dispatch": 1, "status": 2}
+    assert list_schedule_runs("schedule-transient")[0]["status"] == "completed"
