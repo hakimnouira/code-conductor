@@ -286,12 +286,13 @@ When a task has `browser_verify_url` configured, Code Conductor attaches Playwri
 - HTTP error responses and failed requests as diagnostic evidence.
 - A screenshot saved under `.code-conductor/artifacts/{task_id}/browser-verification.png`.
 - A bounded text excerpt and structured checks added to the task timeline.
+- Optional acceptance assertions configured in the composer and saved with workflow presets: required text, forbidden text, CSS selectors that must be visible, and CSS selectors that must be hidden (up to 20 entries per category).
 
-The verifier waits for DOM content and makes a bounded attempt to wait for network idle; applications with polling, streaming, or WebSockets may never become idle. Failed subresource requests are reported but do not alone fail a run. JavaScript errors, common visible error markers, screenshot capture failures, and a failed main document can fail verification and feed diagnostics into the existing bounded repair loop.
+The verifier waits for DOM content and makes a bounded attempt to wait for network idle; applications with polling, streaming, or WebSockets may never become idle. Failed subresource requests are reported but do not alone fail a run. JavaScript errors, common visible error markers, screenshot capture failures, a failed main document, or failed acceptance assertions can fail verification and feed diagnostics into the existing bounded repair loop. Selector assertions inspect visibility only; they do not click controls or submit forms.
 
-The backend installs the Playwright Python package through `backend/requirements.txt`. It does **not** download a browser binary; configure a local Chromium/Chrome instance with remote debugging enabled and connect it in the Browser Session panel. The additional endpoint is `POST /browser/automation-test` with `{"url":"http://127.0.0.1:5173","wait_seconds":2}`.
+The backend installs the Playwright Python package through `backend/requirements.txt`. It does **not** download a browser binary; configure a local Chromium/Chrome instance with remote debugging enabled and connect it in the Browser Session panel. The additional endpoint is `POST /browser/automation-test` with `{"url":"http://127.0.0.1:5173","wait_seconds":2,"required_text":["Dashboard"],"visible_selectors":["main"]}`. All assertion fields are optional: `required_text`, `forbidden_text`, `visible_selectors`, and `hidden_selectors`.
 
-This provides stronger runtime evidence than a page-content smoke check, but it is not a substitute for explicit acceptance assertions, a full E2E suite, accessibility checks, or a security audit. Treat the browser report as evidence, not proof of correctness.
+Acceptance assertions improve task-specific verification, but they are not a substitute for full interaction-based E2E tests, accessibility checks, or a security audit. Treat the browser report as evidence, not proof of correctness.
 
 ## Chat-first workspace and GitHub repository analysis
 
