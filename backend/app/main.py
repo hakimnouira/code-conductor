@@ -77,6 +77,7 @@ from app.task_store import (
     append_event, delete_schedule, delete_workflow, events_after,
     get_saved_tasks, get_schedule, list_schedule_runs,
     list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,
+    queue_schedule_run_now,
 )
 
 
@@ -750,6 +751,20 @@ async def set_scheduled_workflow(schedule_id: str, req: ScheduleUpdateRequest, _
     next_run = time.time() + int(item["interval_minutes"]) * 60 if req.enabled else None
     update_schedule(schedule_id, enabled=req.enabled, next_run_at=next_run)
     return get_schedule(schedule_id)
+
+
+@app.post("/schedules/{schedule_id}/run-now", response_model=ScheduleRunResponse)
+async def run_scheduled_workflow_now(schedule_id: str, _: str = Depends(require_bearer_token)):
+    """Queue one durable immediate run without changing the recurring schedule cadence."""
+    try:
+        run, active_conflict = queue_schedule_run_now(schedule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if active_conflict:
+        raise HTTPException(status_code=409, detail="This schedule already has a queued or running execution.")
+    if run is None:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return run
 
 
 @app.delete("/schedules/{schedule_id}")
