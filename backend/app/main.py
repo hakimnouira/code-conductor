@@ -200,6 +200,7 @@ async def _dispatch_scheduled_workflow(workflow: dict) -> str:
         workspace_path=str(workflow.get("workspace_path") or "") or None,
         auto_verify=bool(workflow.get("auto_verify", False)),
         browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
+        browser_assertions=workflow.get("browser_assertions") or {},
         github_research=False,
         permission_mode="safe",
     )
@@ -347,7 +348,11 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
         return True, ""
 
     try:
-        result = await run_browser_automation(target_url, wait_seconds=2)
+        result = await run_browser_automation(
+            target_url,
+            wait_seconds=2,
+            assertions=record.request.browser_assertions.model_dump(),
+        )
         screenshot_uri = result.pop("screenshot", None)
         artifact_relative = None
         if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
@@ -375,6 +380,7 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "console_errors": result.get("console_errors", []),
             "http_errors": result.get("http_errors", []),
             "failed_requests": result.get("failed_requests", []),
+            "application_assertions": result.get("application_assertions", []),
             "verification_engine": result.get("verification_engine", "unknown"),
             "limitations": result.get("limitations", []),
             "error_markers": result.get("error_markers", []),
@@ -700,6 +706,7 @@ async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends
         "agent_id": workflow["agent_id"],
         "auto_verify": bool(workflow.get("auto_verify", False)),
         "browser_verify_url": workflow.get("browser_verify_url") or "",
+        "browser_assertions": workflow.get("browser_assertions") or {},
         "workspace_path": workspace_path,
     }
     now = time.time()
@@ -779,6 +786,7 @@ async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_b
         "agent_id": req.agent_id.strip() or "auto",
         "auto_verify": req.auto_verify,
         "browser_verify_url": req.browser_verify_url or "",
+        "browser_assertions": req.browser_assertions.model_dump(),
         "created_at": now,
         "updated_at": now,
     }
