@@ -113,10 +113,12 @@ class TaskRecord:
         request: TaskCreateRequest,
         agent_id: str,
         restored: dict | None = None,
+        initial_request_json: str | None = None,
     ):
         self.task_id = task_id
         self.request = request
         self.agent_id = agent_id
+        self.initial_request_json = initial_request_json or request.model_dump_json()
         self.request_fingerprint = str(
             (restored or {}).get("request_fingerprint")
             or hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
@@ -203,7 +205,11 @@ class TaskRecord:
             self._persist()
 
     def _persist(self) -> None:
-        save_task(self.snapshot(), self.request.model_dump_json())
+        save_task(
+            self.snapshot(),
+            self.request.model_dump_json(),
+            self.initial_request_json,
+        )
 
     def snapshot(self) -> dict:
         """Return a stable status payload without exposing provider secrets."""
@@ -212,6 +218,7 @@ class TaskRecord:
             "status": self.status.value,
             "agent_id": self.agent_id,
             "request_fingerprint": self.request_fingerprint,
+            "retry_of": self.request.retry_of,
             "prompt": self.request.prompt,
             "workspace_path": self.request.workspace_path,
             "created_at": self.created_at,
@@ -242,6 +249,10 @@ async def _restore_task_records() -> None:
                 request=request,
                 agent_id=str(snapshot.get("agent_id") or request.agent_id),
                 restored=snapshot,
+                initial_request_json=json.dumps(
+                    item.get("initial_request") or item.get("request") or {},
+                    ensure_ascii=False,
+                ),
             )
         except Exception:
             continue
@@ -1001,6 +1012,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "verification_requested": bool(
                         record.request.auto_verify or record.request.browser_verify_url
                     ),
+                    "retry_of": record.request.retry_of,
                 },
             )
         record._persist()
@@ -1191,6 +1203,34 @@ async def get_task_status(task_id: str, _: str = Depends(require_bearer_token)):
             detail=f"Task '{task_id}' not found.",
         )
     return record.snapshot()
+
+
+@app.post("/tasks/{task_id}/retry", response_model=TaskResponse)
+async def retry_task(task_id: str, _: str = Depends(require_bearer_token)):
+    """Create a new task from the immutable original request of a failed/cancelled task."""
+    record = _tasks.get(task_id)
+    if record is None:
+        await _restore_task_records()
+        record = _tasks.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    if record.status not in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed or cancelled tasks can be retried.",
+        )
+    try:
+        original_payload = json.loads(record.initial_request_json)
+        request = TaskCreateRequest.model_validate(original_payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="The original task request cannot be restored safely.") from exc
+
+    # A retry is a new execution with explicit lineage, never a replay of the old
+    # idempotency key. Keep the original prompt/configuration rather than any
+    # diagnostics appended to the mutable in-flight request.
+    request.retry_of = task_id
+    request.idempotency_key = f"retry:{task_id}:{uuid.uuid4().hex}"
+    return await create_task(request, "retry")
 
 
 @app.get("/tasks/{task_id}/evidence")

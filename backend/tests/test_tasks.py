@@ -1,10 +1,11 @@
 import asyncio
 import json
+import time
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
 from app.main import TaskRecord, _browser_verification_gate, _verify_browser_for_task, _tasks, app
-from app.models.schemas import TaskCreateRequest
+from app.models.schemas import TaskCreateRequest, TaskStatus
 
 pytestmark = pytest.mark.mocked_integration
 
@@ -299,3 +300,51 @@ async def test_task_creation_is_idempotent_and_rejects_key_reuse_with_different_
         changed = {**payload, "prompt": "Different task with same key"}
         conflict = await client.post("/tasks", json=changed, headers=auth_headers)
         assert conflict.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_uses_original_request_and_tracks_lineage(auth_headers, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "retry-endpoint.sqlite3"))
+    workspace = tmp_path / "retry-workspace"
+    workspace.mkdir()
+    original_prompt = "Repair the failing unit test without changing its assertions."
+    request = TaskCreateRequest(
+        prompt=original_prompt,
+        agent_id="mock",
+        workspace_path=str(workspace),
+        github_research=False,
+    )
+    failed = TaskRecord("task-retry-source", request, "mock")
+    failed.request.prompt += "\n\nAUTOMATED VERIFICATION FAILED: transient diagnostic text."
+    failed.status = TaskStatus.FAILED
+    failed.error = "Simulated prior failure."
+    failed.completed_at = time.time()
+    failed._persist()
+    _tasks[failed.task_id] = failed
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/tasks/{failed.task_id}/retry", headers=auth_headers)
+
+    assert response.status_code == 200
+    new_task_id = response.json()["task_id"]
+    assert new_task_id != failed.task_id
+    retried = _tasks[new_task_id]
+    assert retried.request.prompt == original_prompt
+    assert retried.request.retry_of == failed.task_id
+    assert retried.request.idempotency_key.startswith(f"retry:{failed.task_id}:")
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_rejects_active_task(auth_headers):
+    active = TaskRecord(
+        "task-retry-active",
+        TaskCreateRequest(prompt="Still running", agent_id="mock", github_research=False),
+        "mock",
+    )
+    active.status = TaskStatus.RUNNING
+    active.started_at = time.time()
+    _tasks[active.task_id] = active
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/tasks/{active.task_id}/retry", headers=auth_headers)
+    assert response.status_code == 409

@@ -1,5 +1,6 @@
 """Machine-readable task evidence and artifact manifest tests."""
 import json
+import sqlite3
 import subprocess
 
 import pytest
@@ -126,3 +127,56 @@ def test_workspace_provenance_marks_non_git_workspace_partial(tmp_path):
     assert result["workspace_kind"] == "non_git"
     assert result["snapshot_complete"] is False
     assert result["reason"] == "not_a_git_repository"
+
+
+
+def test_original_task_request_survives_mutable_execution_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(tmp_path / "original-request.sqlite3"))
+    request = TaskCreateRequest(
+        prompt="Original user instruction",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+        github_research=False,
+    )
+    task = TaskRecord("task-original-request", request, "mock")
+    task.request.prompt += "\n\nTemporary repair diagnostics added during execution."
+    task._persist()
+
+    saved = next(
+        item for item in get_saved_tasks()
+        if item["snapshot"]["task_id"] == "task-original-request"
+    )
+    assert saved["initial_request"]["prompt"] == "Original user instruction"
+    assert "Temporary repair diagnostics" in saved["request"]["prompt"]
+
+
+
+def test_original_request_column_migrates_existing_task_database(tmp_path, monkeypatch):
+    database = tmp_path / "legacy-tasks.sqlite3"
+    original_request = TaskCreateRequest(
+        prompt="Legacy task",
+        agent_id="mock",
+        workspace_path=str(tmp_path),
+    ).model_dump()
+    snapshot = {
+        "task_id": "task-legacy",
+        "status": "completed",
+        "created_at": 1.0,
+        "started_at": 1.0,
+        "completed_at": 2.0,
+        "verification_status": "not_requested",
+        "evidence": [],
+    }
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO tasks(task_id, request_json, snapshot_json, updated_at) VALUES (?, ?, ?, ?)",
+            ("task-legacy", json.dumps(original_request), json.dumps(snapshot), 2.0),
+        )
+
+    monkeypatch.setenv("CODE_CONDUCTOR_TASK_DB", str(database))
+    saved = get_saved_tasks()
+    assert saved[0]["initial_request"]["prompt"] == "Legacy task"
+    assert saved[0]["request"]["prompt"] == "Legacy task"
