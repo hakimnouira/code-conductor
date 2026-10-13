@@ -39,7 +39,7 @@ async def _monitor_run(
     while not stop_event.is_set():
         if not task_id:
             attempt += 1
-            update_schedule_run(run_id, status="running", attempt=attempt, error="")
+            update_schedule_run(run_id, status="running", attempt=attempt, started_at=time.time(), error="")
             try:
                 task_id = await dispatch(workflow)
                 update_schedule_run(run_id, task_id=task_id, status="running", attempt=attempt)
