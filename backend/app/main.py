@@ -40,6 +40,8 @@ from app.models.schemas import (
     SafeFileListResponse,
     TaskCreateRequest,
     TaskResponse,
+    WorkflowPresetRequest,
+    WorkflowPresetResponse,
     TaskStatus,
     TestRunRequest,
     TestRunResponse,
@@ -64,7 +66,7 @@ from app.browser_session import BrowserVerifyPayload, router as browser_session_
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
-from app.task_store import append_event, events_after, get_saved_tasks, save_task
+from app.task_store import append_event, delete_workflow, events_after, get_saved_tasks, list_workflows, save_task, save_workflow
 
 
 
@@ -629,6 +631,42 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
+
+@app.get("/workflows", response_model=list[WorkflowPresetResponse])
+async def get_workflows(limit: int = Query(default=100, ge=1, le=200), _: str = Depends(require_bearer_token)):
+    """List locally stored reusable task workflows."""
+    return list_workflows(limit)
+
+
+@app.post("/workflows", response_model=WorkflowPresetResponse)
+async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_bearer_token)):
+    """Save a reusable prompt and its execution settings locally."""
+    name = req.name.strip()
+    prompt_text = req.prompt.strip()
+    if not name or not prompt_text:
+        raise HTTPException(status_code=422, detail="Workflow name and prompt must not be blank.")
+    if req.browser_verify_url and not req.browser_verify_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Browser verification URL must use HTTP or HTTPS.")
+    now = time.time()
+    item = {
+        "workflow_id": uuid.uuid4().hex,
+        "name": name,
+        "prompt": prompt_text,
+        "agent_id": req.agent_id.strip() or "auto",
+        "auto_verify": req.auto_verify,
+        "browser_verify_url": req.browser_verify_url or "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    return save_workflow(item)
+
+
+@app.delete("/workflows/{workflow_id}")
+async def remove_workflow(workflow_id: str, _: str = Depends(require_bearer_token)):
+    if not delete_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    return {"workflow_id": workflow_id, "deleted": True}
+
 
 @app.get("/tasks")
 async def list_tasks(limit: int = Query(default=100, ge=1, le=500), _: str = Depends(require_bearer_token)):
