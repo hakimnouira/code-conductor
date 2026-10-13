@@ -1260,7 +1260,7 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
                     "agent_id": record.agent_id,
                     "verification_status": record.verification_status,
                     "verification_requested": bool(
-                        record.request.auto_verify or record.request.browser_verify_url
+                        record.request.auto_verify or record.request.acceptance_criteria or record.request.browser_verify_url
                     ),
                     "retry_of": record.request.retry_of,
                     "workspace_provenance_status": provenance_evidence.get("status"),
