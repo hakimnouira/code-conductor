@@ -18,6 +18,8 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
       - name: Configure Git identity for checkpoint tests
         run: |
           git config --global user.name "Code Conductor CI"
