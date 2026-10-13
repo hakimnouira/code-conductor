@@ -39,6 +39,10 @@ from app.models.schemas import (
     GitStatusResponse,
     HealthResponse,
     SafeFileListResponse,
+    ScheduleCreateRequest,
+    ScheduleResponse,
+    ScheduleRunResponse,
+    ScheduleUpdateRequest,
     TaskCreateRequest,
     TaskResponse,
     WorkflowPresetRequest,
@@ -63,11 +67,13 @@ from pathlib import Path
 from app.repository_import import router as repository_import_router
 from app.github_research import research_github, should_research
 from app.antigravity_history import router as antigravity_history_router
-from app.browser_session import BrowserVerifyPayload, router as browser_session_router, verify_browser_page
+from app.browser_session import router as browser_session_router
+from app.browser_automation import run_browser_automation
+from app.scheduler import scheduler_loop
 from app.guided_workflow import router as guided_workflow_router
 from app.api.openai_compat import router as openai_compat_router
 from app.git_worktrees import router as git_worktrees_router
-from app.task_store import append_event, delete_workflow, events_after, get_saved_tasks, list_workflows, save_task, save_workflow
+from app.task_store import (\n    append_event, claim_due_schedules, delete_schedule, delete_workflow, events_after,\n    get_incomplete_schedule_runs, get_saved_tasks, get_schedule, list_schedule_runs,\n    list_schedules, list_workflows, save_task, save_workflow, create_schedule, update_schedule,\n)
 
 
 
@@ -182,25 +188,53 @@ async def _restore_task_records() -> None:
             record._persist()
 
 
+async def _dispatch_scheduled_workflow(workflow: dict) -> str:
+    """Dispatch a scheduled workflow through the same validated task path as interactive work."""
+    request = TaskCreateRequest(
+        prompt=str(workflow.get("prompt") or ""),
+        agent_id=str(workflow.get("agent_id") or "auto"),
+        workspace_path=str(workflow.get("workspace_path") or "") or None,
+        auto_verify=bool(workflow.get("auto_verify", False)),
+        browser_verify_url=str(workflow.get("browser_verify_url") or "") or None,
+        github_research=False,
+        permission_mode="safe",
+    )
+    response = await create_task(request, "scheduler")
+    return response.task_id
+
+
+async def _lookup_scheduled_task(task_id: str) -> dict | None:
+    record = _tasks.get(task_id)
+    return record.snapshot() if record else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _restore_task_records()
-    yield
-    # Shutdown marks active work as interrupted; it is not silently resumed on restart.
-    for task in _tasks.values():
-        if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-            task.status = TaskStatus.CANCELLED
-            task.error = "Backend shut down while this task was active."
-            task.completed_at = time.time()
-            await task.event_queue.put(json.dumps({
-                "task_id": task.task_id,
-                "event_type": "cancelled",
-                "text": task.error,
-                "timestamp": task.completed_at,
-                "data": {"reason": "backend_shutdown"},
-            }))
-            task._persist()
-            await task.event_queue.put(None)
+    scheduler_task = asyncio.create_task(
+        scheduler_loop(_dispatch_scheduled_workflow, _lookup_scheduled_task),
+        name="code-conductor-scheduler",
+    )
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        await asyncio.gather(scheduler_task, return_exceptions=True)
+        # Shutdown marks active work as interrupted; it is not silently resumed.
+        for task in _tasks.values():
+            if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                task.status = TaskStatus.CANCELLED
+                task.error = "Backend shut down while this task was active."
+                task.completed_at = time.time()
+                await task.event_queue.put(json.dumps({
+                    "task_id": task.task_id,
+                    "event_type": "cancelled",
+                    "text": task.error,
+                    "timestamp": task.completed_at,
+                    "data": {"reason": "backend_shutdown"},
+                }))
+                task._persist()
+                await task.event_queue.put(None)
 
 
 app = FastAPI(
@@ -309,10 +343,7 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
         return True, ""
 
     try:
-        result = await verify_browser_page(
-            BrowserVerifyPayload(url=target_url, wait_seconds=2),
-            None,
-        )
+        result = await run_browser_automation(target_url, wait_seconds=2)
         screenshot_uri = result.pop("screenshot", None)
         artifact_relative = None
         if isinstance(screenshot_uri, str) and screenshot_uri.startswith("data:image/png;base64,"):
@@ -335,6 +366,13 @@ async def _verify_browser_for_task(record: TaskRecord) -> tuple[bool, str]:
             "url": result.get("url", target_url),
             "title": result.get("title", ""),
             "checks": result.get("checks", {}),
+            "main_document_status": result.get("main_document_status"),
+            "page_errors": result.get("page_errors", []),
+            "console_errors": result.get("console_errors", []),
+            "http_errors": result.get("http_errors", []),
+            "failed_requests": result.get("failed_requests", []),
+            "verification_engine": result.get("verification_engine", "unknown"),
+            "limitations": result.get("limitations", []),
             "error_markers": result.get("error_markers", []),
             "body_text_excerpt": result.get("body_text_excerpt", "")[-3000:],
             "screenshot_artifact": artifact_relative,
@@ -632,6 +670,77 @@ async def _run_task_pipeline(record: TaskRecord, adapter):
         record._persist()
         # Signal stream termination
         await record.event_queue.put(None)
+
+@app.get("/schedules", response_model=list[ScheduleResponse])
+async def get_schedules(limit: int = Query(default=100, ge=1, le=200), _: str = Depends(require_bearer_token)):
+    """List durable recurring workflow schedules and their latest status."""
+    return list_schedules(limit)
+
+
+@app.post("/schedules", response_model=ScheduleResponse)
+async def create_scheduled_workflow(req: ScheduleCreateRequest, _: str = Depends(require_bearer_token)):
+    """Schedule a saved workflow to run repeatedly on this local machine."""
+    workflow = next((item for item in list_workflows(200) if item["workflow_id"] == req.workflow_id), None)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Saved workflow not found.")
+    workspace_path = ""
+    if req.workspace_path:
+        try:
+            workspace_path = str(validate_workspace_path(
+                req.workspace_path, default_root=get_settings().workspace_root
+            ))
+        except WorkspaceValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid workspace path: {str(exc)}")
+    workflow_snapshot = {
+        "prompt": workflow["prompt"],
+        "agent_id": workflow["agent_id"],
+        "auto_verify": bool(workflow.get("auto_verify", False)),
+        "browser_verify_url": workflow.get("browser_verify_url") or "",
+        "workspace_path": workspace_path,
+    }
+    now = time.time()
+    item = create_schedule({
+        "schedule_id": uuid.uuid4().hex,
+        "workflow_id": req.workflow_id,
+        "workflow": workflow_snapshot,
+        "name": workflow["name"],
+        "workspace_path": workspace_path,
+        "interval_minutes": req.interval_minutes,
+        "enabled": req.enabled,
+        "next_run_at": now + req.interval_minutes * 60,
+        "max_retries": req.max_retries,
+        "created_at": now,
+        "updated_at": now,
+    })
+    return item
+
+
+@app.put("/schedules/{schedule_id}", response_model=ScheduleResponse)
+async def set_scheduled_workflow(schedule_id: str, req: ScheduleUpdateRequest, _: str = Depends(require_bearer_token)):
+    """Pause or resume a schedule without deleting its run history."""
+    item = get_schedule(schedule_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    next_run = time.time() + int(item["interval_minutes"]) * 60 if req.enabled else None
+    update_schedule(schedule_id, enabled=req.enabled, next_run_at=next_run)
+    return get_schedule(schedule_id)
+
+
+@app.delete("/schedules/{schedule_id}")
+async def remove_scheduled_workflow(schedule_id: str, _: str = Depends(require_bearer_token)):
+    if not delete_schedule(schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return {"schedule_id": schedule_id, "deleted": True}
+
+
+@app.get("/schedules/{schedule_id}/runs", response_model=list[ScheduleRunResponse])
+async def get_scheduled_workflow_runs(
+    schedule_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    _: str = Depends(require_bearer_token),
+):
+    return list_schedule_runs(schedule_id, limit)
+
 
 @app.get("/workflows", response_model=list[WorkflowPresetResponse])
 async def get_workflows(limit: int = Query(default=100, ge=1, le=200), _: str = Depends(require_bearer_token)):
