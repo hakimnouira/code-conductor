@@ -22,6 +22,9 @@ def test_auto_verify_requires_successful_test_or_build_evidence():
         "passed",
     )
     assert passed["passed"] is True
+    assert passed["workspace_snapshot_sha256"] == "abc123"
+    assert passed["workspace_snapshot_complete"] is True
+    assert passed["workspace_provenance_status"] == "captured"
     failed = evaluate_completion_gate(
         request,
         [{"kind": "automated_tests", "status": "failed", "details": {"exit_code": 1}}, provenance()],
