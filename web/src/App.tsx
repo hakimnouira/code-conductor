@@ -10,6 +10,7 @@ type Agent = { id: string; name: string; description: string; state: string; dia
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
 type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
+type WorkflowPreset = { workflow_id: string; name: string; prompt: string; agent_id: string; auto_verify: boolean; browser_verify_url: string; created_at: number; updated_at: number };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
@@ -151,6 +152,10 @@ export default function App() {
   const [autoVerifyEnabled, setAutoVerifyEnabled] = useState(() => localStorage.getItem("cc_auto_verify") === "true");
   const [browserVerifyUrl, setBrowserVerifyUrl] = useState(() => localStorage.getItem("cc_browser_verify_url") || "");
   const [projectRulesOpen, setProjectRulesOpen] = useState(false);
+  const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false);
+  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
+  const [workflowName, setWorkflowName] = useState("");
+  const [workflowBusy, setWorkflowBusy] = useState(false);
   const [projectRulesText, setProjectRulesText] = useState("");
   const [projectRulesBusy, setProjectRulesBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -626,6 +631,72 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Could not remove project rules");
     } finally {
       setProjectRulesBusy(false);
+    }
+  };
+
+  const loadWorkflowPresets = async () => {
+    try {
+      const response = await request("/workflows?limit=100");
+      const rows = await response.json() as WorkflowPreset[];
+      setWorkflowPresets(Array.isArray(rows) ? rows : []);
+    } catch {
+      // Older backend versions can still use the rest of the dashboard.
+    }
+  };
+
+  useEffect(() => {
+    if (health?.status === "healthy" || health?.status === "degraded") void loadWorkflowPresets();
+  }, [health?.status, base, token]);
+
+  const saveCurrentWorkflow = async () => {
+    if (!workflowName.trim() || !prompt.trim()) {
+      setError("Enter a workflow name and a non-empty task prompt first.");
+      return;
+    }
+    setWorkflowBusy(true);
+    setError("");
+    try {
+      const response = await request("/workflows", {
+        method: "POST",
+        body: JSON.stringify({
+          name: workflowName.trim(),
+          prompt: prompt.trim(),
+          agent_id: agent || "auto",
+          auto_verify: autoVerifyEnabled,
+          browser_verify_url: browserVerifyUrl.trim() || null,
+        }),
+      });
+      const saved = await response.json() as WorkflowPreset;
+      setWorkflowPresets(old => [saved, ...old.filter(item => item.workflow_id !== saved.workflow_id)]);
+      setWorkflowName("");
+      setNotice("Workflow saved to your local workflow library.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save workflow");
+    } finally {
+      setWorkflowBusy(false);
+    }
+  };
+
+  const applyWorkflowPreset = (workflow: WorkflowPreset) => {
+    setPrompt(workflow.prompt);
+    setAgent(workflow.agent_id);
+    setAutoVerifyEnabled(workflow.auto_verify);
+    setBrowserVerifyUrl(workflow.browser_verify_url || "");
+    localStorage.setItem("cc_auto_verify", String(workflow.auto_verify));
+    localStorage.setItem("cc_browser_verify_url", workflow.browser_verify_url || "");
+    setWorkflowLibraryOpen(false);
+    setNotice("Workflow loaded. Review the prompt and submit when ready.");
+  };
+
+  const deleteWorkflowPreset = async (workflowId: string) => {
+    setWorkflowBusy(true);
+    try {
+      await request("/workflows/" + encodeURIComponent(workflowId), { method: "DELETE" });
+      setWorkflowPresets(old => old.filter(item => item.workflow_id !== workflowId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete workflow");
+    } finally {
+      setWorkflowBusy(false);
     }
   };
 
@@ -1683,6 +1754,9 @@ export default function App() {
                 </div>
                 <div className="composer-bottom">
                   <div className="composer-tools">
+                    <button type="button" className="select-pill" onClick={() => { setWorkflowLibraryOpen(true); void loadWorkflowPresets(); }} title="Open reusable workflows">
+                      <Workflow size={14}/> Workflows {workflowPresets.length > 0 ? "(" + workflowPresets.length + ")" : ""}
+                    </button>
                     {/* Custom Animated Agent Dropdown */}
                     <div className="custom-dropdown-container">
                       <button
@@ -2862,6 +2936,56 @@ export default function App() {
             <div className="modal-actions bottom-actions">
               <button className="outline-button" onClick={() => setWorkspaceReviewOpen(false)}>Close</button>
               <button className="primary-button" onClick={() => { setWorkspaceReviewOpen(false); setPrompt("Review the current workspace changes and identify regressions, security issues, and missing tests. Do not modify files unless asked."); setPlan(null); }}>Ask AI to review</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Reusable local workflow library */}
+      {workflowLibraryOpen && (
+        <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setWorkflowLibraryOpen(false); }}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-library-title">
+            <div className="settings-modal-head">
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div className="brand-symbol"><Workflow size={20}/></div>
+                <div>
+                  <h2 id="workflow-library-title">Workflow Library</h2>
+                  <p>Save and reuse task prompts with agent, verification, and browser-check settings.</p>
+                </div>
+              </div>
+              <button className="icon-button" onClick={() => setWorkflowLibraryOpen(false)}><X size={17}/></button>
+            </div>
+            <div className="workspace-modal-body">
+              <div className="workspace-input-section">
+                <label className="field-label"><b>Save current composer as a workflow</b><span>Uses the current prompt and verification settings. It will not run automatically.</span></label>
+                <div className="workspace-input-row">
+                  <input className="workspace-custom-input" value={workflowName} maxLength={80} onChange={e => setWorkflowName(e.target.value)} placeholder="e.g. Fix bug and run tests" disabled={workflowBusy}/>
+                  <button className="primary-button" onClick={() => void saveCurrentWorkflow()} disabled={workflowBusy || !workflowName.trim() || !prompt.trim()}>
+                    {workflowBusy ? <LoaderCircle size={14}/> : <Check size={14}/>} Save
+                  </button>
+                </div>
+              </div>
+              <div className="workspace-input-section" style={{ marginTop: "18px" }}>
+                <label className="field-label"><b>Saved workflows ({workflowPresets.length})</b><span>Loading a workflow fills the composer; you choose when to run it.</span></label>
+                {workflowPresets.length === 0 ? <p style={{ color: "var(--muted)" }}>No workflows saved yet.</p> : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {workflowPresets.map(workflow => (
+                      <div key={workflow.workflow_id} style={{ border: "1px solid var(--border)", borderRadius: "10px", padding: "12px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <b>{workflow.name}</b>
+                          <p style={{ color: "var(--muted)", fontSize: "12px", margin: "5px 0" }}>{workflow.prompt.slice(0, 220)}{workflow.prompt.length > 220 ? "…" : ""}</p>
+                          <span style={{ color: "var(--muted)", fontSize: "11px" }}>Agent: {workflow.agent_id} · Auto Verify: {workflow.auto_verify ? "On" : "Off"}{workflow.browser_verify_url ? " · Browser check enabled" : ""}</span>
+                        </div>
+                        <button className="outline-button" onClick={() => applyWorkflowPreset(workflow)} disabled={workflowBusy}>Load</button>
+                        <button className="icon-button" onClick={() => void deleteWorkflowPreset(workflow.workflow_id)} disabled={workflowBusy} title="Delete workflow"><Trash2 size={14}/></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-actions bottom-actions">
+              <button className="outline-button" onClick={() => setWorkflowLibraryOpen(false)}>Close</button>
             </div>
           </section>
         </div>
