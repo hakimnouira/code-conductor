@@ -160,11 +160,12 @@ async def test_task_list_includes_completed_task(auth_headers):
 async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, monkeypatch):
     import base64
 
-    async def fake_verify(payload, _):
-        assert payload.url == "http://localhost:3000"
+    async def fake_verify(url, wait_seconds=2):
+        assert url == "http://localhost:3000"
+        assert wait_seconds == 2
         return {
             "success": True,
-            "url": payload.url,
+            "url": url,
             "title": "Test app",
             "checks": {"document_loaded": True, "has_title": True},
             "error_markers": [],
@@ -172,7 +173,7 @@ async def test_browser_verification_saves_screenshot_inside_workspace(tmp_path, 
             "screenshot": "data:image/png;base64," + base64.b64encode(b"test-png").decode("ascii"),
         }
 
-    monkeypatch.setattr("app.main.verify_browser_page", fake_verify)
+    monkeypatch.setattr("app.main.run_browser_automation", fake_verify)
     record = TaskRecord(
         "task-browser-artifact-test",
         TaskCreateRequest(
