@@ -995,7 +995,24 @@ export default function App() {
     // Initial history entry
     const effectivePrompt = taskPrompt || prompt || "Task";
     const effectiveAgent = agentName || agents.find(a => a.id === created.agent_id)?.name || created.agent_id;
+    const currentSelectedId = selectedHistoryId;
     setTaskHistory(old => {
+      // If continuing an active chat, update that existing conversation entry in place without adding a new one to navbar
+      if (currentSelectedId) {
+        const existingIdx = old.findIndex(h => h.id === currentSelectedId);
+        if (existingIdx !== -1) {
+          const updated = [...old];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            id: created.task_id,
+            status: "running",
+            timestamp: Date.now(),
+            agentId: created.agent_id,
+            agentName: effectiveAgent,
+          };
+          return updated;
+        }
+      }
       const exists = old.some(h => h.id === created.task_id);
       if (exists) return old;
       return [{
@@ -1297,7 +1314,18 @@ export default function App() {
       } else {
         setActiveStep(0);
         const effectiveAgent = (agent === "google-antigravity" || agent === "antigravity-ide") ? "antigravity" : agent;
-        await dispatch(originalPrompt, effectiveAgent, controller.signal);
+        let promptToSend = originalPrompt;
+        if (selectedHistoryId && events.length > 0) {
+          const priorContext = events
+            .filter(e => (e.event_type === "log" && (e.text || "").startsWith("💬 Turn (User):")) || e.event_type === "token")
+            .slice(-10)
+            .map(e => (e.text || "").slice(0, 350))
+            .join("\n");
+          if (priorContext.trim()) {
+            promptToSend = `[Context from previous turn in this chat]:\n${priorContext}\n\n[User follow-up request]:\n${originalPrompt}`;
+          }
+        }
+        await dispatch(promptToSend, effectiveAgent, controller.signal);
       }
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Task failed");

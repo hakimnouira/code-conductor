@@ -39,10 +39,11 @@ class AntigravityAdapter(BaseAgentAdapter):
     def find_cli(self) -> str | None:
         if self._configured_executable:
             configured = Path(self._configured_executable).expanduser()
-            if configured.exists():
+            # agentapi.bat is an internal IDE RPC and does not support headless CLI flags (--input-format)
+            if "agentapi" not in configured.name.lower() and configured.exists():
                 return str(configured)
             located = shutil.which(self._configured_executable)
-            if located:
+            if located and "agentapi" not in Path(located).name.lower():
                 return located
         # Check workspace bridge scripts first to avoid unconfigured external binaries
         repo_root = Path(__file__).resolve().parents[3]
