@@ -487,6 +487,33 @@ After completing all actions, provide a clear, concise summary of the fixes you 
             "content": f"<tool_response>\n<function={tool_name}>\n{result}\n</function>\n</tool_response>\n\nInspect the results and continue with the next action, or summarize and finish if done.",
         })
 
+    # Ensure there is always a clear, comprehensive concluding report explaining what was inspected, found, and done
+    if not final_output or len(final_output.strip()) < 60:
+        synthesis_prompt = (
+            "All tool executions and workspace inspections are now complete.\n"
+            "Provide a comprehensive, professional concluding response to the user explaining:\n"
+            "1. Exactly what files, directories, or assets you inspected.\n"
+            "2. What you discovered and the root cause of the issue.\n"
+            "3. Exactly what concrete actions were taken or what specific steps are needed next.\n"
+            "Speak directly to the user. Do not invoke any tools."
+        )
+        messages.append({"role": "user", "content": synthesis_prompt})
+        try:
+            synthesis_resp = call_llm(messages, config)
+            synthesis_clean = re.sub(r"<tool_call>.*?</tool_call>", "", synthesis_resp, flags=re.DOTALL).strip()
+            if synthesis_clean:
+                final_output = synthesis_clean
+                emit_json({
+                    "event": "step_update",
+                    "step_update": {
+                        "step_type": "text",
+                        "text_delta": f"\n\n### Summary & Findings\n{synthesis_clean}\n",
+                    },
+                })
+        except Exception as err:
+            if not final_output:
+                final_output = f"Antigravity completed workspace inspection. (Synthesis notice: {err})"
+
     if not final_output:
         final_output = "Antigravity completed workspace inspection and execution."
 

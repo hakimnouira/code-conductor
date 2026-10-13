@@ -202,8 +202,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                     final_status = str(result.get("status", ""))
                     final_error = str(result.get("error", ""))
                     response = result.get("response")
-                    if response and not last_text:
-                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=str(response), timestamp=time.time())
+                    if response and str(response).strip() not in last_text:
+                        yield AgentEvent(task_id=task_id, event_type=EventType.TOKEN, text=f"\n\n{response}", timestamp=time.time())
                 elif kind == "init":
                     init = event.get("init") or {}
                     yield AgentEvent(task_id=task_id, event_type=EventType.LOG, text=f"Antigravity CLI permission mode: {init.get('permission_mode', 'configured by CLI settings')}", timestamp=time.time())
