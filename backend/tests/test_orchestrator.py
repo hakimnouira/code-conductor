@@ -277,3 +277,38 @@ def test_parallel_orchestrator_serializes_dirty_git_workspace(tmp_path: Path):
     message = orchestrator._prepare_isolated_mode()
     assert orchestrator._isolated_mode is False
     assert "uncommitted changes" in message
+
+
+
+def test_parallel_orchestrator_refuses_to_integrate_secret_files(tmp_path: Path, monkeypatch):
+    home = tmp_path / "test-home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("# Fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-m", "initial",
+    ], check=True, capture_output=True)
+
+    orchestrator = ParallelOrchestrator(workspace_root=repo)
+    orchestrator.history_tracker = AuditHistoryTracker(tmp_path / "history.jsonl")
+    orchestrator._prepare_isolated_mode()
+    worker_workspace = orchestrator._create_worker_worktree("task-secret-test", "subtask-secret")
+    (worker_workspace / ".env.production").write_text("PRIVATE_VALUE=do-not-commit", encoding="utf-8")
+    subtask = Subtask(
+        id="subtask-secret",
+        title="Unsafe secret file",
+        prompt="fixture",
+        status=SubtaskStatus.COMPLETED,
+    )
+
+    orchestrator._integrate_worker(subtask)
+
+    assert subtask.status == SubtaskStatus.FAILED
+    assert "Refusing to integrate sensitive" in subtask.error
+    assert not (repo / ".env.production").exists()
+    assert "subtask-secret" in orchestrator._worker_worktrees
