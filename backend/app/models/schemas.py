@@ -99,6 +99,7 @@ class WorkflowPresetRequest(BaseModel):
     browser_forbidden_text: list[str] = Field(default_factory=list, max_length=20)
     browser_visible_selectors: list[str] = Field(default_factory=list, max_length=20)
     browser_hidden_selectors: list[str] = Field(default_factory=list, max_length=20)
+    browser_steps: list[BrowserActionStep] = Field(default_factory=list, max_length=20)
 
     @field_validator("browser_required_text", "browser_forbidden_text", "browser_visible_selectors", "browser_hidden_selectors")
     @classmethod
