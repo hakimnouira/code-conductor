@@ -118,7 +118,13 @@ class TaskRecord:
         self.task_id = task_id
         self.request = request
         self.agent_id = agent_id
-        self.initial_request_json = initial_request_json or request.model_dump_json()
+        self.initial_request_json = (
+            request.model_dump_json() if initial_request_json is None else initial_request_json
+        )
+        self.original_request_available = (
+            bool(restored.get("original_request_available", bool(initial_request_json)))
+            if restored is not None else True
+        )
         self.request_fingerprint = str(
             (restored or {}).get("request_fingerprint")
             or hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
@@ -218,6 +224,7 @@ class TaskRecord:
             "status": self.status.value,
             "agent_id": self.agent_id,
             "request_fingerprint": self.request_fingerprint,
+            "original_request_available": self.original_request_available,
             "retry_of": self.request.retry_of,
             "prompt": self.request.prompt,
             "workspace_path": self.request.workspace_path,
@@ -249,9 +256,9 @@ async def _restore_task_records() -> None:
                 request=request,
                 agent_id=str(snapshot.get("agent_id") or request.agent_id),
                 restored=snapshot,
-                initial_request_json=json.dumps(
-                    item.get("initial_request") or item.get("request") or {},
-                    ensure_ascii=False,
+                initial_request_json=(
+                    json.dumps(item.get("initial_request") or {}, ensure_ascii=False)
+                    if item.get("initial_request_available", False) else ""
                 ),
             )
         except Exception:
@@ -1218,6 +1225,11 @@ async def retry_task(task_id: str, _: str = Depends(require_bearer_token)):
         raise HTTPException(
             status_code=409,
             detail="Only failed or cancelled tasks can be retried.",
+        )
+    if not record.original_request_available or not record.initial_request_json:
+        raise HTTPException(
+            status_code=409,
+            detail="The original request was not preserved for this older task. Resubmit the prompt instead of retrying modified diagnostics.",
         )
     try:
         original_payload = json.loads(record.initial_request_json)
