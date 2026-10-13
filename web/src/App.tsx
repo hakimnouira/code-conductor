@@ -9,6 +9,7 @@ import {
 type Agent = { id: string; name: string; description: string; state: string; diagnostic?: string; capabilities?: { supported_models?: string[] } };
 type Health = { status: string; version: string; workspace: string; active_tasks: number };
 type Task = { task_id: string; status: string; agent_id: string; prompt?: string; workspace_path?: string };
+type WorkspaceReviewSnapshot = { status: { is_repo: boolean; branch: string; clean: boolean; modified: string[]; untracked: string[]; deleted: string[]; error?: string }; diff: string; file_count: number };
 type Ev = { task_id?: string; event_type?: string; text?: string; timestamp?: number; data?: Record<string, unknown>; event_id?: number };
 type Plan = { plan_id: string; goal: string; subtasks: { id: string; title: string; assigned_agent: string; target_files: string[]; dependencies: string[] }[]; parallel_batches: string[][] };
 type PermissionMode = "safe" | "balanced" | "god";
@@ -135,6 +136,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState("");
+  const [workspaceReviewOpen, setWorkspaceReviewOpen] = useState(false);
+  const [workspaceReviewBusy, setWorkspaceReviewBusy] = useState(false);
+  const [workspaceReview, setWorkspaceReview] = useState<WorkspaceReviewSnapshot | null>(null);
   const [notice, setNotice] = useState("");
   const [settings, setSettings] = useState(false);
   const [contextOpen, setContextOpen] = useState(true);
@@ -942,6 +946,37 @@ export default function App() {
     finally { setRepoBusy(false); }
   };
 
+  const openWorkspaceReview = async () => {
+    setWorkspaceReviewBusy(true);
+    setError("");
+    try {
+      const workspacePath = workspace || health?.workspace;
+      const query = workspacePath ? "?workspace_path=" + encodeURIComponent(workspacePath) : "";
+      const [status, unstaged, staged] = await Promise.all([
+        request("/workspace/git/status" + query).then(r => r.json()),
+        request("/workspace/git/diff", {
+          method: "POST",
+          body: JSON.stringify({ workspace_path: workspacePath, staged: false }),
+        }).then(r => r.json()),
+        request("/workspace/git/diff", {
+          method: "POST",
+          body: JSON.stringify({ workspace_path: workspacePath, staged: true }),
+        }).then(r => r.json()),
+      ]);
+      const diff = [staged.diff, unstaged.diff].filter((value: unknown) => typeof value === "string" && value.length > 0).join("\n\n");
+      setWorkspaceReview({
+        status,
+        diff,
+        file_count: Number(staged.file_count || 0) + Number(unstaged.file_count || 0),
+      });
+      setWorkspaceReviewOpen(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load workspace changes");
+    } finally {
+      setWorkspaceReviewBusy(false);
+    }
+  };
+
   const runTests = async () => {
     try {
       const result = await request("/workspace/test/run", {
@@ -1581,7 +1616,8 @@ export default function App() {
                               <Copy size={14}/> {copiedAnswer ? "Copied!" : "Copy Answer"}
                             </button>
                             <button onClick={() => void runTests()}><Terminal size={14}/> Run tests</button>
-                            <button onClick={() => { setPrompt("Review the changes from the last task. Inspect the diff and identify regressions or missing tests."); setPlan(null); }}><ShieldCheck size={14}/> Review changes</button>
+                            <button onClick={() => void openWorkspaceReview()} disabled={workspaceReviewBusy}><Eye size={14}/>{workspaceReviewBusy ? "Loading diff…" : "Inspect diff"}</button>
+                            <button onClick={() => { setPrompt("Review the current workspace changes and identify regressions, security issues, and missing tests. Do not modify files unless asked."); setPlan(null); }}><ShieldCheck size={14}/> Ask AI to review</button>
                           </div>
                         )}
                       </div>
@@ -2786,6 +2822,43 @@ export default function App() {
                   <p>Submit your first prompt or ask a web model to start building your history!</p>
                 </div>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Read-only workspace diff and changed-file review */}
+      {workspaceReviewOpen && workspaceReview && (
+        <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setWorkspaceReviewOpen(false); }}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-review-title">
+            <div className="settings-modal-head">
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <div className="brand-symbol"><Eye size={20}/></div>
+                <div>
+                  <h2 id="workspace-review-title">Workspace Changes</h2>
+                  <p>Read-only snapshot from Git. Review before accepting or committing changes.</p>
+                </div>
+              </div>
+              <button className="icon-button" onClick={() => setWorkspaceReviewOpen(false)}><X size={17}/></button>
+            </div>
+            <div className="workspace-modal-body">
+              <div className="workspace-input-section">
+                <b>{workspaceReview.status.is_repo ? (workspaceReview.status.branch + (workspaceReview.status.clean ? " · clean" : " · has changes")) : "This workspace is not a Git repository"}</b>
+                {workspaceReview.status.error && <p>{workspaceReview.status.error}</p>}
+                {!!workspaceReview.status.modified.length && <p><b>Modified:</b> {workspaceReview.status.modified.join(", ")}</p>}
+                {!!workspaceReview.status.untracked.length && <p><b>Untracked:</b> {workspaceReview.status.untracked.join(", ")}</p>}
+                {!!workspaceReview.status.deleted.length && <p><b>Deleted:</b> {workspaceReview.status.deleted.join(", ")}</p>}
+                <p style={{ color: "var(--muted)", fontSize: "12px" }}>
+                  {workspaceReview.file_count} tracked file change(s) in the staged and unstaged diff. Untracked files are listed above but their contents are not included in Git diff.
+                </p>
+                <pre style={{ maxHeight: "55vh", overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: "12px", padding: "12px", borderRadius: "8px", background: "var(--panel)" }}>
+                  {workspaceReview.diff || "No tracked diff is available for this workspace."}
+                </pre>
+              </div>
+            </div>
+            <div className="modal-actions bottom-actions">
+              <button className="outline-button" onClick={() => setWorkspaceReviewOpen(false)}>Close</button>
+              <button className="primary-button" onClick={() => { setWorkspaceReviewOpen(false); setPrompt("Review the current workspace changes and identify regressions, security issues, and missing tests. Do not modify files unless asked."); setPlan(null); }}>Ask AI to review</button>
             </div>
           </section>
         </div>
