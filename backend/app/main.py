@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import uuid
+from urllib.parse import urlsplit
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -645,8 +646,18 @@ async def create_workflow(req: WorkflowPresetRequest, _: str = Depends(require_b
     prompt_text = req.prompt.strip()
     if not name or not prompt_text:
         raise HTTPException(status_code=422, detail="Workflow name and prompt must not be blank.")
-    if req.browser_verify_url and not req.browser_verify_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="Browser verification URL must use HTTP or HTTPS.")
+    if req.browser_verify_url:
+        parsed_url = urlsplit(req.browser_verify_url)
+        if (
+            parsed_url.scheme not in ("http", "https")
+            or not parsed_url.hostname
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Browser verification URL must be HTTP(S), include a host, and contain no credentials.",
+            )
     now = time.time()
     item = {
         "workflow_id": uuid.uuid4().hex,
